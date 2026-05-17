@@ -39,8 +39,11 @@ Extracted from a larger reel-bot stack for use as a standalone utility (no Drive
 | `CLOAK_CF_API_TOKEN` | Token with both `Workers KV:Edit` AND `Workers Scripts:Edit` permissions |
 | `CLOAK_CF_KV_NAMESPACE_ID` | KV namespace ID (create one in CF dashboard, copy the ID) |
 | `CLOAK_BASE_DOMAINS` | Comma-separated base domains, e.g. `mydomain1.link,mydomain2.link`. Each new slug is round-robin-assigned to one of these. |
-| `MODELS` | Comma-separated model names, e.g. `Caro,Kira,Lina` |
-| `NICHES` | Comma-separated niche slugs, e.g. `goth,police,gamer,nun,cyberpunk` |
+| `OF_LINK_<NAME>` | Per-model OF URL, one env var per model. e.g. `OF_LINK_CAROLINA=https://onlyfans.com/...`. The suffix becomes the model name (lowercased) in the wizard. Models without an `OF_LINK_<NAME>` won't appear in the picker. |
+
+**Niches:** hardcoded in `cloak.py` (47 niches mirroring reel-bot's `NICHE_SCENES`). To add/remove a niche, edit the `NICHES` list in `cloak.py` and commit — do NOT use an env var.
+
+**Models:** auto-discovered from `OF_LINK_<NAME>` env vars + `model:*` keys in the same Cloudflare KV namespace. If you set up models via the main reel-bot's `/cloak setup` wizard, this bot will see them automatically (same KV namespace).
 
 You also need to deploy the included `cloudflare_worker.js` to a Cloudflare Worker bound to your base domains (one-time setup, not done by the bot — see "Cloudflare Worker setup" below).
 
@@ -88,8 +91,8 @@ python bot.py
 Shows menu: New / List / Delete.
 
 **New** — 8-step wizard:
-1. Pick model (from `MODELS` env var)
-2. Pick niche (from `NICHES` env var)
+1. Pick model (auto-discovered from `OF_LINK_<NAME>` env vars + KV `model:*` keys)
+2. Pick niche (from hardcoded `NICHES` list in `cloak.py`)
 3. Number (auto-suggested next free, or custom)
 4. Slug (auto-suggested from model+niche+number, or AI-suggested batch via OpenAI, or custom)
 5. OF URL (paste full URL)

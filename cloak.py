@@ -12,8 +12,8 @@ Commands:
   /cloak delete <slug>— remove a slug
 
 Wizard steps:
-  1. Pick model (env var MODELS=Caro,Kira)
-  2. Pick niche  (env var NICHES=goth,police,...)
+  1. Pick model (auto-discovered from OF_LINK_<NAME> env vars + KV model:* keys)
+  2. Pick niche  (hardcoded NICHES list below — mirrors reel-bot's NICHE_SCENES)
   3. Number (auto or custom)
   4. Slug (auto-suggested + AI suggestions if OPENAI_API_KEY set)
   5. OF URL (text input)
@@ -29,8 +29,8 @@ Env vars required:
   CLOAK_CF_API_TOKEN     — token with Workers KV:Edit + Workers Scripts:Edit
   CLOAK_CF_KV_NAMESPACE_ID — KV namespace where slugs live
   CLOAK_BASE_DOMAINS     — comma-separated base domains (e.g. domain1.link,domain2.link)
-  MODELS                  — comma-separated model names (e.g. Caro,Kira)
-  NICHES                  — comma-separated niche slugs (e.g. goth,police,gamer)
+  OF_LINK_<MODEL>         — per-model OF URL, e.g. OF_LINK_CAROLINA=https://...
+                            (the suffix becomes the model name, lowercased)
 """
 
 import os
@@ -57,8 +57,44 @@ CF_API_TOKEN = os.getenv('CLOAK_CF_API_TOKEN', '')
 CF_KV_NAMESPACE_ID = os.getenv('CLOAK_CF_KV_NAMESPACE_ID', '')
 BASE_DOMAINS = [d.strip() for d in os.getenv('CLOAK_BASE_DOMAINS', '').split(',')
                 if d.strip()]
-MODELS = [m.strip() for m in os.getenv('MODELS', '').split(',') if m.strip()]
-NICHES = [n.strip() for n in os.getenv('NICHES', '').split(',') if n.strip()]
+# Niches — hardcoded to mirror reel_bot.py's NICHE_SCENES top-level keys.
+# Single source of truth: when reel_bot adds a niche to NICHE_SCENES, mirror
+# it here in the same commit (see [[patch-both-repos-together]] rule).
+NICHES = [
+    'Construction', 'Police', 'Teacher', 'Goth', 'Goth Dwarf', 'Goth SFW',
+    'Punk', 'Skater', 'Domina', 'Gamer', 'Asian Cosplay', 'Stewardess',
+    'Stewardess Red', 'Military', 'NASA', 'Dwarf', 'Mommy', 'MAGA',
+    'Redneck', 'Goth Mommy', 'Cute Girl', 'Cosplay', 'Surfer Girl', 'Prison',
+    'Stuck With Strangers', 'Explorer', 'Fighter', 'Karate', 'Racer',
+    'Goth Cosplay', 'Noir', 'Natural', 'Peasant Girl', 'Cyberpunk', 'Rave',
+    'Medical Nurse', 'Ski Snow', 'DJ EDM', 'Halloween', 'Astronaut',
+    'Welder', 'Geisha', 'Motorcycle', 'Color Hash', 'Japanese Schoolgirl',
+    'Schoolgirl', 'Alternative',
+]
+
+
+def _known_models():
+    """Auto-discover models. Mirrors reel_bot._cloak_known_models():
+      1. OF_LINK_<NAME> env vars on Railway (skip numeric suffixes)
+      2. model:<name> keys in Cloudflare KV
+    Returns sorted, deduplicated lowercase list."""
+    out = set()
+    for k in os.environ:
+        if k.startswith('OF_LINK_') and os.environ[k].strip():
+            name = k[len('OF_LINK_'):].lower()
+            if name.isdigit():
+                continue
+            out.add(name)
+    if _cf_ready():
+        try:
+            keys, msg = cf_kv_list_keys()
+            if msg == 'OK':
+                for k in (keys or []):
+                    if k.startswith('model:'):
+                        out.add(k[len('model:'):].lower())
+        except Exception:
+            pass
+    return sorted(out)
 
 SLUG_RE = re.compile(r'^[a-z0-9_-]{2,40}$')
 
@@ -223,11 +259,12 @@ async def cloak_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "(comma-separated, e.g. <code>domain1.link,domain2.link</code>).",
             parse_mode='HTML')
         return
+    models = _known_models()
     await update.message.reply_text(
         "🔗 <b>Cloak Manager</b>\n\n"
         f"<b>Base domains:</b> {', '.join(BASE_DOMAINS)}\n"
-        f"<b>Models:</b> {', '.join(MODELS) or '(none — set MODELS env var)'}\n"
-        f"<b>Niches:</b> {', '.join(NICHES) or '(none — set NICHES env var)'}",
+        f"<b>Models:</b> {', '.join(models) or '(none — set OF_LINK_&lt;NAME&gt; env vars)'}\n"
+        f"<b>Niches:</b> {len(NICHES)} hardcoded ({', '.join(NICHES[:5])}…)",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✨ New cloaked link",
@@ -296,14 +333,16 @@ async def cloak_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == 'cloak:wiz:start':
-        if not MODELS:
+        models = _known_models()
+        if not models:
             await query.edit_message_text(
-                "❌ Set <code>MODELS</code> env var (comma-separated).",
+                "❌ No models detected. Set <code>OF_LINK_&lt;NAME&gt;</code> "
+                "env vars (e.g. <code>OF_LINK_CAROLINA=https://onlyfans.com/...</code>).",
                 parse_mode='HTML')
             return
         context.user_data['cloak_wiz'] = {'state': 'model'}
         kb = [[InlineKeyboardButton(m, callback_data=f"cloak:wiz:mod:{m}")]
-              for m in MODELS]
+              for m in models]
         kb.append([InlineKeyboardButton("✖ Cancel",
                                          callback_data="cloak:cancel")])
         await query.edit_message_text(

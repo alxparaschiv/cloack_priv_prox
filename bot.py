@@ -17,8 +17,8 @@ For /cloak:
   CLOAK_CF_API_TOKEN          — token with Workers KV + Workers Scripts edit
   CLOAK_CF_KV_NAMESPACE_ID    — KV namespace ID
   CLOAK_BASE_DOMAINS          — comma-sep base domains (e.g. d1.link,d2.link)
-  MODELS                      — comma-sep model names
-  NICHES                      — comma-sep niche slugs
+  OF_LINK_<NAME>              — per-model OF URL (one env var per model)
+  (niches are hardcoded in cloak.py — see NICHES list)
 
 For /privacy AI suggestions + /cloak AI suggestions:
   OPENAI_API_KEY              — OpenAI key (gpt-4o-mini, ~$0.001 per batch)
