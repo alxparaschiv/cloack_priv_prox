@@ -38,7 +38,8 @@ Extracted from a larger reel-bot stack for use as a standalone utility (no Drive
 | `CLOAK_CF_ACCOUNT_ID` | Cloudflare account ID (Workers → right sidebar) |
 | `CLOAK_CF_API_TOKEN` | Token with both `Workers KV:Edit` AND `Workers Scripts:Edit` permissions |
 | `CLOAK_CF_KV_NAMESPACE_ID` | KV namespace ID (create one in CF dashboard, copy the ID) |
-| `CLOAK_BASE_DOMAINS` | Comma-separated base domains, e.g. `mydomain1.link,mydomain2.link`. Each new slug is round-robin-assigned to one of these. |
+| `CLOAK_DOMAIN_1`, `CLOAK_DOMAIN_2`, `CLOAK_DOMAIN_3` | Base domains, one per env var (legacy format used by reel-bot). Set as many as you have (1, 2, or 3). |
+| `CLOAK_BASE_DOMAINS` | Alternative: comma-separated base domains in a single var, e.g. `mydomain1.link,mydomain2.link`. Use this OR the `CLOAK_DOMAIN_N` format above — both work, and both are merged + deduped. |
 | `OF_LINK_<NAME>` | Per-model OF URL, one env var per model. e.g. `OF_LINK_CAROLINA=https://onlyfans.com/...`. The suffix becomes the model name (lowercased) in the wizard. Models without an `OF_LINK_<NAME>` won't appear in the picker. |
 
 **Niches:** hardcoded in `cloak.py` (47 niches mirroring reel-bot's `NICHE_SCENES`). To add/remove a niche, edit the `NICHES` list in `cloak.py` and commit — do NOT use an env var.

@@ -16,7 +16,8 @@ For /cloak:
   CLOAK_CF_ACCOUNT_ID         — Cloudflare account ID
   CLOAK_CF_API_TOKEN          — token with Workers KV + Workers Scripts edit
   CLOAK_CF_KV_NAMESPACE_ID    — KV namespace ID
-  CLOAK_BASE_DOMAINS          — comma-sep base domains (e.g. d1.link,d2.link)
+  CLOAK_DOMAIN_1/2/3          — one base domain per env var (legacy), OR
+  CLOAK_BASE_DOMAINS          — comma-sep base domains in one var
   OF_LINK_<NAME>              — per-model OF URL (one env var per model)
   (niches are hardcoded in cloak.py — see NICHES list)
 

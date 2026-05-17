@@ -28,6 +28,7 @@ Env vars required:
   CLOAK_CF_ACCOUNT_ID    — Cloudflare account ID
   CLOAK_CF_API_TOKEN     — token with Workers KV:Edit + Workers Scripts:Edit
   CLOAK_CF_KV_NAMESPACE_ID — KV namespace where slugs live
+  CLOAK_DOMAIN_1/2/3     — one base domain per env var (legacy format), OR
   CLOAK_BASE_DOMAINS     — comma-separated base domains (e.g. domain1.link,domain2.link)
   OF_LINK_<MODEL>         — per-model OF URL, e.g. OF_LINK_CAROLINA=https://...
                             (the suffix becomes the model name, lowercased)
@@ -55,8 +56,28 @@ logger = logging.getLogger(__name__)
 CF_ACCOUNT_ID = os.getenv('CLOAK_CF_ACCOUNT_ID', '')
 CF_API_TOKEN = os.getenv('CLOAK_CF_API_TOKEN', '')
 CF_KV_NAMESPACE_ID = os.getenv('CLOAK_CF_KV_NAMESPACE_ID', '')
-BASE_DOMAINS = [d.strip() for d in os.getenv('CLOAK_BASE_DOMAINS', '').split(',')
-                if d.strip()]
+
+
+def _collect_base_domains():
+    """Mirrors reel_bot._cloak_collect_bases():
+      • Legacy: CLOAK_DOMAIN_1, CLOAK_DOMAIN_2, CLOAK_DOMAIN_3
+      • New:    CLOAK_BASE_DOMAINS (comma-separated)
+    Returns deduplicated, lowercased ordered list (legacy first)."""
+    out, seen = [], set()
+    for i in (1, 2, 3):
+        d = (os.getenv(f'CLOAK_DOMAIN_{i}', '') or '').strip().lower()
+        if d and d not in seen:
+            out.append(d); seen.add(d)
+    extras = (os.getenv('CLOAK_BASE_DOMAINS', '') or '').strip()
+    if extras:
+        for d in extras.split(','):
+            d = d.strip().lower()
+            if d and d not in seen:
+                out.append(d); seen.add(d)
+    return out
+
+
+BASE_DOMAINS = _collect_base_domains()
 # Niches — hardcoded to mirror reel_bot.py's NICHE_SCENES top-level keys.
 # Single source of truth: when reel_bot adds a niche to NICHE_SCENES, mirror
 # it here in the same commit (see [[patch-both-repos-together]] rule).
@@ -255,8 +276,11 @@ async def cloak_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not BASE_DOMAINS:
         await update.message.reply_text(
-            "❌ No base domains. Set <code>CLOAK_BASE_DOMAINS</code> "
-            "(comma-separated, e.g. <code>domain1.link,domain2.link</code>).",
+            "❌ No base domains. Set either:\n"
+            "  • <code>CLOAK_DOMAIN_1</code> / <code>CLOAK_DOMAIN_2</code> / "
+            "<code>CLOAK_DOMAIN_3</code> (one per env var), OR\n"
+            "  • <code>CLOAK_BASE_DOMAINS</code> (comma-separated, "
+            "e.g. <code>domain1.link,domain2.link</code>)",
             parse_mode='HTML')
         return
     models = _known_models()
