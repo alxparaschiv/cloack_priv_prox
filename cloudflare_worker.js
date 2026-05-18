@@ -416,7 +416,7 @@ function landingHTML(model, incomingUtm) {
 </div>
 <div class="wrap">
   ${ofUrl ? `
-    <a class="of-card" href="/r?${utmQS}" rel="noopener">
+    <a class="of-card" href="/r?${utmQS}" data-rotate-utm="of" data-base-href="/r" rel="noopener">
       ${ofPhoto ? `<img class="of-img" src="${escapeAttr(ofPhoto)}" alt="">` : ''}
       <span class="of-logo">
         <!-- White padlock on the light-blue circle backdrop set by
@@ -438,13 +438,60 @@ function landingHTML(model, incomingUtm) {
     <div class="display">${display}</div>
     ${bio ? `<div class="bio">${bio}</div>` : ''}
     <div class="stack">
-      ${xUrl  ? `<a class="btn x"  href="${escapeAttr(xUrl)}"  target="_blank" rel="noopener"><span class="row"><span class="brand-icon"><svg viewBox="0 0 24 24" fill="#fff"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></span><span class="label">My Secret X</span></span></a>` : ''}
-      ${igUrl ? `<a class="btn ig" href="${escapeAttr(igUrl)}" target="_blank" rel="noopener"><span class="row"><span class="brand-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1.2" fill="#fff" stroke="none"/></svg></span><span class="label">My Private Instagram</span></span></a>` : ''}
+      ${xUrl  ? `<a class="btn x"  href="${escapeAttr(xUrl)}"  data-rotate-utm="x"  data-base-href="${escapeAttr(model.xLink || '')}"  target="_blank" rel="noopener"><span class="row"><span class="brand-icon"><svg viewBox="0 0 24 24" fill="#fff"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></span><span class="label">My Secret X</span></span></a>` : ''}
+      ${igUrl ? `<a class="btn ig" href="${escapeAttr(igUrl)}" data-rotate-utm="ig" data-base-href="${escapeAttr(model.igLink || '')}" target="_blank" rel="noopener"><span class="row"><span class="brand-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1.2" fill="#fff" stroke="none"/></svg></span><span class="label">My Private Instagram</span></span></a>` : ''}
     </div>
     <div class="foot">© ${new Date().getFullYear()} · ${display} · All rights reserved
       <br><a class="brand-foot" href="/">✨ ${brandName}</a></div>
   </div>
 </div>
+<script>
+// ─── UTM rotation (2026-05-18) ───────────────────────────────────────
+// Bake-time UTMs (rendered into hrefs above) are only the no-JS fallback.
+// With JS, every page load AND every click rewrites a[data-rotate-utm]
+// hrefs with a freshly-picked random set, so:
+//   • Cloudflare edge cache returning stale HTML → fixed (JS rewrites
+//     on load before user sees anything).
+//   • Browser bfcache replaying the same DOM on Back/Forward → fixed
+//     (capture-phase click listener rewrites just before navigation).
+//   • Multiple clicks on the same page → each click gets a distinct
+//     UTM set propagated through /r → /v → /go.
+// Pools mirror the server-side buildUtmQueryString in this file.
+(function(){
+  var SOURCES = ['ig','instagram','tt','tiktok','x','twitter','rd','reddit'];
+  var MEDIUMS = ['social','referral','organic'];
+  var CONTENTS = ['link_in_bio','bio_link','profile_link','profile',
+                  'story_link','story_swipe','dm_link','link_sticker',
+                  'pinned_post','highlight'];
+  var SLUG = ${JSON.stringify(model.slug || 'organic')};
+  function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+  function freshQs(){
+    return 'utm_source=' + encodeURIComponent(pick(SOURCES))
+      + '&utm_medium=' + encodeURIComponent(pick(MEDIUMS))
+      + '&utm_campaign=' + encodeURIComponent(SLUG)
+      + '&utm_content=' + encodeURIComponent(pick(CONTENTS));
+  }
+  function rewriteHref(a){
+    var base = a.getAttribute('data-base-href');
+    if (!base) return;
+    var sep = base.indexOf('?') >= 0 ? '&' : '?';
+    a.setAttribute('href', base + sep + freshQs());
+  }
+  // 1) Initial rewrite (handles Cloudflare cache / bfcache that may serve
+  //    stale baked-in UTMs)
+  document.querySelectorAll('a[data-rotate-utm]').forEach(rewriteHref);
+  // 2) Per-click rewrite (capture phase = runs before any other handler
+  //    and before browser navigation, so the new href is what actually
+  //    gets navigated to). Delegates from document so it survives any
+  //    later DOM mutations.
+  document.addEventListener('click', function(e){
+    if (e.target && e.target.closest) {
+      var a = e.target.closest('a[data-rotate-utm]');
+      if (a) rewriteHref(a);
+    }
+  }, true);
+})();
+</script>
 <script>
 (function(){
   // Two distinct flows depending on the user's browser context:
