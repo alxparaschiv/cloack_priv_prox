@@ -131,7 +131,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 /privacy — Privacy policy generator\n"
         "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
         "🎨 /bg_generator — Solid-color background PNG\n"
-        "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n",
+        "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
+        "📊 /proxy_status — Last batch result\n",
         parse_mode='HTML')
 
 
@@ -143,6 +144,7 @@ async def post_init(application):
         BotCommand("blob",          "FB blob → Cookie-Editor JSON"),
         BotCommand("bg_generator",  "Solid-color background PNG"),
         BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
+        BotCommand("proxy_status",  "Last /proxy batch result"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -175,6 +177,7 @@ def main():
     application.add_handler(CommandHandler("blob", cookies.blob_command))
     application.add_handler(CommandHandler("bg_generator", bg.bg_generator_command))
     application.add_handler(CommandHandler("proxy", proxy.proxy_command))
+    application.add_handler(CommandHandler("proxy_status", proxy.proxy_status_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(

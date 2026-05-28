@@ -57,6 +57,11 @@ IPROYAL_USERNAME = os.getenv('IPROYAL_USERNAME', '')
 IPROYAL_PASSWORD = os.getenv('IPROYAL_PASSWORD', '')
 FB_PROXY_TEST_PHONE = os.getenv('FB_PROXY_TEST_PHONE', '')
 FB_PROXY_TEST_PASSWORD = os.getenv('FB_PROXY_TEST_PASSWORD', '')
+# Set FB_PROXY_SKIP_GOOGLE_GATE=1 to bypass the Google "hello" check (it
+# crashes Camoufox ~9/10 launches in practice, wasting ~40s per crashed
+# launch). The FB login + reCAPTCHA gates still run, so validation quality
+# stays high — you just stop burning time on a broken browser test.
+FB_PROXY_SKIP_GOOGLE_GATE = os.getenv('FB_PROXY_SKIP_GOOGLE_GATE', '') == '1'
 GOLOGIN_TEST_PROFILE_NAME = os.getenv('GOLOGIN_TEST_PROFILE_NAME', 'TEST ACC FOR PROXY')
 IPQS_API_KEY = os.getenv('IPQS_API_KEY', '')
 ABUSEIPDB_API_KEY = os.getenv('ABUSEIPDB_API_KEY', '')
@@ -1336,18 +1341,25 @@ class ProxyPipeline:
 
             # ════════ BROWSER GAUNTLET — ascending pass-rate ════════
             # ① Google 'hello' — the ~10% gate, run FIRST to fail fast.
-            try:
-                g_result, g_shot = await _asyncio.wait_for(
-                    self.check_google_hello(host, port, user, password, 'socks5'),
-                    timeout=60.0)
-            except _asyncio.TimeoutError:
-                g_result, g_shot = 'timeout', None
+            # E2E run on 2026-05-28 showed Camoufox crashes ~90% of Google
+            # launches with "Browser.close: Connection closed" — not the
+            # proxy's fault, the browser bombs. FB_PROXY_SKIP_GOOGLE_GATE=1
+            # bypasses this so we don't waste ~40s per crashed launch.
+            if FB_PROXY_SKIP_GOOGLE_GATE:
+                g_result, g_shot = 'skipped', None
+            else:
                 try:
-                    if getattr(self, '_camoufox_ctx', None):
-                        await self._camoufox_ctx.__aexit__(None, None, None)
-                        self._camoufox_ctx = None
-                except Exception:
-                    pass
+                    g_result, g_shot = await _asyncio.wait_for(
+                        self.check_google_hello(host, port, user, password, 'socks5'),
+                        timeout=60.0)
+                except _asyncio.TimeoutError:
+                    g_result, g_shot = 'timeout', None
+                    try:
+                        if getattr(self, '_camoufox_ctx', None):
+                            await self._camoufox_ctx.__aexit__(None, None, None)
+                            self._camoufox_ctx = None
+                    except Exception:
+                        pass
             if g_result not in ('good', 'skipped'):
                 tag = g_result if isinstance(g_result, str) else 'error'
                 await _upd(f"🚫 #{attempt} ① Google <b>{_e(tag)}</b> — skip")
@@ -1464,6 +1476,26 @@ class ProxyPipeline:
 # Module-level singleton + Telegram handlers (the /proxy UI flow)
 # ──────────────────────────────────────────────────────────────────────
 _PROXY_PIPELINE_SINGLETON = None
+_LAST_RUN_PATH = Path("_proxy_last_run.json")
+
+
+def _save_last_run(target, created, attempts, success, msg):
+    """Persist the last batch summary so /proxy_status can read it.
+    Ephemeral on Railway (wiped on redeploy) — that's fine, status is
+    only useful within the lifetime of a run anyway."""
+    try:
+        _LAST_RUN_PATH.write_text(json.dumps({
+            'ts': int(time.time()),
+            'target': target,
+            'attempts': attempts,
+            'success': success,
+            'msg': msg,
+            'created': [{'name': c.get('name'), 'id': c.get('id'),
+                         'exit_ip': c.get('exit_ip'),
+                         'score': c.get('score')} for c in (created or [])],
+        }, indent=2))
+    except Exception as e:
+        logger.warning(f"[proxy save_last_run] {e}")
 
 def _pipeline():
     global _PROXY_PIPELINE_SINGLETON
@@ -1587,6 +1619,7 @@ async def _launch_batch(chat_id, context, n):
         created, attempts, success, msg = await _pipeline().run_batch_proxy_check_pipeline(
             send_update, send_photo,
             target_profiles=n, name_prefix='Validated Profile')
+        _save_last_run(n, created, attempts, success, msg)
         summary = (f"✅ <b>Batch finished</b> — created <b>{len(created)}</b> "
                    f"profile(s) over <b>{attempts}</b> proxy attempts.\n\n")
         if created:
@@ -1596,7 +1629,54 @@ async def _launch_batch(chat_id, context, n):
                 for c in created)
         if not success and msg:
             summary += f"\n\n⚠️ {msg}"
+        summary += "\n\n<i>Use /proxy_status to see this again.</i>"
         await send_update(summary)
     except Exception as e:
         logger.exception("[proxy batch] crashed")
         await send_update(f"❌ Batch crashed: <code>{type(e).__name__}: {e}</code>")
+
+
+async def proxy_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/proxy_status — show the last completed /proxy batch result.
+    Mirror of /fb_cleanup_status on the poster fleet. Ephemeral state
+    (wiped on Railway redeploy)."""
+    if not _LAST_RUN_PATH.exists():
+        await update.message.reply_text(
+            "🟢 No /proxy runs yet — start one with /proxy.\n\n"
+            "<i>Tip: set <code>FB_PROXY_SKIP_GOOGLE_GATE=1</code> in Railway "
+            "to bypass the flaky Google gate (Camoufox crashes ~9/10 launches).</i>",
+            parse_mode='HTML')
+        return
+    try:
+        d = json.loads(_LAST_RUN_PATH.read_text())
+    except Exception as e:
+        await update.message.reply_text(f"❌ Couldn't read last-run file: {e}")
+        return
+    age_s = int(time.time()) - int(d.get('ts', 0))
+    if age_s < 120:
+        age = f"{age_s}s ago"
+    elif age_s < 3600:
+        age = f"{age_s // 60}m ago"
+    elif age_s < 86400:
+        age = f"{age_s // 3600}h {(age_s % 3600) // 60}m ago"
+    else:
+        age = f"{age_s // 86400}d ago"
+    lines = [
+        f"📊 <b>Last /proxy run</b> — {age}",
+        f"  target:   {d.get('target', '?')} profile(s)",
+        f"  attempts: {d.get('attempts', '?')}",
+        f"  created:  {len(d.get('created', []))}",
+        f"  result:   {'✅ success' if d.get('success') else '⚠️ partial'}",
+    ]
+    skip_flag = '✓ on' if FB_PROXY_SKIP_GOOGLE_GATE else 'off'
+    lines.append(f"  google-gate-skip: {skip_flag}")
+    for c in (d.get('created') or [])[:20]:
+        lines.append(f"    • <code>{(c.get('name') or '?')}</code> "
+                     f"(exit {c.get('exit_ip', '?')}, "
+                     f"score {c.get('score', '?')})")
+    if d.get('msg'):
+        import re
+        plain = re.sub(r'<[^>]+>', '', d['msg'])
+        if plain:
+            lines.append(f"\n<i>{plain[:300]}</i>")
+    await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
