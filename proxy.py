@@ -751,41 +751,102 @@ class ProxyPipeline:
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
                 # ── ⑨ Google 'hello' (in GoLogin browser) ──
+                # Strict: MUST see real SERP results, not the homepage. Fail-
+                # closed by default — every step that doesn't produce the
+                # expected state is treated as a fail, not a soft pass.
                 out['stage'] = 'google'
                 await _say("   ⏳ <b>⑨ Google 'hello'</b> in GoLogin browser…")
                 try:
                     await page.goto('https://www.google.com/',
                                     wait_until='domcontentloaded', timeout=45000)
                     await page.wait_for_timeout(_rand.randint(1500, 3000))
-                    # Detect block page
-                    body = (await page.content() or '')[:5000].lower()
-                    out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
-                    blocked = ('unusual traffic' in body or 'recaptcha' in body
-                               or 'sorry/index' in (page.url or ''))
-                    if blocked:
+                    # Block-page detection (catches Google's pre-search captcha)
+                    body0 = (await page.content() or '')[:5000].lower()
+                    if ('unusual traffic' in body0 or '/sorry/index' in (page.url or '')
+                            or 'our systems have detected' in body0):
                         out['google'] = 'blocked'
-                        out['err'] = 'Google captcha/block page'
+                        out['err'] = 'Google captcha BEFORE search'
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
                         return out
-                    # Try a search box interaction
+
+                    # Find search box (try a few selectors — Google A/B-tests these)
+                    box = None
+                    for sel in ('textarea[name="q"]', 'input[name="q"]',
+                                'textarea[title="Search"]', 'input[title="Search"]'):
+                        try:
+                            box = await page.wait_for_selector(sel, timeout=4000)
+                            if box: break
+                        except Exception:
+                            continue
+                    if not box:
+                        out['google'] = 'no_search_box'
+                        out['err'] = 'Google search box never appeared'
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                        return out
+
+                    # Type 'hello' — focus first, then type with realistic delay
                     try:
-                        box = await page.wait_for_selector(
-                            'textarea[name="q"], input[name="q"]', timeout=8000)
-                        await box.type('hello', delay=_rand.randint(60, 140))
-                        await page.keyboard.press('Enter')
-                        await page.wait_for_load_state('domcontentloaded', timeout=15000)
-                        await page.wait_for_timeout(_rand.randint(1500, 3000))
+                        await box.click()
+                    except Exception: pass
+                    await page.keyboard.type('hello', delay=_rand.randint(80, 160))
+
+                    # Verify the box has the full word before submitting
+                    await page.wait_for_timeout(500)
+                    try:
+                        box_val = await box.input_value()
                     except Exception:
-                        pass
-                    body2 = (await page.content() or '')[:8000].lower()
+                        box_val = ''
+                    if box_val.strip().lower() != 'hello':
+                        out['google'] = 'type_incomplete'
+                        out['err'] = f'Search box value after typing: {box_val!r} (expected "hello")'
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                        return out
+
+                    # Submit
+                    await page.keyboard.press('Enter')
+
+                    # Wait for URL to actually navigate to /search (signal that
+                    # the query was accepted). Fail if it stays on homepage.
+                    try:
+                        await page.wait_for_url('**/search?**', timeout=15000)
+                    except Exception:
+                        out['google'] = 'no_navigation'
+                        out['err'] = f'Google never navigated to /search (still at {page.url[:80]})'
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                        return out
+
+                    # Wait for real SERP results container
+                    try:
+                        await page.wait_for_selector(
+                            '#search, #rso, div[data-sokoban-container]',
+                            timeout=15000)
+                    except Exception:
+                        out['google'] = 'no_serp_results'
+                        out['err'] = 'SERP results container never rendered'
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                        return out
+
+                    await page.wait_for_timeout(_rand.randint(1000, 2000))
                     out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
-                    if 'unusual traffic' in body2 or '/sorry/index' in (page.url or ''):
+
+                    # Final check: not a post-search captcha + URL has q=hello
+                    body2 = (await page.content() or '')[:10000].lower()
+                    final_url = page.url or ''
+                    if 'unusual traffic' in body2 or '/sorry/index' in final_url:
                         out['google'] = 'blocked_after_search'
-                        out['err'] = 'Google blocked after search'
+                        out['err'] = 'Google captcha AFTER search'
+                        return out
+                    if 'q=hello' not in final_url.lower():
+                        out['google'] = 'wrong_query'
+                        out['err'] = f"URL doesn't carry q=hello: {final_url[:100]}"
                         return out
                     out['google'] = 'good'
                 except Exception as e:
                     out['google'] = 'error'
                     out['err'] = f"Google: {type(e).__name__}: {str(e)[:200]}"
+                    try:
+                        out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                    except Exception: pass
                     return out
 
                 # ── ⑩ Facebook login (in GoLogin browser) ──
