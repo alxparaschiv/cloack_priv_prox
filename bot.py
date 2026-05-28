@@ -43,6 +43,7 @@ import privacy
 import cookies
 import bg
 import proxy
+import meta_dev
 
 
 logging.basicConfig(
@@ -113,6 +114,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_proxy_count'):
         await proxy.proxy_text_received(update, context)
         return
+    if context.user_data.get('expecting_meta_dev_blob'):
+        await meta_dev.meta_dev_text_received(update, context)
+        return
     # No active flow — silently ignore (or could echo a help hint)
 
 
@@ -132,7 +136,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
         "🎨 /bg_generator — Solid-color background PNG\n"
         "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
-        "📊 /proxy_status — Last batch result\n",
+        "📊 /proxy_status — Last batch result\n"
+        "🛠 /meta_dev_setup — Autonomous Meta-for-Developers account setup\n",
         parse_mode='HTML')
 
 
@@ -146,6 +151,7 @@ async def post_init(application):
         BotCommand("bg_generator",  "Solid-color background PNG"),
         BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
         BotCommand("proxy_status",  "Last /proxy batch result"),
+        BotCommand("meta_dev_setup","Autonomous Meta-for-Developers acc setup"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -235,6 +241,7 @@ def main():
     application.add_handler(CommandHandler("bg_generator", bg.bg_generator_command))
     application.add_handler(CommandHandler("proxy", proxy.proxy_command))
     application.add_handler(CommandHandler("proxy_status", proxy.proxy_status_command))
+    application.add_handler(CommandHandler("meta_dev_setup", meta_dev.meta_dev_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(
@@ -247,6 +254,8 @@ def main():
         bg.bg_callback, pattern=r'^bg_gen:'))
     application.add_handler(CallbackQueryHandler(
         proxy.proxy_callback, pattern=r'^proxy:'))
+    application.add_handler(CallbackQueryHandler(
+        meta_dev.meta_dev_callback, pattern=r'^mdev:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
