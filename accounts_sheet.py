@@ -114,37 +114,77 @@ def _read_all_rows():
     return _parse_csv(content)
 
 
-def append_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
+def upsert_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
                  proxy_session, status='cookie_persisted', notes='',
                  full_blob=''):
-    """Append one row. The full_blob is the canonical seller-format string
-    the user pasted (email:pass:email:emailpass:profile_url:dob:UA:cookies_b64)
-    — preserved as the last column so a single column-widen in Sheets is
-    enough to read it, without making the rest of the row clunky.
+    """One row per (GoLogin Profile, FB Email). If a row with that pair
+    already exists, UPDATE it in place (preserving the longest Full Blob seen
+    so the canonical cookie-bearing blob doesn't get truncated by a later
+    short call). Otherwise insert a new row at the end.
 
-    Returns the new row count on success, None on error."""
+    Notes are appended (chronological, ' | ' separated, deduped) rather than
+    overwritten so we keep a short audit trail in the same row.
+
+    Returns the row index (1-based excluding header) on success, None on error."""
     drive = _drive_service()
     fid = _find_or_create_file()
     if not (drive and fid):
         return None
     rows = _read_all_rows()
-    # Defensive: migrate to new header if file pre-dates the Full Blob column
     if not rows or rows[0] != HEADER:
         rows = [HEADER] + [
-            # Pad legacy rows to match new column count
             (r + ['']*(len(HEADER) - len(r))) if r and r != HEADER else r
             for r in rows if r and r != HEADER
         ]
     ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    rows.append([ts, profile_name or '', fb_email or '', fb_profile_id or '',
-                 proxy_host_port or '', proxy_session or '',
-                 status or '', notes or '', full_blob or ''])
+    # Find an existing row for (profile_name, fb_email)
+    target = None
+    for i, r in enumerate(rows[1:], start=1):
+        if len(r) >= 3 and r[1] == (profile_name or '') and r[2] == (fb_email or ''):
+            target = i
+            break
+
+    if target is None:
+        rows.append([ts, profile_name or '', fb_email or '', fb_profile_id or '',
+                     proxy_host_port or '', proxy_session or '',
+                     status or '', notes or '', full_blob or ''])
+        idx = len(rows) - 1
+        op = 'inserted'
+    else:
+        existing = rows[target] + ['']*(len(HEADER) - len(rows[target]))
+        prior_notes = (existing[7] or '').strip()
+        new_notes = (notes or '').strip()
+        if new_notes and new_notes not in prior_notes:
+            combined = f"{prior_notes} | {new_notes}" if prior_notes else new_notes
+        else:
+            combined = prior_notes
+        prior_blob = existing[8] or ''
+        new_blob = full_blob or ''
+        kept_blob = new_blob if len(new_blob) > len(prior_blob) else prior_blob
+        rows[target] = [
+            ts, profile_name or existing[1], fb_email or existing[2],
+            fb_profile_id or existing[3],
+            proxy_host_port or existing[4],
+            proxy_session or existing[5],
+            status or existing[6],
+            combined,
+            kept_blob,
+        ]
+        idx = target
+        op = 'updated'
+
     from googleapiclient.http import MediaInMemoryUpload
     media = MediaInMemoryUpload(_csv_bytes(rows), mimetype='text/csv')
     drive.files().update(fileId=fid, media_body=media,
                          supportsAllDrives=True).execute()
-    logger.info(f"[accounts_sheet] appended row → {len(rows)-1} total entries")
-    return len(rows) - 1
+    logger.info(f"[accounts_sheet] {op} row {idx} for {profile_name}/{fb_email}")
+    return idx
+
+
+def append_entry(*args, **kwargs):
+    """Backwards-compatible shim — delegates to upsert_entry so callers that
+    used to append-only now safely update-in-place per (profile, email)."""
+    return upsert_entry(*args, **kwargs)
 
 
 def get_file_url():
