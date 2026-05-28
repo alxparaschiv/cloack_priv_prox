@@ -1,0 +1,293 @@
+# `/meta_dev_setup` Runbook
+
+> Autonomous Meta-for-Developers account creation inside a Validated Profile N GoLogin browser. This runbook is the **canonical guide** — read it before adding new Meta Dev accounts or modifying the flow. All rules below were learned from real account-creation sessions; ignoring them costs money (rentals, IPRoyal sessions) and time (FB rate limits, GoLogin profile burn-in).
+
+---
+
+## 1. Architecture overview
+
+```
+Telegram /meta_dev_setup
+        │
+        ▼
+1. Pick a "Validated Profile N" GoLogin profile (browser identity)
+2. Attach a fresh IPRoyal mobile-proxy session to the profile
+   PATCH /browser/{id}/proxy   (NOT /browser/{id} — that 404s)
+3. Start the GoLogin Cloud Browser session
+   POST /browser/{id}/web      → returns profileStatuses.running
+4. Connect Playwright over CDP
+   wss://cloudbrowser.gologin.com/connect?token=...&profile={id}
+5. Walk FB cookie login → AC phone binding → Meta Dev signup → verify
+6. Persist account row to Drive CSV  (rental ID + phone + blob + status)
+7. Stop session: DELETE /browser/{id}/web
+```
+
+**Key services involved:**
+- **GoLogin** — browser identity + Cloud Browser runner
+- **IPRoyal** mobile proxies — US-NYC residential, ~5-min sessions, must be reprobed
+- **TextVerified** — phone rental (7-day non-renewable, $2.60 for Facebook)
+- **Rambler** mail — for FB email confirmation codes (FB sends from `security@facebookmail.com`)
+- **Google Drive** — CSV audit log at root: `acc-setup-bot · accounts.csv`
+
+---
+
+## 2. Phone-verification rules (LOCKED IN)
+
+**Always use TextVerified 7-day NON-RENEWABLE rentals. NEVER one-shot verifications.**
+
+| | Verification (`/verifications`) | Rental (`/reservations/rental`) |
+|---|---|---|
+| Price | $0.75 | $2.60 (Facebook) |
+| Lifetime | ~10 min after first SMS | 7 days |
+| Re-verify possible? | ❌ NO | ✅ YES |
+| Use case | Single-use signups | Meta Dev (suspended 24-48h → re-verify) |
+
+**Why this matters:** Meta Dev accounts get suspended in the first 24-48h, sometimes twice in a row. The re-verify flow demands the SAME phone number. One-shot numbers die after first SMS → account is unrecoverable. 7-day rental covers all expected re-verifies.
+
+**Always rent a NEW number per signup.** Do not reuse existing rentals shown in the dashboard — those belong to other accounts.
+
+### TextVerified API (verified endpoints — discovered via github.com/Westbold/PythonClient)
+
+```python
+# CREATE rental
+POST /api/pub/v2/reservations/rental
+{
+  "allowBackOrderReservations": false,
+  "alwaysOn": true,           # CRITICAL — true = SMS comes immediately
+  "duration": "sevenDay",     # oneDay | threeDay | sevenDay | fourteenDay | thirtyDay
+  "isRenewable": false,
+  "numberType": "mobile",
+  "serviceName": "facebook",
+  "capability": "sms"
+}
+# Returns: {"method":"GET", "href":".../sales/rs_<saleId>"}
+# Follow href: GET /api/pub/v2/sales/{saleId} → contains reservations[].id (lr_<id>)
+
+# Get phone number for a rental
+GET /api/pub/v2/reservations/rental/nonrenewable/{rental_id}
+# (NOT /api/pub/v2/reservations/{id} — that returns an action wrapper)
+
+# Poll SMS on a rental
+GET /api/pub/v2/sms?ReservationId={rental_id}
+```
+
+**The `/api/pub/v2/verifications` endpoint** silently ignores `reservationType`/`durationDays`/`duration` params and creates one-shot $0.75 verifications. DO NOT use it for Meta Dev.
+
+### Snapshot-then-poll pattern (load-bearing)
+
+When sending a new SMS verification, FIRST snapshot existing SMS IDs, THEN poll for "new" SMS. Without this, stale codes from previous flows poison the match. The bug burned us once when an AC-binding SMS got re-matched as the Meta Dev verify SMS:
+
+```python
+seen = set(str(it['id']) for it in cli.get_sms(rental_id))
+# ... click Send Verification SMS ...
+while time.time() < deadline:
+    for it in cli.get_sms(rental_id):
+        if str(it['id']) in seen: continue
+        code = re.search(r'\b(\d{4,8})\b', it['smsContent']).group(1)
+        return code
+```
+
+---
+
+## 3. Rambler IMAP gotchas
+
+**Server:** `imap.rambler.ru:993` (SSL)
+
+**Bug found 2026-05-29:** `(FROM "facebookmail.com")` returns 0 mails even when FB has sent codes. Rambler matches `FROM` against the **display name**, not the email address.
+
+| IMAP query | Result |
+|---|---|
+| `(FROM "facebookmail.com")` | ❌ 0 mails (broken) |
+| `(FROM "Facebook")` | ✅ matches |
+| `(SUBJECT "security code")` | ✅ matches (most reliable for FB codes) |
+
+**Always prefer SUBJECT-based search** for confirmation codes:
+
+```python
+typ, ids = m.search(None, '(UNSEEN SUBJECT "security code")')
+```
+
+FB also puts the code in the subject line: `"068191 is your Facebook security code"` — pull from subject first, fall back to body parse.
+
+### Rambler login CAPTCHA (Shard 4 / future)
+
+Rambler webmail login has a 6-char strikethrough CAPTCHA. Needs capsolver/2captcha integration for full automation. Not required for IMAP (creds are stored in CSV).
+
+---
+
+## 4. FB Accounts Center phone-binding flow
+
+If Meta Dev signup says "You can only complete this action in Accounts Center", we have to bind the phone via AC BEFORE returning to Meta Dev.
+
+**URL:** `https://accountscenter.facebook.com/personal_info/contact_points/`
+
+### Click sequence (verified working):
+
+1. **"Add new contact"** → opens a sub-menu with "Add mobile number" / "Add email"
+2. **"Add mobile number"** → opens the phone-add form
+3. Type the 10-digit phone into the input with `placeholder="Enter mobile number"`
+4. **Click the row containing the FB profile name** (e.g. "Carvilia Novellius / Facebook") — this is a CHECKBOX that ticks when you click anywhere on the row. The label "Choose accounts for this number" sits above it.
+5. **"Next"** (becomes blue/enabled once checkbox is ticked)
+6. FB sends a 6-digit code to email (`security@facebookmail.com`)
+7. Type code in "Confirmation code" input
+8. **"Next"** → "Phone number added"
+
+### Critical pitfalls
+
+- **Don't try to click the literal checkbox element** — the row is the click target. Use `locator('text=Facebook').last.click()` or `locator('text="<profile-name>"').click()`.
+- **Don't confuse the FB profile name with the email username.** "Carvilia Novellius" is the *display name* of the FB profile (`c_user=61589465601792`), not the email.
+- **Phone field has `placeholder="Enter mobile number"`**, NOT `type=tel`. Match by placeholder or aria-label.
+
+---
+
+## 5. Meta Dev signup flow
+
+**URL:** `https://developers.facebook.com/`
+
+### Sequence
+
+1. Click **"Get Started"** in top-right header (must be `y < 250` in viewport to avoid clicking the footer link)
+2. Lands on `developers.facebook.com/async/registration/dialog/?src=default`
+3. Dialog with stages: **Register → Verify Account → Contact Info → About You**
+4. "Register" is auto-completed because the FB cookie is already authenticated
+5. **"Verify Account"** stage — phone field with `placeholder="Enter your phone number"`, country pre-set "United States (+1)"
+6. Type 10-digit phone (no country code, no formatting)
+7. Click **"Send Verification SMS"** (turns blue when phone is non-empty)
+8. **Poll the rental for the SMS** using the snapshot-then-poll pattern from §2
+9. Type the SMS code in the new confirmation input that appears
+10. Click **"Verify"** / **"Confirm"** / **"Next"**
+11. **"Contact Info"** stage → email pre-filled, click Continue
+12. **"About You"** stage → fill name/role (TBD)
+
+### Pitfalls burned in 2026-05-29 session
+
+- **`y < 250` filter on "Get Started"** — there are multiple "Get Started" links on the page (footer included). Without the y-filter, the footer one gets clicked and lands on a wrong page.
+- **"Verify" button click while phone field empty** — my v1 script clicked Verify on the verify-gate detection before typing the phone. The polling loop then matched an OLD AC-binding SMS from the rental (`285110`) and tried to type it as the *phone number*. The fix: **always type phone FIRST, then click Send, then snapshot-then-poll for NEW SMS only**.
+- **Code input only appears AFTER clicking Send Verification SMS**, not before. Don't look for it on the initial verify-gate.
+
+---
+
+## 6. GoLogin Cloud Browser quirks
+
+### Cookie persistence (memory: [[reference-gologin-cookie-persistence]])
+
+- `playwright_context.add_cookies()` is **runtime-only** — cookies vanish when the Cloud session stops.
+- To persist cookies to the GoLogin profile (so the Desktop browser also sees them logged-in):
+  ```python
+  requests.post(f'https://api.gologin.com/browser/{profile_id}/cookies',
+                headers={'Authorization': f'Bearer {GOLOGIN_API_KEY}'},
+                json=cookies_list)
+  ```
+
+### Proxy attachment (PATCH not PUT/POST)
+
+```python
+requests.patch(f'https://api.gologin.com/browser/{profile_id}/proxy',
+               json={'mode':'http','host':host,'port':port,'username':user,'password':pwd},
+               headers=H)
+# Returns 204 No Content on success
+# /browser/{id}/proxy is the ONLY working endpoint; /browser/{id} returns 404
+```
+
+### Session start failures (IPRoyal reliability)
+
+GoLogin's proxy-validation has a hard 7s timeout. IPRoyal mobile sessions sometimes time out from GoLogin's network even when they probe fine from Railway. **Working mitigation:** aggressive retry loop, up to 15 fresh IPRoyal sessions, until one is accepted:
+
+```python
+def start_session():
+    for attempt in range(1, 16):
+        raw, _ = pipeline.get_iproyal_proxy_nyc()
+        ip, _, _ = pipeline.probe_proxy_exit_ip(raw)
+        if not ip: continue
+        # PATCH proxy, then POST /browser/{id}/web
+        if info.get('status') == 'profileStatuses.running': return ip
+    return None
+```
+
+### Page navigation timeouts
+
+`developers.facebook.com` sometimes times out via IPRoyal mobile even when `facebook.com` loads fine on the same session. **Mitigation:** 5x retry on the dev portal goto.
+
+---
+
+## 7. CSV audit log
+
+**File:** Drive root → `acc-setup-bot · accounts.csv` (file ID `1bXzwsCizhFy5SCDs6uWM6lO8mspLQz9h`)
+**Library:** Google Drive API only (Sheets API requires separate enablement; Carolina's OAuth token only has `drive` scope)
+
+### Columns
+
+| Column | Example |
+|---|---|
+| Timestamp (UTC) | `2026-05-29 00:42:11` |
+| GoLogin Profile | `Validated Profile 3` |
+| FB Email | `kurzqzwjma@rambler.ru` |
+| FB Profile ID | `61589465601792` |
+| Proxy host:port | `geo.iproyal.com:12321` |
+| IPRoyal Session | `mobile_us_nyc_xxxxx` |
+| Status | `phone_bound_to_AC` / `dev_account_live` / etc |
+| Notes | `Carvilia Novellius / Facebook → +1 270-244-3784 (rental lr_xxx)` |
+| Full Blob | `email:pw:email:emailpw:c_user:...` |
+| Rental Phone | `+12702443784` |
+| Rental ID | `lr_01KSRA5P6CKF05V30VMF9236HQ` |
+
+The "Rental Phone" and "Rental ID" columns are load-bearing for re-verification within the 7-day window. Without the rental ID, we can't poll SMS for the re-verify after a suspension.
+
+---
+
+## 8. Recovery playbook (account suspended in 24-48h)
+
+If you get a Meta DM "your developer account has been suspended":
+
+1. Look up the row in `acc-setup-bot · accounts.csv` by FB email
+2. If `rental_expires_at - now() > 0` → re-verification is possible:
+   - Open same Validated Profile N in Cloud Browser
+   - Navigate the re-verify flow
+   - Poll SMS on `Rental ID` from CSV
+   - Account back online
+3. If rental expired → account is dead, archive the row, start over with a new profile + new rental.
+
+---
+
+## 9. The 5 shards (implementation status)
+
+| Shard | What it does | Status |
+|---|---|---|
+| 1 | Profile picker + FB cookie login | ✅ working |
+| 2 | Meta Dev signup form-fill | ✅ working (manual AC phone-bind triggered) |
+| 3 | TextVerified phone verify | ✅ working via snapshot-then-poll |
+| 4 | Rambler email + CAPTCHA for FB confirmation codes | partial — IMAP poll works, login CAPTCHA pending |
+| 5 | Per-step DMs, /meta_dev_status, audit log, error recovery | partial — DMs + CSV done |
+
+---
+
+## 10. Quick reference — debug commands
+
+```bash
+# List Validated Profiles
+curl -H "Authorization: Bearer $GOLOGIN_API_KEY" https://api.gologin.com/browser | jq '.profiles[] | select(.name | startswith("Validated")) | {id,name}'
+
+# Check IPRoyal proxy
+python3 -c "import proxy; print(proxy._pipeline().probe_proxy_exit_ip(proxy._pipeline().get_iproyal_proxy_nyc()[0]))"
+
+# Stop a stuck GoLogin session
+curl -X DELETE -H "Authorization: Bearer $GOLOGIN_API_KEY" https://api.gologin.com/browser/{profile_id}/web
+
+# Check Rambler IMAP for FB code (CORRECT FILTER)
+python3 -c "
+import imaplib, email as em, re
+m = imaplib.IMAP4_SSL('imap.rambler.ru', 993); m.login('USER', 'PASS'); m.select('INBOX')
+typ, ids = m.search(None, '(UNSEEN SUBJECT \"security code\")')
+print(ids[0].split() if ids[0] else 'no mail')
+"
+
+# Check TextVerified balance
+python3 -c "from textverified_client import _client; c=_client(); print(c._request('GET','/api/pub/v2/account/me'))"
+
+# Get SMS for a rental
+python3 -c "from textverified_client import _client; c=_client(); print(c._request('GET','/api/pub/v2/sms?ReservationId=lr_xxx'))"
+```
+
+---
+
+*Last updated: 2026-05-29 — captures lessons from Validated Profile 3 / Carvilia Novellius signup session.*
