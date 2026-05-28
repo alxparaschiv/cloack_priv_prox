@@ -137,7 +137,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application):
-    """Set bot commands menu."""
+    """Set bot commands menu + DM the admin a startup message so they know
+    the bot is alive and which features are configured."""
     await application.bot.set_my_commands([
         BotCommand("cloak",         "Cloaking link manager"),
         BotCommand("privacy",       "Privacy policy generator"),
@@ -148,6 +149,62 @@ async def post_init(application):
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
+
+    chat_id = os.getenv('TELEGRAM_CHAT_ID', '').strip()
+    if not chat_id:
+        logger.warning("TELEGRAM_CHAT_ID not set — skipping startup DM")
+        return
+    # Check which feature areas are fully configured. Each tuple = (label,
+    # required env vars). Lets the user see at a glance what's ready.
+    feature_checks = [
+        ("🔗 /cloak",  ["CLOAK_CF_API_TOKEN", "CLOAK_CF_ACCOUNT_ID",
+                       "CLOAK_CF_KV_NAMESPACE_ID"]),
+        ("📜 /privacy",     ["OPENAI_API_KEY"]),  # AI suggestions; basic mode works without
+        ("🍪 /blob",        []),                  # zero env deps
+        ("🎨 /bg_generator",[]),                  # zero env deps
+        ("🧪 /proxy",       ["GOLOGIN_API_KEY", "IPROYAL_USERNAME", "IPROYAL_PASSWORD",
+                            "IPQS_API_KEY", "ABUSEIPDB_API_KEY",
+                            "FB_PROXY_TEST_PHONE", "FB_PROXY_TEST_PASSWORD"]),
+    ]
+    feature_lines = []
+    for label, needed in feature_checks:
+        missing = [k for k in needed if not os.getenv(k)]
+        if needed and missing:
+            feature_lines.append(f"  ⚠️ {label} — missing: <code>"
+                                 f"{', '.join(missing)}</code>")
+        elif not needed:
+            feature_lines.append(f"  ✅ {label}")
+        else:
+            feature_lines.append(f"  ✅ {label}")
+
+    # /proxy-specific flags worth surfacing on boot
+    proxy_flags = []
+    if os.getenv('FB_PROXY_SKIP_GOOGLE_GATE', '') == '1':
+        proxy_flags.append("  • Google gate: <b>skipped</b> "
+                           "(<code>FB_PROXY_SKIP_GOOGLE_GATE=1</code>)")
+    else:
+        proxy_flags.append("  • Google gate: enabled "
+                           "(set <code>FB_PROXY_SKIP_GOOGLE_GATE=1</code> to skip)")
+
+    msg = ("🟢 <b>acc-setup-bot is online!</b>\n\n"
+           "<b>Features:</b>\n"
+           + "\n".join(feature_lines)
+           + "\n\n<b>Proxy pipeline flags:</b>\n"
+           + "\n".join(proxy_flags)
+           + "\n\nSend /start for the full command list.")
+    try:
+        await application.bot.send_message(chat_id=chat_id, text=msg,
+                                           parse_mode='HTML')
+        logger.info(f"startup DM sent to {chat_id}")
+    except Exception as e:
+        logger.error(f"startup DM failed: {e}")
+        # Fallback: shorter message in case any of the HTML formatting broke
+        try:
+            await application.bot.send_message(
+                chat_id=chat_id,
+                text="🟢 acc-setup-bot is online! Send /start for commands.")
+        except Exception as e2:
+            logger.error(f"startup DM fallback also failed: {e2}")
 
 
 def main():
