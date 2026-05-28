@@ -62,6 +62,15 @@ FB_PROXY_TEST_PASSWORD = os.getenv('FB_PROXY_TEST_PASSWORD', '')
 # launch). The FB login + reCAPTCHA gates still run, so validation quality
 # stays high — you just stop burning time on a broken browser test.
 FB_PROXY_SKIP_GOOGLE_GATE = os.getenv('FB_PROXY_SKIP_GOOGLE_GATE', '') == '1'
+
+# 2026-05-28: API-based pre-gates burn quota fast and rate-limit. Defaulted
+# to SKIPPED so the bot doesn't loop through 20+ proxies in 4 min. Set
+# PROXY_SKIP_*=0 in Railway to re-enable any individual gate. The free,
+# unlimited gates (exit-IP, mobile-ASN, latency, multi-dest) always run.
+PROXY_SKIP_IPQS      = os.getenv('PROXY_SKIP_IPQS',      '1') == '1'  # ipqualityscore.com  (paid, ~5k/mo free)
+PROXY_SKIP_ABUSEIPDB = os.getenv('PROXY_SKIP_ABUSEIPDB', '1') == '1'  # abuseipdb.com       (1k/day free)
+PROXY_SKIP_IPAPI     = os.getenv('PROXY_SKIP_IPAPI',     '1') == '1'  # ip-api.com          (45/min hard)
+PROXY_SKIP_DNSBL     = os.getenv('PROXY_SKIP_DNSBL',     '1') == '1'  # Spamhaus (often false-flags mobile)
 GOLOGIN_TEST_PROFILE_NAME = os.getenv('GOLOGIN_TEST_PROFILE_NAME', 'TEST ACC FOR PROXY')
 IPQS_API_KEY = os.getenv('IPQS_API_KEY', '')
 ABUSEIPDB_API_KEY = os.getenv('ABUSEIPDB_API_KEY', '')
@@ -1268,65 +1277,81 @@ class ProxyPipeline:
                        f"mobile carrier confirmed")
 
             # ── Step 3: IPQS reputation (ipqualityscore.com) ──
-            ipqs = await _asyncio.to_thread(self.lookup_ipqs_reputation, exit_ip)
-            ipqs_score = ipqs.get('fraud_score')
-            ipqs_fail = (ipqs.get('available') and
-                         ((ipqs_score is not None and ipqs_score > IPQS_FRAUD_SCORE_MAX)
-                          or ipqs.get('recent_abuse')))
-            if ipqs_fail:
-                tag = f"fraud_score={ipqs_score}"
-                if ipqs.get('recent_abuse'): tag += ", recent_abuse=1"
-                await _upd(f"🚫 #{attempt} <b>③ IPQS</b> FAIL "
-                           f"(<code>{_e(tag)}</code>)")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_ipqs:{tag[:40]}', source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>③ IPQS</b> (ipqualityscore.com) → "
-                       f"fraud_score=<code>{ipqs_score}</code>")
+            if PROXY_SKIP_IPQS:
+                await _upd(f"⏭ #{attempt} <b>③ IPQS</b> SKIPPED "
+                           f"(<code>PROXY_SKIP_IPQS=1</code>)")
+            else:
+                ipqs = await _asyncio.to_thread(self.lookup_ipqs_reputation, exit_ip)
+                ipqs_score = ipqs.get('fraud_score')
+                ipqs_fail = (ipqs.get('available') and
+                             ((ipqs_score is not None and ipqs_score > IPQS_FRAUD_SCORE_MAX)
+                              or ipqs.get('recent_abuse')))
+                if ipqs_fail:
+                    tag = f"fraud_score={ipqs_score}"
+                    if ipqs.get('recent_abuse'): tag += ", recent_abuse=1"
+                    await _upd(f"🚫 #{attempt} <b>③ IPQS</b> FAIL "
+                               f"(<code>{_e(tag)}</code>)")
+                    self._proxy_history_record(proxy_socks_url, exit_ip,
+                        fb_result=f'batch_ipqs:{tag[:40]}', source='batch')
+                    seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                    continue
+                await _upd(f"✅ #{attempt} <b>③ IPQS</b> (ipqualityscore.com) → "
+                           f"fraud_score=<code>{ipqs_score}</code>")
 
             # ── Step 4: AbuseIPDB reputation ──
-            abdb = await _asyncio.to_thread(self.lookup_abuseipdb_reputation, exit_ip)
-            abdb_score = abdb.get('confidence_score')
-            abdb_fail = (abdb.get('available') and abdb_score is not None
-                         and abdb_score > ABUSEIPDB_CONFIDENCE_MAX)
-            if abdb_fail:
-                await _upd(f"🚫 #{attempt} <b>④ AbuseIPDB</b> FAIL "
-                           f"(<code>confidence={abdb_score}</code>)")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_abuse:{abdb_score}', source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>④ AbuseIPDB</b> → "
-                       f"confidence=<code>{abdb_score if abdb_score is not None else '?'}</code>")
+            if PROXY_SKIP_ABUSEIPDB:
+                await _upd(f"⏭ #{attempt} <b>④ AbuseIPDB</b> SKIPPED "
+                           f"(<code>PROXY_SKIP_ABUSEIPDB=1</code>)")
+            else:
+                abdb = await _asyncio.to_thread(self.lookup_abuseipdb_reputation, exit_ip)
+                abdb_score = abdb.get('confidence_score')
+                abdb_fail = (abdb.get('available') and abdb_score is not None
+                             and abdb_score > ABUSEIPDB_CONFIDENCE_MAX)
+                if abdb_fail:
+                    await _upd(f"🚫 #{attempt} <b>④ AbuseIPDB</b> FAIL "
+                               f"(<code>confidence={abdb_score}</code>)")
+                    self._proxy_history_record(proxy_socks_url, exit_ip,
+                        fb_result=f'batch_abuse:{abdb_score}', source='batch')
+                    seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                    continue
+                await _upd(f"✅ #{attempt} <b>④ AbuseIPDB</b> → "
+                           f"confidence=<code>{abdb_score if abdb_score is not None else '?'}</code>")
 
             # ── Step 5: ip-api profile (ip-api.com) ──
-            ipa = await _asyncio.to_thread(self.lookup_ipapi_profile,
-                                           exit_ip, proxy_raw)
-            ipa_fail = ipa.get('available') and (ipa.get('hosting')
-                                                 or ipa.get('proxy'))
-            if ipa_fail:
-                tag = 'hosting' if ipa.get('hosting') else 'proxy'
-                await _upd(f"🚫 #{attempt} <b>⑤ ip-api</b> FAIL — "
-                           f"<code>{tag}</code> flag set")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_ipapi:{tag}', source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>⑤ ip-api</b> (ip-api.com) → clean")
+            if PROXY_SKIP_IPAPI:
+                await _upd(f"⏭ #{attempt} <b>⑤ ip-api</b> SKIPPED "
+                           f"(<code>PROXY_SKIP_IPAPI=1</code>)")
+            else:
+                ipa = await _asyncio.to_thread(self.lookup_ipapi_profile,
+                                               exit_ip, proxy_raw)
+                ipa_fail = ipa.get('available') and (ipa.get('hosting')
+                                                     or ipa.get('proxy'))
+                if ipa_fail:
+                    tag = 'hosting' if ipa.get('hosting') else 'proxy'
+                    await _upd(f"🚫 #{attempt} <b>⑤ ip-api</b> FAIL — "
+                               f"<code>{tag}</code> flag set")
+                    self._proxy_history_record(proxy_socks_url, exit_ip,
+                        fb_result=f'batch_ipapi:{tag}', source='batch')
+                    seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                    continue
+                await _upd(f"✅ #{attempt} <b>⑤ ip-api</b> (ip-api.com) → clean")
 
             # ── Step 6: DNSBL (Spamhaus + friends) ──
-            dnsbl = await _asyncio.to_thread(self.check_dnsbl, exit_ip)
-            dnsbl_fail = dnsbl.get('available') and bool(dnsbl.get('listed_on'))
-            if dnsbl_fail:
-                listed = ','.join(dnsbl['listed_on'])[:60]
-                await _upd(f"🚫 #{attempt} <b>⑥ DNSBL</b> FAIL — "
-                           f"listed on <code>{_e(listed)}</code>")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_dnsbl:{listed[:40]}', source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>⑥ DNSBL</b> → not listed")
+            if PROXY_SKIP_DNSBL:
+                await _upd(f"⏭ #{attempt} <b>⑥ DNSBL</b> SKIPPED "
+                           f"(<code>PROXY_SKIP_DNSBL=1</code>)")
+            else:
+                dnsbl = await _asyncio.to_thread(self.check_dnsbl, exit_ip)
+                dnsbl_fail = dnsbl.get('available') and bool(dnsbl.get('listed_on'))
+                if dnsbl_fail:
+                    listed = ','.join(dnsbl['listed_on'])[:60]
+                    await _upd(f"🚫 #{attempt} <b>⑥ DNSBL</b> FAIL — "
+                               f"listed on <code>{_e(listed)}</code>")
+                    self._proxy_history_record(proxy_socks_url, exit_ip,
+                        fb_result=f'batch_dnsbl:{listed[:40]}', source='batch')
+                    seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                    continue
+                await _upd(f"✅ #{attempt} <b>⑥ DNSBL</b> → not listed")
 
             # ── Step 7: Latency probe ──
             lat = await _asyncio.to_thread(self.probe_proxy_latency, proxy_raw)
