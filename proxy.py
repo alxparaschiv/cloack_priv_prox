@@ -691,6 +691,196 @@ class ProxyPipeline:
         except:
             return False
 
+    # ── Orbita Cloud Browser (CDP via wss://cloudbrowser.gologin.com) ──
+    # Used by the v2 pipeline to test proxies INSIDE the actual GoLogin
+    # browser they'll be used in (catches profile-specific fingerprint
+    # flags that fresh Camoufox would mask).
+    def orbita_cloud_cdp_url(self, profile_id):
+        """Build the GoLogin Cloud Browser WebSocket CDP URL for a given
+        profile. Connect with Playwright via p.chromium.connect_over_cdp(url).
+        Returns the URL string or None if GOLOGIN_API_KEY is unset."""
+        if not GOLOGIN_API_KEY:
+            return None
+        return (f"wss://cloudbrowser.gologin.com/connect"
+                f"?token={GOLOGIN_API_KEY}&profile={profile_id}")
+
+    def stop_gologin_cloud_browser(self, profile_id):
+        """Stop a running GoLogin Cloud Browser session (frees metered
+        minutes). Idempotent — safe to call even if no session is running."""
+        if not GOLOGIN_API_KEY:
+            return
+        try:
+            requests.delete(
+                f'https://api.gologin.com/browser/{profile_id}/web',
+                headers={'Authorization': f'Bearer {GOLOGIN_API_KEY}'},
+                timeout=30)
+        except Exception:
+            pass
+
+    async def run_browser_gauntlet_in_gologin(self, profile_id, send_update=None):
+        """v2 design: open Cloud Browser CDP, run Google + FB + reCAPTCHA
+        IN the actual GoLogin browser (same fingerprint the user will use).
+        Returns dict: {ok:bool, stage:str, google, fb, recap, screenshots, err}.
+
+        Always stops the Cloud Browser session in `finally` so we don't leak
+        metered minutes on the GoLogin meter."""
+        import random as _rand
+        out = {'ok': False, 'stage': 'init', 'google': None, 'fb': None,
+               'recap': None, 'screenshots': {}, 'err': None}
+        if not GOLOGIN_API_KEY:
+            out['err'] = "GOLOGIN_API_KEY not set"
+            return out
+        cdp_url = self.orbita_cloud_cdp_url(profile_id)
+        try:
+            from playwright.async_api import async_playwright
+        except Exception as e:
+            out['err'] = f"playwright import failed: {e}"
+            return out
+
+        async def _say(text):
+            if send_update:
+                try: await send_update(text)
+                except Exception: pass
+
+        try:
+            async with async_playwright() as p:
+                await _say(f"   🌐 opening Cloud Browser CDP "
+                           f"(cold start ~5-30s)…")
+                browser = await p.chromium.connect_over_cdp(cdp_url, timeout=120000)
+                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+
+                # ── ⑨ Google 'hello' (in GoLogin browser) ──
+                out['stage'] = 'google'
+                await _say("   ⏳ <b>⑨ Google 'hello'</b> in GoLogin browser…")
+                try:
+                    await page.goto('https://www.google.com/',
+                                    wait_until='domcontentloaded', timeout=45000)
+                    await page.wait_for_timeout(_rand.randint(1500, 3000))
+                    # Detect block page
+                    body = (await page.content() or '')[:5000].lower()
+                    out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                    blocked = ('unusual traffic' in body or 'recaptcha' in body
+                               or 'sorry/index' in (page.url or ''))
+                    if blocked:
+                        out['google'] = 'blocked'
+                        out['err'] = 'Google captcha/block page'
+                        return out
+                    # Try a search box interaction
+                    try:
+                        box = await page.wait_for_selector(
+                            'textarea[name="q"], input[name="q"]', timeout=8000)
+                        await box.type('hello', delay=_rand.randint(60, 140))
+                        await page.keyboard.press('Enter')
+                        await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                        await page.wait_for_timeout(_rand.randint(1500, 3000))
+                    except Exception:
+                        pass
+                    body2 = (await page.content() or '')[:8000].lower()
+                    out['screenshots']['google'] = await page.screenshot(type='png', full_page=False)
+                    if 'unusual traffic' in body2 or '/sorry/index' in (page.url or ''):
+                        out['google'] = 'blocked_after_search'
+                        out['err'] = 'Google blocked after search'
+                        return out
+                    out['google'] = 'good'
+                except Exception as e:
+                    out['google'] = 'error'
+                    out['err'] = f"Google: {type(e).__name__}: {str(e)[:200]}"
+                    return out
+
+                # ── ⑩ Facebook login (in GoLogin browser) ──
+                out['stage'] = 'fb'
+                await _say("   ⏳ <b>⑩ Facebook</b> login probe in GoLogin browser…")
+                try:
+                    await page.goto('https://www.facebook.com/login',
+                                    wait_until='domcontentloaded', timeout=45000)
+                    await page.wait_for_timeout(_rand.randint(1500, 3000))
+                    try:
+                        email_box = await page.wait_for_selector(
+                            'input[name="email"]', timeout=10000)
+                        await email_box.type(FB_PROXY_TEST_PHONE,
+                                             delay=_rand.randint(50, 150))
+                        pwd_box = await page.wait_for_selector(
+                            'input[name="pass"]', timeout=5000)
+                        await pwd_box.type(FB_PROXY_TEST_PASSWORD,
+                                           delay=_rand.randint(50, 150))
+                        await page.keyboard.press('Enter')
+                    except Exception as e:
+                        out['fb'] = 'login_form_error'
+                        out['err'] = f"FB form: {str(e)[:200]}"
+                        return out
+                    # Wait for post-submit navigation
+                    await page.wait_for_timeout(8000)
+                    url = page.url or ''
+                    out['screenshots']['fb'] = await page.screenshot(type='png', full_page=False)
+                    # Real account → 2FA gate. Anything else (re-login,
+                    # checkpoint, blocked, captcha) = proxy/fingerprint is
+                    # already flagged.
+                    if 'flow=two_factor_login' in url or 'two_step_verification' in url:
+                        out['fb'] = 'good'
+                    elif 'checkpoint' in url:
+                        out['fb'] = 'checkpoint'
+                        out['err'] = 'FB hit checkpoint (flagged)'
+                        return out
+                    elif '/login' in url:
+                        out['fb'] = 'login_failed'
+                        out['err'] = 'FB stayed on login page (creds/proxy issue)'
+                        return out
+                    else:
+                        out['fb'] = 'unknown'
+                        out['err'] = f'FB unexpected URL: {url[:100]}'
+                        return out
+                except Exception as e:
+                    out['fb'] = 'error'
+                    out['err'] = f"FB: {type(e).__name__}: {str(e)[:200]}"
+                    return out
+
+                # ── ⑪ reCAPTCHA v3 score (antcpt.com) ──
+                out['stage'] = 'recap'
+                await _say("   ⏳ <b>⑪ reCAPTCHA v3</b> score in GoLogin browser…")
+                try:
+                    await page.goto('https://antcpt.com/score_detector/',
+                                    wait_until='domcontentloaded', timeout=60000)
+                    # Score appears asynchronously; poll for ~30s
+                    score = None
+                    for _ in range(30):
+                        await page.wait_for_timeout(1000)
+                        try:
+                            txt = await page.evaluate(
+                                "() => document.body.innerText || ''")
+                            import re as _re
+                            m = _re.search(r'Your score is:\s*([0-9.]+)', txt)
+                            if m:
+                                score = float(m.group(1))
+                                break
+                        except Exception:
+                            pass
+                    out['screenshots']['recap'] = await page.screenshot(type='png', full_page=False)
+                    if score is None:
+                        out['recap'] = 'no_score'
+                        out['err'] = 'reCAPTCHA score never appeared'
+                        return out
+                    out['recap'] = score
+                    if score < 0.9:
+                        out['err'] = f'reCAPTCHA score {score} < 0.9'
+                        return out
+                except Exception as e:
+                    out['recap'] = 'error'
+                    out['err'] = f"reCAPTCHA: {type(e).__name__}: {str(e)[:200]}"
+                    return out
+
+                # All three passed
+                out['ok'] = True
+                out['stage'] = 'done'
+        except Exception as e:
+            out['err'] = f"{type(e).__name__}: {str(e)[:300]}"
+        finally:
+            try:
+                self.stop_gologin_cloud_browser(profile_id)
+            except Exception:
+                pass
+        return out
+
     def get_gologin_profile_by_name(self, name):
         """Find a GoLogin profile ID by profile name."""
         if not GOLOGIN_API_KEY:
@@ -1389,128 +1579,106 @@ class ProxyPipeline:
             await _upd(f"✅ #{attempt} <b>⑧ multi-dest</b> → all reachable")
 
             await _upd(f"🎯 #{attempt} <b>all 8 pre-gates passed</b> — "
-                       f"entering browser gauntlet…")
+                       f"creating GoLogin profile + testing inside it…")
 
-            # ════════ BROWSER GAUNTLET — ascending pass-rate ════════
-            # ⑨ Google 'hello' — the ~10% gate, run FIRST to fail fast.
-            # E2E run 2026-05-28 showed Camoufox crashes ~90% of Google
-            # launches (not the proxy's fault). FB_PROXY_SKIP_GOOGLE_GATE=1
-            # bypasses this so we don't waste ~40s per crashed launch.
-            if FB_PROXY_SKIP_GOOGLE_GATE:
-                await _upd(f"⏭ #{attempt} <b>⑨ Google 'hello'</b> SKIPPED "
-                           f"(<code>FB_PROXY_SKIP_GOOGLE_GATE=1</code>)")
-                g_result, g_shot = 'skipped', None
-            else:
-                await _upd(f"⏳ #{attempt} <b>⑨ Google 'hello'</b> (~30-60s)…")
-                try:
-                    g_result, g_shot = await _asyncio.wait_for(
-                        self.check_google_hello(host, port, user, password, 'socks5'),
-                        timeout=60.0)
-                except _asyncio.TimeoutError:
-                    g_result, g_shot = 'timeout', None
-                    try:
-                        if getattr(self, '_camoufox_ctx', None):
-                            await self._camoufox_ctx.__aexit__(None, None, None)
-                            self._camoufox_ctx = None
-                    except Exception:
-                        pass
-            if g_result not in ('good', 'skipped'):
-                tag = g_result if isinstance(g_result, str) else 'error'
-                await _upd(f"🚫 #{attempt} <b>⑨ Google</b> FAIL "
-                           f"(<code>{_e(tag)}</code>) — skip")
+            # ════════ v2 FLOW: create-profile-first, test-inside-it ════════
+            # The previous design tested in a fresh Camoufox then attached the
+            # proxy to a separate GoLogin profile — meaning the profile could
+            # still be fingerprint-flagged by Google/FB even though the proxy
+            # passed. v2 (2026-05-28) creates the profile FIRST, then runs the
+            # browser gauntlet inside the actual GoLogin Cloud Browser via
+            # CDP. If any gate fails, the profile is DELETED. End result: every
+            # surviving profile is proven good — proxy AND fingerprint.
+            profile_name = f"{name_prefix} {idx}"
+            await _upd(f"📘 #{attempt} <b>creating GoLogin profile</b> "
+                       f"<b>{_e(profile_name)}</b> + attaching proxy…")
+            profile_id, cmsg = await _asyncio.to_thread(
+                self.create_gologin_profile, profile_name, proxy_raw)
+            if not profile_id:
+                await _upd(f"⚠️ #{attempt} GoLogin create FAILED: "
+                           f"<code>{_e(str(cmsg)[:160])}</code> — skip")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_google:{tag}', validated=False,
+                    fb_result=f'batch_gologin_create_fail:{str(cmsg)[:40]}',
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
-            if g_result == 'good':
-                await _upd(f"✅ #{attempt} <b>⑨ Google 'hello'</b> → real SERP rendered")
 
-            # ⑩ Facebook login — the ~50% gate.
-            await _upd(f"⏳ #{attempt} <b>⑩ Facebook</b> login probe (~60-80s)…")
-            fb_result, fb_shot, fb_url = await self.test_proxy_on_facebook(
-                host, port, user, password, 'socks5')
-            if fb_result == 'error_no_playwright':
-                return (created, attempt, len(created) >= target_profiles,
-                        "Playwright/Chromium not available on server")
-            if fb_result != 'good':
-                tag = fb_result if isinstance(fb_result, str) else 'blocked'
-                await _upd(f"🚫 #{attempt} <b>⑩ Facebook</b> FAIL "
-                           f"(<code>{_e(tag)}</code>) — skip")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_fb:{tag}', validated=False,
-                    source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>⑩ Facebook</b> → "
-                       f"real 2FA gate (proxy looks legit to Meta)")
+            # Browser gauntlet runs IN the GoLogin profile we just created.
+            # One Cloud Browser session, three tests on the same page (saves
+            # metered minutes). Result dict has {ok, stage, google, fb, recap,
+            # screenshots, err}.
+            gauntlet = await self.run_browser_gauntlet_in_gologin(
+                profile_id, send_update=_upd)
 
-            # ⑪ reCAPTCHA v3 score — the ~95% gate, run LAST.
-            await _upd(f"⏳ #{attempt} <b>⑪ reCAPTCHA v3</b> score (~30-50s)…")
-            score, s_shot = await self.check_recaptcha_score(
-                host, port, user, password, 'socks5')
-            if score == 'error_no_playwright':
-                return (created, attempt, len(created) >= target_profiles,
-                        "Playwright/Chromium not available on server")
-            score_ok = isinstance(score, float) and score >= 0.9
-            score_txt = (str(score) if isinstance(score, float)
-                         else ('timeout' if score == 'timeout' else 'N/A'))
-            if not score_ok:
-                await _upd(f"🚫 #{attempt} <b>⑪ reCAPTCHA</b> FAIL "
-                           f"(score=<code>{_e(score_txt)}</code>, need ≥0.9) — skip")
-                self._proxy_history_record(proxy_socks_url, exit_ip,
-                    score=(score if isinstance(score, float) else None),
-                    fb_result='batch_score_fail', validated=False,
-                    source='batch')
-                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-                continue
-            await _upd(f"✅ #{attempt} <b>⑪ reCAPTCHA</b> → "
-                       f"score=<code>{score_txt}</code> ≥ 0.9")
-
-            # ════════ FULL PASS — bank proof + create the profile ════════
-            self._proxy_history_record(proxy_socks_url, exit_ip,
-                score=(score if isinstance(score, float) else None),
-                fb_result='batch_pass', validated=True, source='batch')
-            seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
-
+            # Always send any screenshots we captured (success OR failure -
+            # helps the user see what the GoLogin browser actually rendered).
+            shots = gauntlet.get('screenshots') or {}
             if send_photo:
-                for buf, cap in ((g_shot, f"#{attempt} ✅ Google SERP"),
-                                 (fb_shot, f"#{attempt} ✅ FB 2FA"),
-                                 (s_shot, f"#{attempt} ✅ reCAPTCHA {score_txt}")):
+                for k, label in (('google', '⑨ Google'),
+                                 ('fb', '⑩ Facebook'),
+                                 ('recap', '⑪ reCAPTCHA')):
+                    buf = shots.get(k)
                     if buf:
                         try:
-                            await send_photo(buf, cap)
+                            tag = '✅' if gauntlet.get('ok') else '🚫'
+                            await send_photo(
+                                buf,
+                                f"#{attempt} {tag} {label} (in GoLogin)")
                         except Exception as e:
                             logger.warning(f"[batch] photo failed: {e}")
 
-            profile_name = f"{name_prefix} {idx}"
-            await _upd(f"📘 #{attempt} <b>⑫ GoLogin</b> creating profile "
-                       f"<b>{_e(profile_name)}</b> with proxy attached…")
-            profile_id, cmsg = await _asyncio.to_thread(
-                self.create_gologin_profile, profile_name, proxy_raw)
-            if profile_id:
-                created.append({
-                    'name': profile_name, 'id': profile_id,
-                    'proxy_socks': proxy_socks_url, 'exit_ip': exit_ip,
-                    'score': score if isinstance(score, float) else None,
-                    'attempt': attempt,
-                })
-                idx += 1
-                await _upd(
-                    f"✅ <b>{len(created)}/{target_profiles}</b> — "
-                    f"<b>{_e(profile_name)}</b> created "
-                    f"(<code>{_e(str(profile_id)[:12])}…</code>)\n"
-                    f"🌍 IP <code>{exit_ip}</code> · "
-                    f"📡 <code>{_e((isp_org or '?')[:32])}</code> · "
-                    f"score {score_txt}")
-            else:
-                # Proxy is valid but GoLogin create failed — don't consume
-                # the index; DM the proxy so it isn't wasted, keep looping.
-                await _upd(
-                    f"⚠️ #{attempt} proxy VALID but GoLogin create failed: "
-                    f"<code>{_e(str(cmsg)[:160])}</code>\n"
-                    f"<code>{_e(proxy_socks_url)}</code>\n"
-                    f"<i>(saved to history — attach it manually if you want)</i>")
+            if not gauntlet.get('ok'):
+                # Tests failed → the profile is suspect (or proxy is).
+                # Delete it so we don't accumulate flagged profiles.
+                stage = gauntlet.get('stage', '?')
+                err = gauntlet.get('err', '?')
+                stage_emoji = {'google': '⑨', 'fb': '⑩', 'recap': '⑪'}.get(stage, '?')
+                await _upd(f"🚫 #{attempt} <b>{stage_emoji} {stage}</b> FAIL "
+                           f"(<code>{_e(str(err)[:120])}</code>) — "
+                           f"deleting profile <b>{_e(profile_name)}</b>")
+                try:
+                    deleted = await _asyncio.to_thread(
+                        self.delete_gologin_profile, profile_id)
+                    if not deleted:
+                        logger.warning(f"[batch] couldn't delete failed "
+                                       f"profile {profile_id}")
+                except Exception as e:
+                    logger.warning(f"[batch] delete error: {e}")
+                self._proxy_history_record(proxy_socks_url, exit_ip,
+                    fb_result=f'batch_v2_{stage}:{str(err)[:40]}',
+                    validated=False, source='batch')
+                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                continue
+
+            # Per-gate success DMs (gauntlet method already DM's progress)
+            await _upd(f"✅ #{attempt} <b>⑨ Google</b> → "
+                       f"<code>{gauntlet.get('google', '?')}</code>")
+            await _upd(f"✅ #{attempt} <b>⑩ Facebook</b> → "
+                       f"<code>{gauntlet.get('fb', '?')}</code> (real 2FA)")
+            recap_score = gauntlet.get('recap', '?')
+            await _upd(f"✅ #{attempt} <b>⑪ reCAPTCHA</b> → "
+                       f"score=<code>{recap_score}</code> ≥ 0.9")
+
+            # ════════ FULL PASS — keep the profile ════════
+            self._proxy_history_record(proxy_socks_url, exit_ip,
+                score=(recap_score if isinstance(recap_score, float) else None),
+                fb_result='batch_v2_pass', validated=True, source='batch')
+            seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+
+            created.append({
+                'name': profile_name, 'id': profile_id,
+                'proxy_socks': proxy_socks_url, 'exit_ip': exit_ip,
+                'score': recap_score if isinstance(recap_score, float) else None,
+                'attempt': attempt,
+            })
+            idx += 1
+            await _upd(
+                f"✅ <b>{len(created)}/{target_profiles}</b> — "
+                f"<b>{_e(profile_name)}</b> validated + kept "
+                f"(<code>{_e(str(profile_id)[:12])}…</code>)\n"
+                f"🌍 IP <code>{exit_ip}</code> · "
+                f"📡 <code>{_e((isp_org or '?')[:32])}</code> · "
+                f"score {recap_score}")
 
         # ── Batch finished ──
         success = len(created) >= target_profiles
