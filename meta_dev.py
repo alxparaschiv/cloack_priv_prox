@@ -126,28 +126,77 @@ def _convert_cookies_for_playwright(ce_cookies):
 # ──────────────────────────────────────────────────────────────────────
 # Inject cookies → open Cloud Browser → verify logged in
 # ──────────────────────────────────────────────────────────────────────
+def _persist_cookies_to_gologin_profile(profile_id, cookies_ce):
+    """Persist cookies into the GoLogin profile's STORAGE (not the runtime
+    cookie jar of a Cloud Browser session). Cookies set this way are loaded
+    on every subsequent open of the profile — whether via Desktop GoLogin or
+    Cloud Browser CDP. Verified 2026-05-28 via the official cookies endpoint:
+      POST /browser/{id}/cookies  body=<cookies array>  → 204
+    """
+    import requests
+    if not _proxy_mod.GOLOGIN_API_KEY:
+        return False, "GOLOGIN_API_KEY not set"
+    try:
+        r = requests.post(
+            f'https://api.gologin.com/browser/{profile_id}/cookies',
+            json=cookies_ce,
+            headers={'Authorization': f'Bearer {_proxy_mod.GOLOGIN_API_KEY}',
+                     'Content-Type': 'application/json'},
+            timeout=30)
+        if r.status_code in (200, 201, 204):
+            return True, f"HTTP {r.status_code}"
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 async def _login_fb_in_gologin_browser(profile_id, profile_name,
                                        parsed_blob, send_update):
-    """Inject the parsed FB cookies into the picked GoLogin Cloud Browser
-    and verify FB recognizes us as logged in.
+    """Persist the parsed FB cookies into the GoLogin profile's storage,
+    then open a Cloud Browser CDP session as a sanity check that FB
+    recognizes the session.
 
     Returns dict: {ok:bool, name:str|None, screenshot:bytes|None, err:str|None}.
     Always stops the Cloud Browser session in `finally` so we don't leak
-    metered minutes."""
+    metered minutes.
+
+    Why this two-step (persist + verify) instead of just runtime add_cookies:
+    Playwright's context.add_cookies() only writes to the Cloud Browser's
+    runtime cookie jar, which dies when the session ends. So when the user
+    later opens the same profile in Desktop GoLogin, no cookies are loaded
+    and they see the FB login page. POST /browser/{id}/cookies writes them
+    to persistent storage — Desktop AND Cloud Browser load them on every
+    fresh open. (Confirmed 2026-05-28: returns 204.)
+    """
     pipeline = _proxy_mod._pipeline()
     out = {'ok': False, 'name': None, 'screenshot': None, 'err': None}
 
     cookies_ce = parsed_blob.get('cookies') or []
-    cookies_pw = _convert_cookies_for_playwright(cookies_ce)
     profile_id_from_blob = parsed_blob.get('profile_id') or ''
-    if not cookies_pw:
+    if not cookies_ce:
         out['err'] = 'no cookies found in blob (parse returned empty list)'
         return out
 
     await send_update(
-        f"   🍪 parsed <b>{len(cookies_pw)}</b> cookies from blob "
+        f"   🍪 parsed <b>{len(cookies_ce)}</b> cookies from blob "
         f"(c_user=<code>{profile_id_from_blob}</code>)")
 
+    # Step A: PERSIST cookies into the GoLogin profile's storage. This is
+    # the load-bearing step — without it, the Desktop browser won't see
+    # any of the cookies on next open.
+    persist_ok, persist_msg = _persist_cookies_to_gologin_profile(
+        profile_id, cookies_ce)
+    if not persist_ok:
+        out['err'] = f'persist cookies failed: {persist_msg}'
+        return out
+    await send_update(
+        f"   💾 persisted <b>{len(cookies_ce)}</b> cookies into "
+        f"<b>{profile_name}</b>'s profile storage "
+        f"(<code>{persist_msg}</code>) — they'll load on every open")
+
+    # Step B: open the Cloud Browser as a sanity check (does FB recognize
+    # the session?). The persistent cookies are read by the Cloud Browser
+    # on session start, so we don't need to call add_cookies() at runtime.
     cdp_url = pipeline.orbita_cloud_cdp_url(profile_id)
     if not cdp_url:
         out['err'] = 'GOLOGIN_API_KEY not set on bot'
@@ -162,17 +211,11 @@ async def _login_fb_in_gologin_browser(profile_id, profile_name,
         async with async_playwright() as p:
             await send_update(
                 f"   🌐 opening Cloud Browser CDP for "
-                f"<b>{profile_name}</b> (cold start ~5-30s)…")
+                f"<b>{profile_name}</b> (sanity check — cold start ~5-30s)…")
             browser = await p.chromium.connect_over_cdp(cdp_url, timeout=120000)
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-            # Inject cookies BEFORE navigation
-            try:
-                await ctx.add_cookies(cookies_pw)
-            except Exception as e:
-                out['err'] = f'add_cookies failed: {type(e).__name__}: {str(e)[:200]}'
-                return out
-            await send_update(f"   💉 injected <b>{len(cookies_pw)}</b> cookies — "
-                              f"navigating to facebook.com…")
+            await send_update(f"   🚀 navigating to facebook.com (cookies loaded from "
+                              f"persistent storage)…")
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             try:
                 await page.goto('https://www.facebook.com/',
