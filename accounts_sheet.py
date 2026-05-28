@@ -1,33 +1,38 @@
-"""accounts_sheet.py — Drive-backed audit log for every FB account loaded
-into a GoLogin profile by acc-setup-bot.
+"""accounts_sheet.py — Drive-backed audit log for FB-account-into-GoLogin
+events. Stores as a CSV file at the Drive root: 'acc-setup-bot · accounts.csv'.
 
-Reuses Carolina's GOOGLE_TOKEN_PICKLE OAuth token (env var copied over).
-On first call, creates a Google Sheet at the Drive root named
-'acc-setup-bot · accounts'. Each row = one FB-account-into-GoLogin event:
+Why CSV-in-Drive instead of a native Google Sheet:
+  - User's Carolina OAuth token only has 'drive' scope (not 'spreadsheets')
+  - Their Cloud project doesn't have the Sheets API enabled
+  - CSV in Drive works TODAY with no user setup. The user can open the
+    file via Drive's "Open with → Google Sheets" anytime to view/edit
+    as a real spreadsheet — Drive does the conversion on the fly.
 
-   Timestamp(UTC) | GoLogin Profile | FB Email | FB Profile ID | Proxy host:port | IPRoyal Session | Status | Notes
+Columns: Timestamp(UTC), GoLogin Profile, FB Email, FB Profile ID,
+         Proxy host:port, IPRoyal Session, Status, Notes
 
-Idempotent header row — first call writes it; subsequent calls just append data."""
+Each append fetches the current CSV, adds the row, uploads the new content
+back. Cheap for our use case (~1 row per Meta-Dev setup)."""
 import os
 import base64
 import pickle
 import logging
 import datetime
 import re
+import io
+import csv
 
 logger = logging.getLogger(__name__)
 
-SHEET_TITLE = 'acc-setup-bot · accounts'
+CSV_FILENAME = 'acc-setup-bot · accounts.csv'
 HEADER = ['Timestamp (UTC)', 'GoLogin Profile', 'FB Email', 'FB Profile ID',
           'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes']
 
 _CACHED_CREDS = None
-_CACHED_SHEET_ID = None
+_CACHED_FILE_ID = None
 
 
 def _load_creds():
-    """Load credentials from GOOGLE_TOKEN_PICKLE env var (same as Carolina).
-    Returns Credentials object or None."""
     global _CACHED_CREDS
     if _CACHED_CREDS is not None:
         return _CACHED_CREDS
@@ -48,7 +53,6 @@ def _load_creds():
 
 
 def _drive_service():
-    """Build a Drive v3 client (used to find/create the sheet file)."""
     creds = _load_creds()
     if not creds:
         return None
@@ -56,89 +60,89 @@ def _drive_service():
     return build('drive', 'v3', credentials=creds, cache_discovery=False)
 
 
-def _sheets_service():
-    """Build a Sheets v4 client (used to read/append rows)."""
-    creds = _load_creds()
-    if not creds:
-        return None
-    from googleapiclient.discovery import build
-    return build('sheets', 'v4', credentials=creds, cache_discovery=False)
+def _csv_bytes(rows):
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
+    return buf.getvalue().encode('utf-8')
 
 
-def _find_or_create_sheet():
-    """Locate the spreadsheet by title; create with header row if not found.
-    Returns the spreadsheet ID."""
-    global _CACHED_SHEET_ID
-    if _CACHED_SHEET_ID:
-        return _CACHED_SHEET_ID
+def _parse_csv(content_bytes):
+    if not content_bytes:
+        return []
+    buf = io.StringIO(content_bytes.decode('utf-8', 'replace'))
+    return list(csv.reader(buf))
+
+
+def _find_or_create_file():
+    """Locate the CSV by name at Drive root, or create it with header row.
+    Returns the file ID."""
+    global _CACHED_FILE_ID
+    if _CACHED_FILE_ID:
+        return _CACHED_FILE_ID
     drive = _drive_service()
     if drive is None:
         return None
-    # Search for an existing spreadsheet with our title
-    q = (f"name='{SHEET_TITLE}' and "
-         f"mimeType='application/vnd.google-apps.spreadsheet' and trashed=false")
-    res = drive.files().list(q=q, fields='files(id,name)',
+    q = (f"name='{CSV_FILENAME}' and "
+         f"mimeType='text/csv' and trashed=false")
+    res = drive.files().list(q=q, fields='files(id,name,parents)',
                              supportsAllDrives=True,
                              includeItemsFromAllDrives=True).execute()
     files = res.get('files') or []
     if files:
-        sid = files[0]['id']
-        logger.info(f"[accounts_sheet] reusing existing sheet {sid}")
-        _CACHED_SHEET_ID = sid
-        return sid
-    # Create a fresh spreadsheet via the Sheets API (returns ID directly).
-    sheets = _sheets_service()
-    if sheets is None:
-        return None
-    body = {
-        'properties': {'title': SHEET_TITLE},
-        'sheets': [{'properties': {'title': 'accounts'}}],
-    }
-    resp = sheets.spreadsheets().create(body=body, fields='spreadsheetId').execute()
-    sid = resp['spreadsheetId']
-    # Write the header row
-    sheets.spreadsheets().values().update(
-        spreadsheetId=sid, range='accounts!A1:H1',
-        valueInputOption='RAW',
-        body={'values': [HEADER]}).execute()
-    logger.info(f"[accounts_sheet] created new sheet {sid}")
-    _CACHED_SHEET_ID = sid
-    return sid
+        fid = files[0]['id']
+        logger.info(f"[accounts_sheet] reusing existing CSV {fid}")
+        _CACHED_FILE_ID = fid
+        return fid
+    # Create with just the header row
+    from googleapiclient.http import MediaInMemoryUpload
+    body = {'name': CSV_FILENAME, 'mimeType': 'text/csv'}
+    media = MediaInMemoryUpload(_csv_bytes([HEADER]), mimetype='text/csv')
+    created = drive.files().create(body=body, media_body=media,
+                                   fields='id', supportsAllDrives=True).execute()
+    fid = created['id']
+    logger.info(f"[accounts_sheet] created CSV {fid}")
+    _CACHED_FILE_ID = fid
+    return fid
+
+
+def _read_all_rows():
+    drive = _drive_service()
+    fid = _find_or_create_file()
+    if not (drive and fid):
+        return []
+    content = drive.files().get_media(fileId=fid).execute()
+    return _parse_csv(content)
 
 
 def append_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
                  proxy_session, status='cookie_persisted', notes=''):
-    """Append one row. Safe to call repeatedly; the sheet auto-creates on
-    the first call. Returns the new row index, or None on error."""
-    sid = _find_or_create_sheet()
-    if not sid:
+    """Append one row. Returns the new row count on success, None on error."""
+    drive = _drive_service()
+    fid = _find_or_create_file()
+    if not (drive and fid):
         return None
-    sheets = _sheets_service()
-    if sheets is None:
-        return None
+    rows = _read_all_rows()
+    # Defensive: if existing file was empty or missing header, re-add it
+    if not rows or rows[0] != HEADER:
+        rows = [HEADER] + [r for r in rows if r and r != HEADER]
     ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    row = [ts, profile_name or '', fb_email or '', fb_profile_id or '',
-           proxy_host_port or '', proxy_session or '',
-           status or '', notes or '']
-    resp = sheets.spreadsheets().values().append(
-        spreadsheetId=sid, range='accounts!A:H',
-        valueInputOption='USER_ENTERED',
-        insertDataOption='INSERT_ROWS',
-        body={'values': [row]}).execute()
-    updated_range = (resp.get('updates') or {}).get('updatedRange', '?')
-    logger.info(f"[accounts_sheet] appended → {updated_range}")
-    return updated_range
+    rows.append([ts, profile_name or '', fb_email or '', fb_profile_id or '',
+                 proxy_host_port or '', proxy_session or '',
+                 status or '', notes or ''])
+    from googleapiclient.http import MediaInMemoryUpload
+    media = MediaInMemoryUpload(_csv_bytes(rows), mimetype='text/csv')
+    drive.files().update(fileId=fid, media_body=media,
+                         supportsAllDrives=True).execute()
+    logger.info(f"[accounts_sheet] appended row → {len(rows)-1} total entries")
+    return len(rows) - 1
 
 
-def get_sheet_url():
-    sid = _find_or_create_sheet()
-    if not sid: return None
-    return f'https://docs.google.com/spreadsheets/d/{sid}/edit'
+def get_file_url():
+    fid = _find_or_create_file()
+    return f'https://drive.google.com/file/d/{fid}/view' if fid else None
 
 
 def get_proxy_info_from_gologin_profile(profile_id, gologin_api_key):
-    """Look up the IPRoyal session embedded in the profile's proxy password.
-    Returns (host_port:str, session_id:str) — both '' if unavailable."""
     import requests
     try:
         r = requests.get(f'https://api.gologin.com/browser/{profile_id}',
