@@ -1348,6 +1348,7 @@ class ProxyPipeline:
             if FB_PROXY_SKIP_GOOGLE_GATE:
                 g_result, g_shot = 'skipped', None
             else:
+                await _upd(f"⏳ #{attempt} ① Google 'hello' (~30-60s)…")
                 try:
                     g_result, g_shot = await _asyncio.wait_for(
                         self.check_google_hello(host, port, user, password, 'socks5'),
@@ -1370,6 +1371,7 @@ class ProxyPipeline:
                 continue
 
             # ② Facebook login — the ~50% gate.
+            await _upd(f"⏳ #{attempt} ② FB login probe (~60-80s)…")
             fb_result, fb_shot, fb_url = await self.test_proxy_on_facebook(
                 host, port, user, password, 'socks5')
             if fb_result == 'error_no_playwright':
@@ -1385,6 +1387,7 @@ class ProxyPipeline:
                 continue
 
             # ③ reCAPTCHA v3 score — the ~95% gate, run LAST.
+            await _upd(f"⏳ #{attempt} ③ reCAPTCHA v3 score (~30-50s)…")
             score, s_shot = await self.check_recaptcha_score(
                 host, port, user, password, 'socks5')
             if score == 'error_no_playwright':
@@ -1504,6 +1507,29 @@ def _pipeline():
     return _PROXY_PIPELINE_SINGLETON
 
 
+def _proxy_submenu_kb():
+    """Mirror of Carolina's /accounts → 🌐 Proxy Tools submenu so the UI
+    is familiar. acc-setup-bot implements only the Batch variant in this
+    v1; the other buttons surface a 'use Carolina' alert until they're
+    ported, so users don't lose their bearings."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧪 Batch Validate + GoLogin (×N)",
+                              callback_data="proxy:batch")],
+        [InlineKeyboardButton("🤖 Auto Proxy Check + Profile  (use Carolina)",
+                              callback_data="proxy:not_impl")],
+        [InlineKeyboardButton("🤖 Auto Proxy Check (no profile)  (use Carolina)",
+                              callback_data="proxy:not_impl")],
+        [InlineKeyboardButton("⚡ Quick Proxy Check  (use Carolina)",
+                              callback_data="proxy:not_impl")],
+        [InlineKeyboardButton("🎯 Strict Proxy Check  (use Carolina)",
+                              callback_data="proxy:not_impl")],
+        [InlineKeyboardButton("🔄 Rotate Private Proxy  (use Carolina)",
+                              callback_data="proxy:not_impl")],
+        [InlineKeyboardButton("📊 /proxy_status",
+                              callback_data="proxy:status_hint")],
+    ])
+
+
 def _batch_picker_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("3",  callback_data="proxy:n:3"),
@@ -1513,39 +1539,39 @@ def _batch_picker_kb():
          InlineKeyboardButton("15", callback_data="proxy:n:15"),
          InlineKeyboardButton("20", callback_data="proxy:n:20")],
         [InlineKeyboardButton("✏️ Custom",  callback_data="proxy:cust"),
-         InlineKeyboardButton("❌ Cancel",  callback_data="proxy:cancel")],
+         InlineKeyboardButton("⬅️ Back",  callback_data="proxy:menu")],
     ])
 
 
 async def proxy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/proxy — landing menu for the batch validate + GoLogin creator."""
+    """/proxy — Proxy Tools submenu (mirror of Carolina's UX)."""
     missing = [k for k, v in [
         ("GOLOGIN_API_KEY", GOLOGIN_API_KEY),
-        ("IPROYAL_API_KEY or IPROYAL_USERNAME/PASSWORD",
-         IPROYAL_API_KEY or (IPROYAL_USERNAME and IPROYAL_PASSWORD)),
+        ("IPROYAL_USERNAME/PASSWORD",
+         IPROYAL_USERNAME and IPROYAL_PASSWORD),
         ("IPQS_API_KEY", IPQS_API_KEY),
         ("ABUSEIPDB_API_KEY", ABUSEIPDB_API_KEY),
         ("FB_PROXY_TEST_PHONE", FB_PROXY_TEST_PHONE),
         ("FB_PROXY_TEST_PASSWORD", FB_PROXY_TEST_PASSWORD),
-        ("GOLOGIN_TEST_PROFILE_NAME (or default 'TEST ACC FOR PROXY')",
-         GOLOGIN_TEST_PROFILE_NAME),
     ] if not v]
     env_warn = ""
     if missing:
         env_warn = (
             "\n\n⚠️ <b>Missing env vars on Railway:</b>\n"
             + "\n".join(f"  • <code>{k}</code>" for k in missing)
-            + "\n\nThe bot will still let you try, but the pipeline will fail "
-              "until these are set."
         )
+    skip = 'on' if FB_PROXY_SKIP_GOOGLE_GATE else 'off'
     await update.message.reply_text(
-        "🧪 <b>Batch Proxy Validate + GoLogin Profile Creator</b>\n\n"
-        "How it works: I pull fresh IPRoyal mobile proxies in a loop, run each "
-        "through pre-gates (IPQS + AbuseIPDB + latency + multi-dest) AND browser "
-        "gates (Google + Facebook + reCAPTCHA). For every proxy that fully "
-        "passes, I create a GoLogin profile with that proxy pre-attached.\n\n"
-        "Pick how many profiles to create — I'll loop until done." + env_warn,
-        parse_mode='HTML', reply_markup=_batch_picker_kb())
+        "🌐 <b>Proxy Tools</b>\n\n"
+        "<b>Batch Validate + GoLogin (×N)</b> — pulls fresh IPRoyal mobile "
+        "proxies in a loop; for every proxy that passes pre-gates (IPQS + "
+        "AbuseIPDB + ip-api + DNSBL + latency + multi-dest) AND browser gates "
+        "(FB login + reCAPTCHA), creates a GoLogin profile with the proxy "
+        "pre-attached. Loops until N profiles are made.\n\n"
+        f"<i>Google-gate skip: <b>{skip}</b> · "
+        f"set FB_PROXY_SKIP_GOOGLE_GATE in Railway to toggle</i>"
+        + env_warn,
+        parse_mode='HTML', reply_markup=_proxy_submenu_kb())
 
 
 async def proxy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1558,9 +1584,39 @@ async def proxy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split(':')
     action = parts[1] if len(parts) > 1 else ''
     arg = parts[2] if len(parts) > 2 else ''
-    if action == 'cancel':
-        try: await query.edit_message_text("❌ Cancelled.")
+    if action == 'menu':
+        # Back to the proxy submenu (re-edit the message in place).
+        skip = 'on' if FB_PROXY_SKIP_GOOGLE_GATE else 'off'
+        try:
+            await query.edit_message_text(
+                "🌐 <b>Proxy Tools</b>\n\n"
+                "<b>Batch Validate + GoLogin (×N)</b> — pulls fresh IPRoyal "
+                "mobile proxies in a loop; creates a GoLogin profile for "
+                "every one that passes all gates.\n\n"
+                f"<i>Google-gate skip: <b>{skip}</b></i>",
+                parse_mode='HTML', reply_markup=_proxy_submenu_kb())
         except Exception: pass
+        return
+    if action == 'batch':
+        # Open the size picker.
+        try:
+            await query.edit_message_text(
+                "🧪 <b>Batch Validate + GoLogin Profile Creator</b>\n\n"
+                "Pick how many profiles to create — I'll loop until done. "
+                "Per profile takes ~1-3 min depending on browser-gate speed.\n\n"
+                "<i>Send /cancel any time to stop.</i>",
+                parse_mode='HTML', reply_markup=_batch_picker_kb())
+        except Exception: pass
+        return
+    if action == 'not_impl':
+        await query.answer(
+            "Use Carolina for this variant — only the Batch wizard is "
+            "ported to acc-setup-bot for now.", show_alert=True)
+        return
+    if action == 'status_hint':
+        await query.answer(
+            "Type /proxy_status to see the last batch result.",
+            show_alert=True)
         return
     if action == 'cust':
         context.user_data['expecting_proxy_count'] = True
