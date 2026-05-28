@@ -140,6 +140,53 @@ If Meta Dev signup says "You can only complete this action in Accounts Center", 
 
 ---
 
+## 4½. Vision-driven state reading (PRIMARY tool — added 2026-05-29)
+
+**The DOM is unreliable for FB dialogs.** The left-sidebar always shows all 4 stages ("Register / Verify account / Contact info / About you") as text, so naive `"about you" in body` matching always returns true regardless of which stage is actually active. Buttons like "Continue" change state from disabled → enabled silently. Code inputs share generic selectors with email inputs. Heuristics that worked in one session broke in the next.
+
+**Solution: send every screenshot to GPT-4o Vision and act on the structured JSON it returns.**
+
+```python
+import base64, requests
+
+def vision(png_bytes, question):
+    b64 = base64.b64encode(png_bytes).decode()
+    r = requests.post('https://api.openai.com/v1/chat/completions',
+        headers={'Authorization': f'Bearer {OPENAI_API_KEY}'},
+        json={'model':'gpt-4o','messages':[{'role':'user','content':[
+            {'type':'text','text':question},
+            {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}]}],
+            'max_tokens':500}, timeout=45)
+    return r.json()['choices'][0]['message']['content']
+```
+
+**Prompt template** (always demand strict JSON, no prose):
+
+```
+Reply ONLY with JSON, this shape:
+{
+  "stage": "register|verify_account|review_email|email_code|contact_info|about_you|dashboard|other",
+  "heading": "<prominent dialog heading>",
+  "visible_buttons": ["..."],
+  "visible_inputs": [{"placeholder_or_label":"...","value":"..."}],
+  "primary_next_action_button": "<the bright/colored CTA>",
+  "error_message": "<verbatim or null>",
+  "notes": "<one sentence>"
+}
+```
+
+**Use vision as the state oracle for every decision:**
+- Identify current stage before deciding what to click
+- Verify the action worked AFTER clicking
+- Read enabled/disabled state of buttons (DOM `is_enabled()` lies on React-controlled buttons)
+- Diagnose blockers ("why is this button disabled?" — vision gives plain-language answer)
+
+Without vision, the bot misreads "Verify Account" with empty phone field as "Continue and advance" and clicks the disabled button — wasting cycles. With vision, every state transition is confirmed.
+
+The `OPENAI_API_KEY` is set in Railway env vars (Carolina secret reused).
+
+---
+
 ## 5. Meta Dev signup flow
 
 **URL:** `https://developers.facebook.com/`
@@ -159,11 +206,30 @@ If Meta Dev signup says "You can only complete this action in Accounts Center", 
 11. **"Contact Info"** stage → email pre-filled, click Continue
 12. **"About You"** stage → fill name/role (TBD)
 
+### About You — random role selection (anti-clustering)
+
+When the "Which of the following best describes you?" radio group appears, **always pick randomly from `["Analyst", "Marketer", "Product manager"]`**. NEVER hardcode one choice. This prevents Meta from clustering accounts on a single role signal.
+
+```python
+import random
+ROLE = random.choice(['Analyst', 'Marketer', 'Product manager'])
+```
+
+Avoided choices: `Developer` (too on-the-nose for our use case), `Student` / `Owner/founder` / `Other` (low entropy, less plausible).
+
+The radio is clickable by clicking the card body (the white rectangle) OR the radio circle on the right. Confirm via vision that "complete_registration_enabled" flips to true before clicking the CTA.
+
+### Account-creation processing wait
+
+After clicking "Complete Registration", the page enters a multi-second loading state during which the radios disappear from the DOM (so a "no radio found" error after this point usually means we already advanced, not that we failed). Poll vision every 30s until `reached_dashboard: true`. Allow up to ~5 minutes.
+
 ### Pitfalls burned in 2026-05-29 session
 
 - **`y < 250` filter on "Get Started"** — there are multiple "Get Started" links on the page (footer included). Without the y-filter, the footer one gets clicked and lands on a wrong page.
 - **"Verify" button click while phone field empty** — my v1 script clicked Verify on the verify-gate detection before typing the phone. The polling loop then matched an OLD AC-binding SMS from the rental (`285110`) and tried to type it as the *phone number*. The fix: **always type phone FIRST, then click Send, then snapshot-then-poll for NEW SMS only**.
 - **Code input only appears AFTER clicking Send Verification SMS**, not before. Don't look for it on the initial verify-gate.
+- **"about you" matches the left-sidebar text even on earlier stages** — DOM body string matching is unreliable. Vision is the only trustworthy state oracle. See §4½.
+- **Sending the Telegram screenshot to the user doesn't let YOU see it** — you must process every screenshot through GPT-4o Vision yourself to know what's on screen.
 
 ---
 
