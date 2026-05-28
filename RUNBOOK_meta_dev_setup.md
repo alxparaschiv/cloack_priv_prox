@@ -219,9 +219,30 @@ Avoided choices: `Developer` (too on-the-nose for our use case), `Student` / `Ow
 
 The radio is clickable by clicking the card body (the white rectangle) OR the radio circle on the right. Confirm via vision that "complete_registration_enabled" flips to true before clicking the CTA.
 
-### Account-creation processing wait
+### Account-creation processing wait — DO NOTHING
 
-After clicking "Complete Registration", the page enters a multi-second loading state during which the radios disappear from the DOM (so a "no radio found" error after this point usually means we already advanced, not that we failed). Poll vision every 30s until `reached_dashboard: true`. Allow up to ~5 minutes.
+**This is the most failure-prone moment in the entire flow. This is where Profile 3 got bot-flagged on 2026-05-29.**
+
+After clicking "Complete Registration", the page enters a long server-side processing state. **The correct action is to wait silently for 5–10 minutes.** Do not reload, do not navigate, do not click anything, do not poll vision faster than every 90s.
+
+What WILL happen during the wait (all normal):
+- Radio buttons disappear from the DOM (clicking them now would fail — that's a signal we advanced, not regressed)
+- The "Complete Registration" button text gets replaced by a loading spinner with no label
+- Vision may report `main_visible_cta: "Next"` or `null` — both are fine
+- Page URL stays on `/async/registration/dialog/`
+
+What you must NOT do:
+- ❌ Click reload / `page.reload()` — this throws you out of the dialog onto FB main, the cookies may get re-evaluated, the flow rolls back. This is the exact mistake that flagged Profile 3.
+- ❌ Click the Continue / Next / Send SMS Again buttons "to help it along"
+- ❌ Navigate to `developers.facebook.com/` to "check status" — same problem as reload
+- ❌ Call vision with a question whose prompt itself contains the word you're matching for (`'dashboard' in v.lower()` returns true because your prompt has "dashboard")
+- ❌ Re-click Send SMS Again then type a code that arrived BEFORE the click — temporally impossible for a human, instant bot flag
+
+What you MAY do:
+- ✅ Poll vision every 90–120s with strict JSON parsing — read `is_dashboard` as a boolean field, never substring
+- ✅ After 10 minutes if still spinning, take ONE screenshot, send to the user, and ASK before any action
+
+**The user's words 2026-05-29:** *"until that point we had everything figured out … you just didn't wait long enough"* — confirming the verification + role-pick + click was correct. The only mistake was rushing the post-CR wait. Don't repeat it.
 
 ### "Invalid step progression — Please start from the beginning"
 
