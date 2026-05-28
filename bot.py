@@ -42,6 +42,7 @@ import cloak
 import privacy
 import cookies
 import bg
+import proxy
 
 
 logging.basicConfig(
@@ -109,6 +110,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_privacy_app_name'):
         await privacy.privacy_text_received(update, context)
         return
+    if context.user_data.get('expecting_proxy_count'):
+        await proxy.proxy_text_received(update, context)
+        return
     # No active flow — silently ignore (or could echo a help hint)
 
 
@@ -126,7 +130,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 /cloak — Cloaking link manager\n"
         "📜 /privacy — Privacy policy generator\n"
         "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
-        "🎨 /bg_generator — Solid-color background PNG\n",
+        "🎨 /bg_generator — Solid-color background PNG\n"
+        "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n",
         parse_mode='HTML')
 
 
@@ -137,6 +142,7 @@ async def post_init(application):
         BotCommand("privacy",       "Privacy policy generator"),
         BotCommand("blob",          "FB blob → Cookie-Editor JSON"),
         BotCommand("bg_generator",  "Solid-color background PNG"),
+        BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -168,6 +174,7 @@ def main():
     application.add_handler(CommandHandler("privacy", privacy.privacy_command))
     application.add_handler(CommandHandler("blob", cookies.blob_command))
     application.add_handler(CommandHandler("bg_generator", bg.bg_generator_command))
+    application.add_handler(CommandHandler("proxy", proxy.proxy_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(
@@ -178,6 +185,8 @@ def main():
         cookies.blob_callback, pattern=r'^blob:'))
     application.add_handler(CallbackQueryHandler(
         bg.bg_callback, pattern=r'^bg_gen:'))
+    application.add_handler(CallbackQueryHandler(
+        proxy.proxy_callback, pattern=r'^proxy:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
