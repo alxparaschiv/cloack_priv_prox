@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 CSV_FILENAME = 'acc-setup-bot · accounts.csv'
 HEADER = ['Timestamp (UTC)', 'GoLogin Profile', 'FB Email', 'FB Profile ID',
-          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes']
+          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes', 'Full Blob']
 
 _CACHED_CREDS = None
 _CACHED_FILE_ID = None
@@ -115,20 +115,30 @@ def _read_all_rows():
 
 
 def append_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
-                 proxy_session, status='cookie_persisted', notes=''):
-    """Append one row. Returns the new row count on success, None on error."""
+                 proxy_session, status='cookie_persisted', notes='',
+                 full_blob=''):
+    """Append one row. The full_blob is the canonical seller-format string
+    the user pasted (email:pass:email:emailpass:profile_url:dob:UA:cookies_b64)
+    — preserved as the last column so a single column-widen in Sheets is
+    enough to read it, without making the rest of the row clunky.
+
+    Returns the new row count on success, None on error."""
     drive = _drive_service()
     fid = _find_or_create_file()
     if not (drive and fid):
         return None
     rows = _read_all_rows()
-    # Defensive: if existing file was empty or missing header, re-add it
+    # Defensive: migrate to new header if file pre-dates the Full Blob column
     if not rows or rows[0] != HEADER:
-        rows = [HEADER] + [r for r in rows if r and r != HEADER]
+        rows = [HEADER] + [
+            # Pad legacy rows to match new column count
+            (r + ['']*(len(HEADER) - len(r))) if r and r != HEADER else r
+            for r in rows if r and r != HEADER
+        ]
     ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     rows.append([ts, profile_name or '', fb_email or '', fb_profile_id or '',
                  proxy_host_port or '', proxy_session or '',
-                 status or '', notes or ''])
+                 status or '', notes or '', full_blob or ''])
     from googleapiclient.http import MediaInMemoryUpload
     media = MediaInMemoryUpload(_csv_bytes(rows), mimetype='text/csv')
     drive.files().update(fileId=fid, media_body=media,
