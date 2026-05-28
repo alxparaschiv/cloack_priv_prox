@@ -223,6 +223,23 @@ The radio is clickable by clicking the card body (the white rectangle) OR the ra
 
 After clicking "Complete Registration", the page enters a multi-second loading state during which the radios disappear from the DOM (so a "no radio found" error after this point usually means we already advanced, not that we failed). Poll vision every 30s until `reached_dashboard: true`. Allow up to ~5 minutes.
 
+### "Invalid step progression — Please start from the beginning"
+
+If you see this error in red below the code input, **the account has been bot-flagged for too-fast / too-many state transitions**. Recovery options:
+1. Reload to a fresh dev portal URL and re-walk the flow (may still trigger flag again if base is dirty)
+2. Worst case: abandon this profile / rental and start fresh
+
+**Root cause:** Multiple rapid clicks without thinking trigger Meta's behavioral detection. Examples that caused this in the 2026-05-29 session:
+- Clicking Continue immediately when the button just appeared (no human pause)
+- Refresh + re-login + Get Started in <30s
+- "Send SMS Again" + immediately typing code from BEFORE the resend (impossible for a human)
+
+**Prevent it:**
+- **3-5s minimum pause between actions** (not 500ms)
+- Take a screenshot before every click; vision-confirm the state is what you expect; only then click
+- NEVER click the same button twice in <5s (Meta logs these)
+- Be especially careful around verification flows — those are where they put the heaviest detection
+
 ### Pitfalls burned in 2026-05-29 session
 
 - **`y < 250` filter on "Get Started"** — there are multiple "Get Started" links on the page (footer included). Without the y-filter, the footer one gets clicked and lands on a wrong page.
