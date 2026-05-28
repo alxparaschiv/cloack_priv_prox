@@ -1228,7 +1228,7 @@ class ProxyPipeline:
             if proxy_socks_url in seen_strs:
                 continue  # config collision (rare) — quietly skip
 
-            # Exit IP + ISP probe (threaded)
+            # ── Step 1: Exit IP + ISP probe (ipinfo.io) ──
             try:
                 exit_ip, isp_org, ip_err = await _asyncio.wait_for(
                     _asyncio.to_thread(self.probe_proxy_exit_ip, proxy_raw),
@@ -1236,119 +1236,147 @@ class ProxyPipeline:
             except _asyncio.TimeoutError:
                 exit_ip, isp_org, ip_err = None, None, 'timeout'
             if not exit_ip:
+                await _upd(f"🚫 #{attempt} <b>exit-IP probe</b> failed "
+                           f"(<code>{_e(str(ip_err)[:40])}</code>) — skip")
                 self._proxy_history_record(proxy_socks_url, None,
                     fb_result=f'batch_probe_err:{str(ip_err)[:30]}',
                     source='batch')
                 seen_strs.add(proxy_socks_url)
                 continue
             if exit_ip in seen_ips:
+                await _upd(f"⏭ #{attempt} dedupe — IP <code>{exit_ip}</code> "
+                           f"already tried, skipping")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result='batch_dedup_skip', source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>① exit-IP</b> (ipinfo.io) → "
+                       f"<code>{exit_ip}</code> · "
+                       f"<code>{_e((isp_org or '?')[:50])}</code>")
 
-            # ── Mobile-carrier ASN gate ──
+            # ── Step 2: Mobile-carrier ASN gate ──
             if not self._is_mobile_carrier(isp_org):
-                await _upd(f"🚫 #{attempt} not mobile "
+                await _upd(f"🚫 #{attempt} <b>② mobile-ASN</b> FAIL — "
+                           f"not a mobile carrier "
                            f"(<code>{_e((isp_org or '?')[:40])}</code>)")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result=f'batch_not_mobile:{(isp_org or "")[:30]}',
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>② mobile-ASN</b> → "
+                       f"mobile carrier confirmed")
 
-            # ── Reputation DBs (IPQS + AbuseIPDB) ──
+            # ── Step 3: IPQS reputation (ipqualityscore.com) ──
             ipqs = await _asyncio.to_thread(self.lookup_ipqs_reputation, exit_ip)
-            abdb = await _asyncio.to_thread(self.lookup_abuseipdb_reputation, exit_ip)
             ipqs_score = ipqs.get('fraud_score')
-            abdb_score = abdb.get('confidence_score')
             ipqs_fail = (ipqs.get('available') and
                          ((ipqs_score is not None and ipqs_score > IPQS_FRAUD_SCORE_MAX)
                           or ipqs.get('recent_abuse')))
+            if ipqs_fail:
+                tag = f"fraud_score={ipqs_score}"
+                if ipqs.get('recent_abuse'): tag += ", recent_abuse=1"
+                await _upd(f"🚫 #{attempt} <b>③ IPQS</b> FAIL "
+                           f"(<code>{_e(tag)}</code>)")
+                self._proxy_history_record(proxy_socks_url, exit_ip,
+                    fb_result=f'batch_ipqs:{tag[:40]}', source='batch')
+                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                continue
+            await _upd(f"✅ #{attempt} <b>③ IPQS</b> (ipqualityscore.com) → "
+                       f"fraud_score=<code>{ipqs_score}</code>")
+
+            # ── Step 4: AbuseIPDB reputation ──
+            abdb = await _asyncio.to_thread(self.lookup_abuseipdb_reputation, exit_ip)
+            abdb_score = abdb.get('confidence_score')
             abdb_fail = (abdb.get('available') and abdb_score is not None
                          and abdb_score > ABUSEIPDB_CONFIDENCE_MAX)
-            if ipqs_fail or abdb_fail:
-                reason = []
-                if ipqs_fail:
-                    reason.append(f"IPQS={ipqs_score}"
-                                  + (",abuse" if ipqs.get('recent_abuse') else ""))
-                if abdb_fail:
-                    reason.append(f"AbuseIPDB={abdb_score}")
-                await _upd(f"🚫 #{attempt} reputation "
-                           f"(<code>{_e(' '.join(reason))}</code>)")
+            if abdb_fail:
+                await _upd(f"🚫 #{attempt} <b>④ AbuseIPDB</b> FAIL "
+                           f"(<code>confidence={abdb_score}</code>)")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_reputation:{" ".join(reason)[:50]}',
-                    source='batch')
+                    fb_result=f'batch_abuse:{abdb_score}', source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>④ AbuseIPDB</b> → "
+                       f"confidence=<code>{abdb_score if abdb_score is not None else '?'}</code>")
 
-            # ── Tier 1.5: ip-api + DNSBL ──
+            # ── Step 5: ip-api profile (ip-api.com) ──
             ipa = await _asyncio.to_thread(self.lookup_ipapi_profile,
                                            exit_ip, proxy_raw)
-            dnsbl = await _asyncio.to_thread(self.check_dnsbl, exit_ip)
             ipa_fail = ipa.get('available') and (ipa.get('hosting')
                                                  or ipa.get('proxy'))
-            dnsbl_fail = dnsbl.get('available') and bool(dnsbl.get('listed_on'))
-            if ipa_fail or dnsbl_fail:
-                reason = []
-                if ipa_fail:
-                    reason.append('ip-api=' + ('hosting' if ipa.get('hosting')
-                                               else 'proxy'))
-                if dnsbl_fail:
-                    reason.append('dnsbl=' + ','.join(dnsbl['listed_on'])[:40])
-                await _upd(f"🚫 #{attempt} tier-1.5 "
-                           f"(<code>{_e(' '.join(reason))}</code>)")
+            if ipa_fail:
+                tag = 'hosting' if ipa.get('hosting') else 'proxy'
+                await _upd(f"🚫 #{attempt} <b>⑤ ip-api</b> FAIL — "
+                           f"<code>{tag}</code> flag set")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
-                    fb_result=f'batch_t15:{" ".join(reason)[:50]}',
-                    source='batch')
+                    fb_result=f'batch_ipapi:{tag}', source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>⑤ ip-api</b> (ip-api.com) → clean")
 
-            # ── Latency probe ──
+            # ── Step 6: DNSBL (Spamhaus + friends) ──
+            dnsbl = await _asyncio.to_thread(self.check_dnsbl, exit_ip)
+            dnsbl_fail = dnsbl.get('available') and bool(dnsbl.get('listed_on'))
+            if dnsbl_fail:
+                listed = ','.join(dnsbl['listed_on'])[:60]
+                await _upd(f"🚫 #{attempt} <b>⑥ DNSBL</b> FAIL — "
+                           f"listed on <code>{_e(listed)}</code>")
+                self._proxy_history_record(proxy_socks_url, exit_ip,
+                    fb_result=f'batch_dnsbl:{listed[:40]}', source='batch')
+                seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
+                continue
+            await _upd(f"✅ #{attempt} <b>⑥ DNSBL</b> → not listed")
+
+            # ── Step 7: Latency probe ──
             lat = await _asyncio.to_thread(self.probe_proxy_latency, proxy_raw)
             if not lat.get('available'):
-                await _upd(f"🚫 #{attempt} latency probe failed")
+                await _upd(f"🚫 #{attempt} <b>⑦ latency</b> FAIL — probe error")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result='batch_latency_err', source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
             if (lat['p95_ms'] > PROXY_LATENCY_P95_MAX_MS
                     or lat['jitter_ms'] > PROXY_LATENCY_JITTER_MAX_MS):
-                await _upd(f"🚫 #{attempt} latency "
-                           f"(p95 {lat['p95_ms']}ms / jit {lat['jitter_ms']}ms)")
+                await _upd(f"🚫 #{attempt} <b>⑦ latency</b> FAIL — "
+                           f"p95=<code>{lat['p95_ms']}ms</code> "
+                           f"jitter=<code>{lat['jitter_ms']}ms</code> "
+                           f"(max p95={PROXY_LATENCY_P95_MAX_MS})")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result=f"batch_latency_high:p95={lat['p95_ms']}",
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>⑦ latency</b> → "
+                       f"p95=<code>{lat['p95_ms']}ms</code> "
+                       f"jitter=<code>{lat['jitter_ms']}ms</code>")
 
-            # ── Multi-destination reachability ──
+            # ── Step 8: Multi-destination reachability ──
             multi = await _asyncio.to_thread(
                 self.probe_proxy_multi_destination, proxy_raw)
             if not multi.get('all_ok'):
-                await _upd(f"🚫 #{attempt} selective throttling (multi-dest)")
+                await _upd(f"🚫 #{attempt} <b>⑧ multi-dest</b> FAIL — "
+                           f"selective throttling detected")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result='batch_multi_dest_fail', source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>⑧ multi-dest</b> → all reachable")
 
-            await _upd(
-                f"✅ #{attempt} pre-gates clean — "
-                f"IP <code>{exit_ip}</code> · "
-                f"<code>{_e((isp_org or '?')[:32])}</code> · "
-                f"p95 {lat['p95_ms']}ms\n"
-                f"🧪 browser gauntlet ① Google → ② FB → ③ reCAPTCHA…")
+            await _upd(f"🎯 #{attempt} <b>all 8 pre-gates passed</b> — "
+                       f"entering browser gauntlet…")
 
             # ════════ BROWSER GAUNTLET — ascending pass-rate ════════
-            # ① Google 'hello' — the ~10% gate, run FIRST to fail fast.
-            # E2E run on 2026-05-28 showed Camoufox crashes ~90% of Google
-            # launches with "Browser.close: Connection closed" — not the
-            # proxy's fault, the browser bombs. FB_PROXY_SKIP_GOOGLE_GATE=1
+            # ⑨ Google 'hello' — the ~10% gate, run FIRST to fail fast.
+            # E2E run 2026-05-28 showed Camoufox crashes ~90% of Google
+            # launches (not the proxy's fault). FB_PROXY_SKIP_GOOGLE_GATE=1
             # bypasses this so we don't waste ~40s per crashed launch.
             if FB_PROXY_SKIP_GOOGLE_GATE:
+                await _upd(f"⏭ #{attempt} <b>⑨ Google 'hello'</b> SKIPPED "
+                           f"(<code>FB_PROXY_SKIP_GOOGLE_GATE=1</code>)")
                 g_result, g_shot = 'skipped', None
             else:
-                await _upd(f"⏳ #{attempt} ① Google 'hello' (~30-60s)…")
+                await _upd(f"⏳ #{attempt} <b>⑨ Google 'hello'</b> (~30-60s)…")
                 try:
                     g_result, g_shot = await _asyncio.wait_for(
                         self.check_google_hello(host, port, user, password, 'socks5'),
@@ -1363,15 +1391,18 @@ class ProxyPipeline:
                         pass
             if g_result not in ('good', 'skipped'):
                 tag = g_result if isinstance(g_result, str) else 'error'
-                await _upd(f"🚫 #{attempt} ① Google <b>{_e(tag)}</b> — skip")
+                await _upd(f"🚫 #{attempt} <b>⑨ Google</b> FAIL "
+                           f"(<code>{_e(tag)}</code>) — skip")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result=f'batch_google:{tag}', validated=False,
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            if g_result == 'good':
+                await _upd(f"✅ #{attempt} <b>⑨ Google 'hello'</b> → real SERP rendered")
 
-            # ② Facebook login — the ~50% gate.
-            await _upd(f"⏳ #{attempt} ② FB login probe (~60-80s)…")
+            # ⑩ Facebook login — the ~50% gate.
+            await _upd(f"⏳ #{attempt} <b>⑩ Facebook</b> login probe (~60-80s)…")
             fb_result, fb_shot, fb_url = await self.test_proxy_on_facebook(
                 host, port, user, password, 'socks5')
             if fb_result == 'error_no_playwright':
@@ -1379,15 +1410,18 @@ class ProxyPipeline:
                         "Playwright/Chromium not available on server")
             if fb_result != 'good':
                 tag = fb_result if isinstance(fb_result, str) else 'blocked'
-                await _upd(f"🚫 #{attempt} ② FB <b>{_e(tag)}</b> — skip")
+                await _upd(f"🚫 #{attempt} <b>⑩ Facebook</b> FAIL "
+                           f"(<code>{_e(tag)}</code>) — skip")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     fb_result=f'batch_fb:{tag}', validated=False,
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>⑩ Facebook</b> → "
+                       f"real 2FA gate (proxy looks legit to Meta)")
 
-            # ③ reCAPTCHA v3 score — the ~95% gate, run LAST.
-            await _upd(f"⏳ #{attempt} ③ reCAPTCHA v3 score (~30-50s)…")
+            # ⑪ reCAPTCHA v3 score — the ~95% gate, run LAST.
+            await _upd(f"⏳ #{attempt} <b>⑪ reCAPTCHA v3</b> score (~30-50s)…")
             score, s_shot = await self.check_recaptcha_score(
                 host, port, user, password, 'socks5')
             if score == 'error_no_playwright':
@@ -1397,14 +1431,16 @@ class ProxyPipeline:
             score_txt = (str(score) if isinstance(score, float)
                          else ('timeout' if score == 'timeout' else 'N/A'))
             if not score_ok:
-                await _upd(f"🚫 #{attempt} ③ reCAPTCHA <b>{_e(score_txt)}</b> "
-                           f"(need ≥0.9) — skip")
+                await _upd(f"🚫 #{attempt} <b>⑪ reCAPTCHA</b> FAIL "
+                           f"(score=<code>{_e(score_txt)}</code>, need ≥0.9) — skip")
                 self._proxy_history_record(proxy_socks_url, exit_ip,
                     score=(score if isinstance(score, float) else None),
                     fb_result='batch_score_fail', validated=False,
                     source='batch')
                 seen_strs.add(proxy_socks_url); seen_ips.add(exit_ip)
                 continue
+            await _upd(f"✅ #{attempt} <b>⑪ reCAPTCHA</b> → "
+                       f"score=<code>{score_txt}</code> ≥ 0.9")
 
             # ════════ FULL PASS — bank proof + create the profile ════════
             self._proxy_history_record(proxy_socks_url, exit_ip,
@@ -1423,8 +1459,8 @@ class ProxyPipeline:
                             logger.warning(f"[batch] photo failed: {e}")
 
             profile_name = f"{name_prefix} {idx}"
-            await _upd(f"📘 #{attempt} validated — creating GoLogin "
-                       f"<b>{_e(profile_name)}</b>…")
+            await _upd(f"📘 #{attempt} <b>⑫ GoLogin</b> creating profile "
+                       f"<b>{_e(profile_name)}</b> with proxy attached…")
             profile_id, cmsg = await _asyncio.to_thread(
                 self.create_gologin_profile, profile_name, proxy_raw)
             if profile_id:
