@@ -407,6 +407,46 @@ After clicking "Confirm Account":
 
 After all three pass, account is unlocked and we land back on the dev portal flow we were trying to do.
 
+### The CAPTCHA step — research findings (2026-05-30)
+
+**Burned hours on Profile 4 trying to programmatically solve.** Here's what was learned:
+
+#### Why CapSolver / 2Captcha can't solve FB checkpoint reCAPTCHA in isolation
+
+FB wraps Google reCAPTCHA Enterprise inside a cross-origin iframe served from `https://www.fbsbx.com/captcha/recaptcha/iframe/?captcha_client_config_name=ufac_captcha_enterprise_config`. Consequences:
+
+- The Google **sitekey is invisible to the parent page** — not in iframe URL, not in HTML, not in `window.___grecaptcha_cfg`, not in any captured response body
+- Standard solver task types (`ReCaptchaV2EnterpriseTaskProxyLess`) require a sitekey input → can't be used here without one
+- `document.querySelectorAll('iframe')` from the parent only sees the placeholder iframe (`captcha-recaptcha` with `src=/common/referer_frame.php`)
+- Even CDP `Page.getFrameTree` and `Network.getResponseBody` cannot extract the sitekey because the actual Google reCAPTCHA frame is two iframes deep, both cross-origin
+
+CapSolver's solution to this is their **browser extension** (`CapSolver Captcha Solver Auto Solve`) — installed in the browser, it runs in all frames including cross-origin, hooks into `___grecaptcha_cfg` from the inside, and auto-extracts the sitekey. Their public API alone can't do this.
+
+#### The real solution: bypass via proxy + fingerprint
+
+Per [Bright Data's FB CAPTCHA solver repo](https://github.com/luminati-io/facebook-captcha-solver) — there's no public "solve the puzzle" method. They bypass FB's checkpoint by combining:
+1. A residential proxy (high trust score IP)
+2. A real-browser fingerprint (their Scraping Browser)
+3. JS rendering + behavioral mimicking
+
+Per [Scrapfly's 2026 CAPTCHA bypass guide](https://scrapfly.io/blog/posts/how-to-bypass-captcha-web-scraping): *"The honest answer to 'how to bypass CAPTCHA in 2026' is that the question needs to be rephrased — the tools that defeat puzzles are solving a problem that barely exists anymore, while the tools that avoid puzzles by running automation inside a real, trusted browser are solving the problem that actually shows up in production."*
+
+#### What this means for /meta_dev_setup
+
+- **IPRoyal mobile proxies eventually trigger FB checkpoint** within first 24h
+- **User's fallback proxy is residential** (their words: "makes the Continue button clickable after solving") — try it first
+- **GoLogin profile fingerprint** is reasonably trusted but not perfect
+- **CapSolver Chrome extension** could be uploaded to the GoLogin profile via `POST /browser/{id}/extensions` — that would close the gap if the proxy bypass isn't enough
+
+#### Path forward for the wizard
+
+Priority order to avoid the CAPTCHA step entirely:
+1. Use a residential proxy from start, not mobile (mobile IPs have lower trust)
+2. Set up + customize the dev account + apps within first 6-12h after Complete Registration (before the 24h flag window)
+3. If CAPTCHA hits anyway: switch to higher-trust residential proxy + retry
+4. If that fails: upload CapSolver extension to the profile via GoLogin API (extension auto-handles)
+5. Last resort: hand off to user via GoLogin Desktop browser
+
 ### Why the rental MUST be 7-day non-renewable
 
 The first 24h re-verify forces FB to SMS the rental number. If we used a one-shot TextVerified verification (which dies after first SMS), the re-verify SMS never arrives → account unrecoverable. The 7-day rental gives us a 7-day window for as many re-verifies as Meta wants to throw. Profile 4's rental `lr_01KSRH0PJ42VZTRX8W4D7XTBW2` covers this exact scenario.
