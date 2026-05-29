@@ -429,7 +429,97 @@ def random_app_name():
 
 Generic enough to be plausible as someone's first app. Numbered so multiple accounts under the same convention don't collide visibly. The same name is later reused as the "App name" on the Privacy Policy URL generator (which the reel_bot.py-style endpoint already produces, given a name).
 
-### Wizard issues seen on Profile 4 IG app attempt (open, not fixed today)
+### IG app — root cause of yesterday's failure and the fix (2026-05-30)
+
+The IG wizard appeared to "not advance" from App details, but the real bug was: **the script was typing the name into the wrong input — Meta's top-right search bar** (placeholder `Search...`, position around x=1645, y=17). The search bar matched the "first non-email, non-checkbox text input" filter before the actual App name field at (x=470, y≈272).
+
+Symptoms that fingerprint this bug:
+- DOM `input_value()` reports the typed value present
+- GPT-4o Vision says the App name field is empty
+- The top-right search box shows the typed text instead
+
+**Fix:** filter inputs by position AND placeholder content:
+```python
+ph = (await el.get_attribute('placeholder') or '').lower()
+if 'search' in ph: continue
+box = await el.bounding_box()
+if box and 200 < box['y'] < 350:   # App name input has y≈272
+    target = (frame, el); break
+```
+
+With the right input targeted, the IG wizard walked cleanly all 5 steps + password popup, same as the FB app. App ID `1321522510158769` created on Simple App 57.
+
+### IG card click pattern (works for both Instagram + Facebook subtype cards)
+
+The use-case cards' visual checkbox is on the right but no native `input[type=checkbox]` / `role=checkbox` exists. The viewport on Profile 4 places the checkbox area around x=1800 (full-width browser). For Simple App 57:
+1. `f.locator('text="Manage messaging & content on Instagram"').last.scroll_into_view_if_needed()`
+2. Get the text's bounding box `box`
+3. `await page.mouse.click(1800, box['y'] + box['height']/2)` — empirically the right-edge of the card column
+
+If vision shows checked but Next stays disabled, try the same click again 1 second later (React state may not have flushed).
+
+---
+
+## 8⅔. After the app is created — IG dual-path use case customization (2026-05-30)
+
+After Create app + password Submit + verify via `/apps`, click into the new IG app → it opens the **App Dashboard** for that app. Sidebar reads: Dashboard / Required actions / Use cases / Facebook Login for Busi… / Testing / Publish (Unpublished) / App settings / App roles / Alert Inbox.
+
+URL pattern: `developers.facebook.com/apps/<APP_ID>/dashboard/`
+
+The dashboard shows "App customization and requirements" with three rows:
+1. **Customize the Manage messaging & content on Instagram use case** — this is the configuration entry point
+2. Test use cases
+3. Check that all requirements are met, then publish your app
+
+Click row 1 → lands on `/apps/<APP_ID>/use_cases/customize/?use_case=...`. The left panel lists sub-sections:
+- Permissions and features
+- **API setup with Instagram login** ← Instagram Direct path
+- API integration helper
+- **API setup with Facebook login** ← Instagram-via-FB-Page path
+- Add more to this use case
+
+User's guidance 2026-05-30: **do BOTH paths — most flexibility**. Pick which one to "push further" later depending on what gets posted.
+
+### Path A — API setup with Instagram login (Instagram Direct posting)
+
+This is the right-side panel shown when "API setup with Instagram login" is selected:
+- **Instagram app name** — e.g. `test for example-IG`
+- **Instagram app ID** — this becomes `IG_DIRECT_APP_ID` env var
+- **Instagram app secret** — click "Show" → reveal → this becomes `IG_DIRECT_APP_SECRET` env var
+- Section "1. Add required messaging permissions" — needs `instagram_business_basic`, `instagram_manage_comments`, `instagram_business_manage_messages` (and others as listed) added
+- Scroll further down → there is a **redirect URL field** where you paste **`https://localhost`** — that's the OAuth callback Instagram needs. User said "this link → and somehow Instagram just connects to it." It's the OAuth redirect; Instagram's authorization flow returns to this URL with the access token in the URL fragment, which the user then captures manually (or programmatically) — exact mechanism to be documented when we automate it.
+
+### Path B — API setup with Facebook login (Instagram via Facebook Page)
+
+When you click "API setup with Facebook login" in the left panel:
+- Section "1. Add required permissions" lists: `instagram_basic`, `instagram_content_publishing`, `pages_read_engagement`, `business_management`, `pages_show_list`
+- Below the list is a blue button: **"Add required content permissions"** — click it. That's it for this section.
+- "Send messages on Instagram" further down may also have an "Add required messaging permissions" button if needed.
+
+### The six env vars to capture per account
+
+Once both paths are configured, six environment variables need to be set on the posting bot's Railway service:
+
+| Env var | Source |
+|---|---|
+| `IG_DIRECT_APP_ID` | Use cases → Instagram API → API setup with Instagram login (right panel, "Instagram app ID") |
+| `IG_DIRECT_APP_SECRET` | Same panel → "Instagram app secret" → click Show |
+| `IG_APP_ID` | App **Settings** page (top-level app settings, not inside Use cases) |
+| `IG_APP_SECRET` | App **Settings** page |
+| `FB_APP_ID` | App **Settings** page |
+| `FB_APP_SECRET` | App **Settings** page |
+
+Note: `IG_DIRECT_*` (Instagram-login path) come from the Use Cases sub-page because Meta exposes a SEPARATE app ID for Instagram-direct. `IG_APP_*` and `FB_APP_*` come from the regular Settings page of each respective app (Simple App 57 settings → IG_APP_*, Sample Project 99 settings → FB_APP_*).
+
+Once captured, these belong on the **PosterBot** script's Railway service (separate from acc-setup-bot). User will hand off the PosterBot repo when we have the values; until then, capture and stash in the CSV.
+
+### LLM-driven-wizard goal (set by user 2026-05-30)
+
+The end-state for this entire flow: **the user pastes one FB login blob, and the LLM-driven wizard does the rest** — Validated Profile selection, AC binding, Meta Dev signup, both app creations, both use case customizations, env-var capture, hand-off to PosterBot. Each step uses GPT-4o Vision for state-reading and a deliberately slow click pace (3-5s pauses) to stay under Meta's bot-detection threshold.
+
+Today's run is essentially the first hand-walked execution of this wizard. Lessons codified in this runbook are the brain transplant for tomorrow's automated version.
+
+### Wizard issues seen on Profile 4 IG app attempt (now resolved — see above)
 
 The FB app went clean: blob → wizard → password → app created (ID `101734734125658`). The IG app attempt didn't land. Symptoms:
 - After Create App click + Escape, the App name input was pre-filled with **"Hello App"** (FB's default placeholder appeared as a real value in the input). Code that skips non-empty inputs missed it. Fix: relax the selector to skip only `@`-containing values (email), then `Ctrl+A` + `Delete` before typing.
