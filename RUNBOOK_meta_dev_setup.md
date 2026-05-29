@@ -353,6 +353,50 @@ If you get a Meta DM "your developer account has been suspended":
 
 ---
 
+## 8½. Canonical success path — Profile 4 / Vipsania Campanus (2026-05-29)
+
+The end-to-end sequence that **WORKED** after all the prior fuckups. Use this as the reference for every new account.
+
+1. **Parse the user's blob** — `email:pw:email:emailpw:profile_url:dob:UA:base64(cookies CE JSON)`. The `b64.rsplit(':', 1)[-1]` gives the cookies. `base64.b64decode(...)` → `json.loads(...)` → CookieEditor format array.
+2. **Pick the next free Validated Profile** — `_list_validated_profiles()`; pass over any with a status row in the CSV unless it's marked abandoned/flagged.
+3. **Validate proxy** — 15× IPRoyal-NYC retry loop calling `probe_proxy_exit_ip` until one works, then `PATCH /browser/{id}/proxy`. **Do NOT rotate proxy after this point** — the user has been explicit about that.
+4. **Push cookies BEFORE session start** — `POST /browser/{id}/cookies` with the parsed array. Returns HTTP 204.
+5. **Start GoLogin session** — `POST /browser/{id}/web` expects `profileStatuses.running`.
+6. **Save the initial CSV row via `upsert_entry`** — include the full blob in the `full_blob` field so the cookies are recoverable in the future without asking the user to re-paste.
+7. **Connect Playwright over CDP**, navigate to `facebook.com`, 8s settle, vision-confirm `is_logged_in: true` and capture the FB profile name.
+8. **Navigate to `developers.facebook.com`** — likely shows the cookie-consent banner. Click `Allow all cookies`. 5s pause.
+9. **Click `Get Started` in the TOP header** (y<250 filter). 8s pause + vision check.
+10. **Register stage** — heading "Welcome to Meta for Developers", CTA `Continue`. 3s pause + click.
+11. **Verify Account stage** — heading "Verify Your Account", phone field empty.
+    - If the page shows the **"You can only complete this action in Accounts Center"** error, **STOP and go to AC binding flow** (§4) FIRST, then come back.
+    - Otherwise: type the rental phone slowly (130-140ms/char), 5s human pause, snapshot existing SMS, click `Send Verification SMS`, 10s, then poll the rental every 10s for a NEW (snapshot-excluded) SMS up to 5 min. Type the code slowly, 5s pause, `Continue`.
+12. **Review Email** stage — heading "Review Your Email Address", email pre-filled. Click `Confirm Email`. **Important:** FB usually DOES NOT send a new email here — the cookies already prove email ownership. Click and trust that we'll auto-advance. Do NOT wait for an email that won't come.
+13. **Contact Info** stage — auto-completed via Confirm Email click in step 12. Vision will jump straight to About You.
+14. **About You** stage — `random.choice(['Analyst','Marketer','Product manager'])`. Click via `f.locator(f'text="{ROLE}"').last.click()` (NOT via radio input directly — clicking the card text works, the radio click is unreliable). 5s pause. Vision-verify `complete_registration_enabled: true`.
+15. **5s human pause before the BIG click**, then click `Complete Registration`.
+16. **THE 6-MIN SILENT WAIT** — see §"Account-creation processing wait". No reload, no navigate, no click, no fast-poll. Just `asyncio.sleep(360)`.
+17. **ONE vision check** at the end. Expected: `page_kind: "my_apps"`, `heading: "Apps"`, `main_cta: "Create App"`. That's the **dashboard equivalent** — the developer account is live.
+18. **`upsert_entry`** with `status='dashboard_reached'`, the rental phone + rental ID.
+
+If any step deviates from the canonical sequence above, vision-debug before reacting — most of the prior session's wasted cycles were from chasing red herrings that vision could have ruled out in one call.
+
+---
+
+## 8¾. App-name generator policy (locked in 2026-05-29)
+
+Every Meta Dev app needs a name. Use a **random "first-time newbie developer" name** so accounts don't cluster on a single naming signal. Pattern:
+
+```python
+import random
+ADJ = ['Tester', 'Test', 'Demo', 'Sample', 'My', 'First', 'New', 'Trial', 'Quick', 'Simple']
+NOUN = ['App', 'Project', 'Build']
+def random_app_name():
+    return f'{random.choice(ADJ)} {random.choice(NOUN)} {random.randint(1, 99)}'
+# e.g. "Tester App 17", "Demo Project 42", "My App 3"
+```
+
+Generic enough to be plausible as someone's first app. Numbered so multiple accounts under the same convention don't collide visibly. The same name is later reused as the "App name" on the Privacy Policy URL generator (which the reel_bot.py-style endpoint already produces, given a name).
+
 ## 9. The 5 shards (implementation status)
 
 | Shard | What it does | Status |
