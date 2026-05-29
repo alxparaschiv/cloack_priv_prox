@@ -480,6 +480,23 @@ Click row 1 → lands on `/apps/<APP_ID>/use_cases/customize/?use_case=...`. The
 
 User's guidance 2026-05-30: **do BOTH paths — most flexibility**. Pick which one to "push further" later depending on what gets posted.
 
+### CRITICAL — exact permissions per path (added 2026-05-30 from poster-bot-19 ops guide)
+
+The Meta UI exposes ~30 permissions on the "Permissions and features" tab. Adding the wrong ones triggers App Review you don't need and can corrupt stored tokens (real incident: 2026-05-29 @farrahwilson23 had "Cannot parse access token" because `instagram_business_basic` was missing — only `instagram_business_content_publish` was granted, so introspection broke).
+
+**Direct Instagram (Instagram-login) — add exactly these TWO:**
+- `instagram_business_basic` — read account id/username/profile (needed for daily health-check)
+- `instagram_business_content_publish` — create + publish media containers (needed for posting)
+
+**Cross-post path (Facebook-login) — add via the blue "Add required content permissions" button** which auto-adds: `instagram_basic`, `instagram_content_publishing`, `pages_read_engagement`, `business_management`, `pages_show_list`.
+
+**Explicitly DO NOT add these — they look related but trigger App Review:**
+- ❌ `instagram_graph_user_profile` / "Instagram Public Content Access" — hashtag search
+- ❌ `business_management` — different scope family from what we need
+- ❌ `instagram_business_manage_messages` — only for DM read/reply
+- ❌ `instagram_business_manage_comments` — only for comment read/reply
+- ❌ Business Asset User Profile Access, ads_management, ads_read, Human Agent, etc.
+
 ### Path A — API setup with Instagram login (Instagram Direct posting)
 
 This is the right-side panel shown when "API setup with Instagram login" is selected:
@@ -495,6 +512,24 @@ When you click "API setup with Facebook login" in the left panel:
 - Section "1. Add required permissions" lists: `instagram_basic`, `instagram_content_publishing`, `pages_read_engagement`, `business_management`, `pages_show_list`
 - Below the list is a blue button: **"Add required content permissions"** — click it. That's it for this section.
 - "Send messages on Instagram" further down may also have an "Add required messaging permissions" button if needed.
+
+### Env var distribution to 21 child bots (2026-05-30)
+
+Capturing the 6 env vars is only half the job. They have to land on the **posting bots** (21 separate Railway services). The manager that orchestrates them lives at `github.com/alxparaschiv/manager-of-poster-bots`. Read that repo before adding any env-var-pushing automation — it already knows how to talk to each child bot, so the right pattern is to extend it rather than build a parallel mechanism.
+
+Future automated flow:
+1. /meta_dev_setup creates account + both apps + captures the 6 env vars
+2. The user picks which child bot (poster-bot-N) the new app pair belongs to
+3. The manager pushes the 6 vars onto that child's Railway service via Railway's API
+4. The child redeploys with the new env, picks up the new app pair
+
+### Additional Direct-IG setup steps (from poster-bot-19 ops guide 2026-05-30)
+
+Per-app one-time setup beyond the two permissions:
+
+1. **OAuth Redirect URI** — must EXACTLY match the env var on the posting bot (default `https://localhost/` with trailing slash). Meta auto-adds the slash silently; mismatch causes token exchange to fail or return malformed tokens. The bot reads `IG_OAUTH_REDIRECT_URI`.
+2. **App type = Business** — Settings → Basic. If it's "Consumer", the IG-login product won't appear. The new wizard defaults to Business so we're fine.
+3. **Tester invite (Development Mode)** — App Roles → Instagram Testers → invite the IG username → user accepts at `instagram.com/accounts/manage_access/`. Without this, OAuth silently fails for non-admin accounts. We're in Dev mode by default.
 
 ### The six env vars to capture per account
 
