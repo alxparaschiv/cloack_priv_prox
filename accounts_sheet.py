@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 CSV_FILENAME = 'acc-setup-bot · accounts.csv'
 HEADER = ['Timestamp (UTC)', 'GoLogin Profile', 'FB Email', 'FB Profile ID',
-          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes', 'Full Blob']
+          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes', 'Full Blob',
+          'Rental Phone', 'Rental ID']
 
 _CACHED_CREDS = None
 _CACHED_FILE_ID = None
@@ -116,7 +117,7 @@ def _read_all_rows():
 
 def upsert_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
                  proxy_session, status='cookie_persisted', notes='',
-                 full_blob=''):
+                 full_blob='', rental_phone='', rental_id=''):
     """One row per (GoLogin Profile, FB Email). If a row with that pair
     already exists, UPDATE it in place (preserving the longest Full Blob seen
     so the canonical cookie-bearing blob doesn't get truncated by a later
@@ -147,7 +148,8 @@ def upsert_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
     if target is None:
         rows.append([ts, profile_name or '', fb_email or '', fb_profile_id or '',
                      proxy_host_port or '', proxy_session or '',
-                     status or '', notes or '', full_blob or ''])
+                     status or '', notes or '', full_blob or '',
+                     rental_phone or '', rental_id or ''])
         idx = len(rows) - 1
         op = 'inserted'
     else:
@@ -169,6 +171,8 @@ def upsert_entry(profile_name, fb_email, fb_profile_id, proxy_host_port,
             status or existing[6],
             combined,
             kept_blob,
+            rental_phone or existing[9],
+            rental_id or existing[10],
         ]
         idx = target
         op = 'updated'
