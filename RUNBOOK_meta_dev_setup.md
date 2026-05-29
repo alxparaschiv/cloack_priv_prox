@@ -407,6 +407,40 @@ After clicking "Confirm Account":
 
 After all three pass, account is unlocked and we land back on the dev portal flow we were trying to do.
 
+### User's fxdx proxy workflow for the post-CAPTCHA Continue button (LOCK IN 2026-05-30)
+
+**The CAPTCHA puzzle itself is NOT the blocker.** The user clarified verbatim 2026-05-30:
+> *"solving the capture was not the issue. The issue was after I was solving the capture there was you have to confirm and click on the button and that button was not clickable unless I have changed the proxy."*
+
+So even when CapSolver successfully returns a token AND we inject it, FB's checkpoint flow doesn't let us click Continue unless the request comes from a sufficiently trusted IP.
+
+**The user's fxdx SOCKS5 proxy is specifically for this moment.** Workflow:
+
+1. Account hits `/r/user/error/` "Confirm Account" page (24h flag triggered)
+2. **CLOSE the current tab in GoLogin**
+3. **PATCH the proxy on the GoLogin profile** to the fxdx SOCKS5 (replace IPRoyal):
+   - `socks5://lo0895120053:1yyCYWCnF6CU@ai2o54obob.cn.fxdx.in:15681`
+4. **Open the IP rotation link** in the GoLogin browser: `https://i.fxdx.in/actionlinks/do/changeip/32LWXsHaRi2Voas_tH8GYQ`
+5. Wait for the IP to change (a moment)
+6. Open dev portal again → Confirm Account → phone code → email code → CAPTCHA → solve via CapSolver+inject → click Continue (which NOW works because of the fxdx IP)
+7. Once verification passes and we land on the dev portal:
+8. **CLOSE everything, log out**
+9. **Switch the GoLogin profile proxy BACK to the previous IPRoyal session**
+10. Log back in with the FB email + password (or use the persisted cookies)
+
+This proxy is shared (don't paste the link publicly — it rotates IPs at a shared endpoint).
+
+PATCH API call:
+```python
+parts = 'ai2o54obob.cn.fxdx.in:15681:lo0895120053:1yyCYWCnF6CU'.split(':')
+requests.patch(f'https://api.gologin.com/browser/{profile_id}/proxy',
+    json={'mode':'socks5','host':parts[0],'port':int(parts[1]),
+          'username':parts[2],'password':parts[3]},
+    headers={'Authorization': f'Bearer {GOLOGIN_API_KEY}'})
+```
+
+After this round-trip, the GoLogin profile is restored to its original IPRoyal mobile proxy. Future sessions continue normally.
+
 ### The CAPTCHA step — research findings (2026-05-30)
 
 **Burned hours on Profile 4 trying to programmatically solve.** Here's what was learned:

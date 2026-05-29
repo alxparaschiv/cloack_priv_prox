@@ -25,8 +25,11 @@ import csv
 logger = logging.getLogger(__name__)
 
 CSV_FILENAME = 'acc-setup-bot · accounts.csv'
+BLOBS_FOLDER_NAME = 'acc-setup-bot · account blobs'
+# CSV now stores a Drive LINK to the per-account blob file (not the giant blob itself)
+# — fixes Excel "row is unreadable / can't copy blob" complaint 2026-05-30
 HEADER = ['Timestamp (UTC)', 'GoLogin Profile', 'FB Email', 'FB Profile ID',
-          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes', 'Full Blob',
+          'Proxy host:port', 'IPRoyal Session', 'Status', 'Notes', 'Blob File',
           'Rental Phone', 'Rental ID']
 
 _CACHED_CREDS = None
