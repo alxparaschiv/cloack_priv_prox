@@ -382,7 +382,28 @@ If any step deviates from the canonical sequence above, vision-debug before reac
 
 ---
 
-## 8¾. App-name generator policy (locked in 2026-05-29)
+## 8¾. Two-apps-per-account milestone (locked in 2026-05-29)
+
+**Every account gets TWO apps created** — one for Facebook posting, one for Instagram. Both are needed because each handles a different content surface and we'll later need to publish/test both flows.
+
+### App #1 — Facebook posting
+
+- Random name via the §8¾.5 generator
+- Use cases stage: click **"All (19)"** left filter
+- Scroll down + click the **"Manage everything on your Page"** card (icon is a flag; subtitle: "Publish content and videos, moderate posts and comments from followers on your Page and get insights on engagement")
+- Click Next → walk through Business / Requirements / Overview with defaults
+- Privacy Policy URL gets generated from the app name (matches reel_bot.py's privacy-note generator)
+
+### App #2 — Instagram posting
+
+- Different random name via the §8¾.5 generator
+- Use cases stage: click **"All (19)"** left filter  
+- Scroll down + click the **"Manage messaging & content on Instagram"** card (icon is an Instagram camera; subtitle: "Publish posts, share stories, respond to comments, answer direct messages and more with the Instagram API")
+- Same Business / Requirements / Overview wizard
+
+After both apps are created, the account's "My Apps" page should list two apps. Persist both app IDs + names in the CSV (additional columns to add: `FB App ID`, `FB App Name`, `IG App ID`, `IG App Name`).
+
+## 8¾.5 App-name generator policy (locked in 2026-05-29)
 
 Every Meta Dev app needs a name. Use a **random "first-time newbie developer" name** so accounts don't cluster on a single naming signal. Pattern:
 
