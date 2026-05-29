@@ -382,6 +382,60 @@ If any step deviates from the canonical sequence above, vision-debug before reac
 
 ---
 
+## 8⅗. 24-hour re-verification flow (LOCK IN — 2026-05-30)
+
+**This happens to EVERY new Meta Dev account within the first 24h.** User's words 2026-05-30: *"this is the classic ... within the first 24 hours the account is gonna get banned ... so we have to have this re-verification handled by our LLM."* This is the entire reason the rentals are 7-day non-renewable.
+
+### Trigger
+
+Any action taken on the account within the first 24h after Complete Registration can land you on:
+
+- URL: `developers.facebook.com/r/user/error/` (or similar `/r/user/...`)
+- Heading: **"Account confirmation needed"**
+- Body: *"We've noticed unusual activity on this developer account. Please complete the confirmation steps to regain access."*
+- Single button: **"Confirm Account"**
+
+Tasks that triggered it on Profile 4 (2026-05-30, ~12h after account creation): navigating to `/use_cases/customize/permissions/` to add Instagram permissions. The page bounced through `business.facebook.com/business/loginpage/` → `facebook.com/login` → `/r/user/error/`. Login cookies that worked fine on `facebook.com` and `developers.facebook.com` were NOT honored on `business.facebook.com`. Typing email+password got us in but landed on the confirmation gate.
+
+### The 3-step re-verification (in this order)
+
+After clicking "Confirm Account":
+
+1. **Phone code** — Meta SMS-codes the rental phone number (the SAME number we used during initial signup). Snapshot rental SMS history, click whatever Send button Meta shows, poll the rental for NEW SMS (not the old ones), type code into the field, submit.
+2. **Email code** — Meta sends a confirmation code to the FB email (Rambler). Snapshot Rambler IMAP using `(UNSEEN SUBJECT "security code")`, click Send/Next, poll for NEW code (not stale), type, submit.
+3. **CAPTCHA** — Meta shows an image-based challenge. **Hand off to user via Telegram** for now; future automation requires 2captcha/capsolver integration (same providers used for Rambler login CAPTCHA).
+
+After all three pass, account is unlocked and we land back on the dev portal flow we were trying to do.
+
+### Why the rental MUST be 7-day non-renewable
+
+The first 24h re-verify forces FB to SMS the rental number. If we used a one-shot TextVerified verification (which dies after first SMS), the re-verify SMS never arrives → account unrecoverable. The 7-day rental gives us a 7-day window for as many re-verifies as Meta wants to throw. Profile 4's rental `lr_01KSRH0PJ42VZTRX8W4D7XTBW2` covers this exact scenario.
+
+### Implementation pattern (same as initial signup, just different page)
+
+```python
+# Snapshot SMS BEFORE clicking anything that triggers a send
+existing_sms = set(str(it['id']) for it in cli.get_sms(RENTAL_ID))
+
+# Click whatever "Send code" / "Send verification" button Meta shows
+# Poll for NEW SMS only
+while time.time() < deadline:
+    for it in cli.get_sms(RENTAL_ID):
+        if str(it['id']) not in existing_sms:
+            code = re.search(r'\b(\d{4,8})\b', it['smsContent']).group(1)
+            break
+    time.sleep(8)
+# Type code, submit, advance
+```
+
+Same pattern for email. CAPTCHA needs separate work.
+
+### Key runbook addition for future automated wizard
+
+The /meta_dev_setup wizard must include a **24h cool-off check** before any "secondary action" (app creation, permission add, etc.). If the account is <24h old AND we hit /r/user/error/, automatically run the re-verify flow rather than failing or asking the user.
+
+---
+
 ## 8¾. Two-apps-per-account milestone (locked in 2026-05-29)
 
 **Every account gets TWO apps created** — one for Facebook posting, one for Instagram. Both are needed because each handles a different content surface and we'll later need to publish/test both flows.
