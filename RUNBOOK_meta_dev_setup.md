@@ -386,6 +386,17 @@ If any step deviates from the canonical sequence above, vision-debug before reac
 
 **Every account gets TWO apps created** — one for Facebook posting, one for Instagram. Both are needed because each handles a different content surface and we'll later need to publish/test both flows.
 
+### Wizard quirks (locked in 2026-05-29)
+
+The Create App wizard has 5 steps: **App details → Use cases → Business → Requirements → Overview** + a password re-prompt on submit. Several quirks to handle:
+
+1. **Guidance modal on entry** — when you first land on Create App, a modal pops up: *"There's a new way to create apps with Meta"* with buttons "Go back" / "Create app". The form is rendered underneath but blocked. **Press `Escape` to dismiss** (or click "Go back"). Do NOT click the modal's "Create app" — that may take a different code path.
+2. **Use cases custom React widget** — the use-case cards have NO native `input[type=checkbox]` and NO `role=checkbox` element. The visual checkbox is purely CSS. Click the **right side of the card** (bbox `x+650, y+height/2`) to tick it. Vision-verify `sidebar_step_active: "Use cases"` and the option is listed under `any_use_cases_listed_as_selected`.
+3. **Business step** — radio: *"I don't want to connect a business portfolio yet"*. Click the text label, then Next.
+4. **Requirements step** — usually shows *"No requirements identified"*. Just click Next.
+5. **Overview** — final Create app. After click, FB shows a password re-prompt modal: *"Please re-enter your password"* with the FB profile name visible. Type the FB password from blob field 2 (e.g. `pcndtipb`), click Submit.
+6. **"Failed to create app. Please try again." red banner is a FALSE NEGATIVE.** The app actually got created server-side. After the banner appears, navigate to `https://developers.facebook.com/apps` and vision-verify the app shows up in the list with an App ID. Do NOT retry the wizard — that creates duplicates.
+
 ### App #1 — Facebook posting
 
 - Random name via the §8¾.5 generator
