@@ -59,16 +59,20 @@ def random_name():
     return f'{random.choice(ADJ)} {random.choice(NOUN)} {random.randint(1,99)}'
 
 def parse_blob(blob):
-    """email:fbpw:email:emailpw:profile_url:dob:UA:base64_cookies → dict"""
+    """email:fbpw:email:emailpw:profile_url:dob:UA:base64_cookies → dict
+    URL contains 'https://' so split(':') over-splits. Use cookies for fb_id,
+    pattern-match the URL."""
     b64 = blob.rsplit(':', 1)[-1]
     cookies = json.loads(base64.b64decode(b64).decode('utf-8'))
-    parts = blob.split(':', 7)
+    fb_id = next((c['value'] for c in cookies if c['name']=='c_user'), '?')
+    head = blob.split(':')
+    email = head[0]; fb_pw = head[1]; email_pw = head[3]
+    m = re.search(r'(https://www\.facebook\.com/[^:]+)', blob)
+    profile_url = m.group(1) if m else ''
     return {
-        'email': parts[0], 'fb_pw': parts[1], 'email_pw': parts[3],
-        'profile_url': parts[4], 'dob': parts[5], 'ua': parts[6],
-        'cookies': cookies,
-        'fb_id': re.search(r'id=(\d+)', parts[4]).group(1),
-        'blob': blob,
+        'email': email, 'fb_pw': fb_pw, 'email_pw': email_pw,
+        'profile_url': profile_url, 'cookies': cookies,
+        'fb_id': fb_id, 'blob': blob,
     }
 
 def start_session(profile_id):
@@ -233,6 +237,7 @@ async def run_account(profile_id, acc):
         except: pass
         await asyncio.sleep(8)
         s = await page.screenshot(type='png')
+        shot(s, f'1️⃣ FB.com first load — {acc["email"]}')
         v = pj(vision(s, 'Reply ONLY JSON: {"is_logged_in":true|false,"profile_name_visible":"..."}'))
         hb(f'FB.com: logged_in={v.get("is_logged_in")} name={v.get("profile_name_visible")}')
         if not v.get('is_logged_in'):
@@ -258,6 +263,7 @@ async def run_account(profile_id, acc):
             except: pass
         hb(f'Get Started: {clicked}')
         await asyncio.sleep(8)
+        shot(await page.screenshot(type='png'), '2️⃣ after Get Started')
 
         # Phase D: walk Register → Verify
         # Register stage usually has just Continue
@@ -323,6 +329,7 @@ async def run_account(profile_id, acc):
             await asyncio.sleep(10)
         if not code: result['status']='no_sms'; return result
         hb(f'📨 SMS: {code}')
+        shot(await page.screenshot(type='png'), f'3️⃣ got SMS code {code}')
 
         await asyncio.sleep(4)
         ci = await find_visible_input(page, exclude_with_value=True)
@@ -382,6 +389,7 @@ async def run_account(profile_id, acc):
             hb(f'🎯 Complete Registration: {cr}')
             if not cr: result['status']='no_cr_btn'; return result
             # 6-MIN SILENT WAIT — DO NOTHING
+            shot(await page.screenshot(type='png'), '4️⃣ Complete Registration clicked — entering 6-min silent wait')
             hb('⏳ 6-min silent wait per RUNBOOK §post-CR')
             await asyncio.sleep(360)
 
@@ -396,8 +404,10 @@ async def run_account(profile_id, acc):
             d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
 {"page_kind":"about_you|my_apps|dashboard|other","main_cta":"<text>"}'''))
         if d.get('page_kind') not in ('my_apps','dashboard') and 'create app' not in (d.get('main_cta','').lower()):
+            shot(await page.screenshot(type='png'), '❌ no dashboard after 9min')
             result['status']='no_dashboard'; return result
         hb('✅ dashboard reached')
+        shot(await page.screenshot(type='png'), '5️⃣ dashboard reached — starting FB app')
 
         # Phase I: Create FB app
         fb_id = await create_app_wizard(page, fb_app_name, 'Manage everything on your Page', acc['fb_pw'])
@@ -412,6 +422,7 @@ async def run_account(profile_id, acc):
         result['ig_app'] = ig_app_name
         result['ig_app_id'] = ig_id
         hb(f'IG app: {ig_app_name} → {ig_id}')
+        shot(await page.screenshot(type='png'), '7️⃣ both apps created — final state')
 
     # Phase K: privacy URL (telegra.ph) for FB app
     try:
@@ -580,6 +591,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
     await asyncio.sleep(8)
     s = await page.screenshot(type='png')
+    shot(s, f'6️⃣ /apps list after creating {app_name}')
     v = vision(s, f'In the apps list, find "{app_name}". Reply ONLY JSON: {{"app_listed":true|false,"app_id":"<the App ID number visible next to it, or null>"}}')
     d = pj(v)
     return d.get('app_id')
