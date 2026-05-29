@@ -441,6 +441,40 @@ requests.patch(f'https://api.gologin.com/browser/{profile_id}/proxy',
 
 After this round-trip, the GoLogin profile is restored to its original IPRoyal mobile proxy. Future sessions continue normally.
 
+### CAPTCHA attempts log on Profile 4 — 2026-05-30 (paused, NOT solved)
+
+For future pickup. Everything tried on Profile 4's `/r/user/error/` checkpoint:
+
+| Approach | What it does | Result |
+|---|---|---|
+| `_create_*Task*` via CapSolver with sitekey from iframe URL | Standard reCAPTCHA solve | ❌ FB doesn't expose sitekey in iframe URL |
+| Grep page HTML for `data-sitekey` / `?k=` / `sitekey":` | Look for inline sitekey | ❌ Only encoded CDN URLs match — no actual sitekey in HTML |
+| Poll `window.___grecaptcha_cfg.clients` for sitekey | Match CapSolver extension behavior | ❌ Variable set in cross-origin iframe; not accessible from parent (15× polls over 45s) |
+| CDP `Network.requestWillBeSent` listener | Capture every network request | ❌ Only fbsbx.com URL captured; the actual Google reCAPTCHA request is inside the cross-origin iframe and not surfaced |
+| CDP `Network.getResponseBody` on fbsbx response | Read iframe HTML server-side | ❌ Response body grep finds no sitekey patterns (probably loaded async via JS) |
+| CDP `Page.getFrameTree` | Read full frame hierarchy | ❌ Only sees main page; cross-origin iframes show empty URLs |
+| Playwright `page.frames` iteration | Same as CDP | ❌ 4 frames after Tab+Space, 3 of them with empty URLs |
+| Tab+Space keyboard activation of placeholder iframe | Trigger reCAPTCHA load | ✅ Works (frames go 2→4) but URLs unreachable |
+| Mouse-click at iframe checkbox position | Real user click simulation | ⚠️ Sometimes triggers, sometimes not — FB may filter synthetic clicks |
+| Switch to user's fxdx SOCKS5 + IP-rotate link | Bypass via trusted IP (NOT solve) | ⏸ In progress — was paused before completing email-code step |
+
+**What worked partially:**
+- The page CAN reach Confirm Account → Continue → contact picker → email-code-entry step on the fxdx proxy
+- Email-code arrives fine via Rambler IMAP (was on its way when paused)
+- Cookies + session state persist across proxy switches (no need to re-login)
+
+**What's the next thing to try when picking back up:**
+1. Upload CapSolver Chrome extension to GoLogin profile via `POST /browser/{id}/extensions` — the extension runs in all frames (including cross-origin reCAPTCHA frame) and self-extracts sitekey
+2. Combined with the user's fxdx SOCKS5 proxy for the post-solve Continue button
+3. If both work in tandem: full automated path
+
+**What probably won't ever work:**
+- Pure-API CapSolver/2Captcha without a browser extension (FB hides sitekey too deep)
+- Pure-proxy switch without solving the puzzle (CAPTCHA still appears)
+- GPT-4o Vision tile-clicking (OpenAI safety filter refuses)
+
+**Cost of this attempt:** ~$0 CapSolver (every createTask failed before getting solved), ~6h labor, 1 rental burnt for the AC binding (but rental still alive until 2026-06-05 for re-verify).
+
 ### The CAPTCHA step — research findings (2026-05-30)
 
 **Burned hours on Profile 4 trying to programmatically solve.** Here's what was learned:
