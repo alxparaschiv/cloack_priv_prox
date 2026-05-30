@@ -44,6 +44,7 @@ import cookies
 import bg
 import proxy
 import meta_dev
+import rambler
 
 
 logging.basicConfig(
@@ -114,6 +115,10 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_proxy_count'):
         await proxy.proxy_text_received(update, context)
         return
+    if context.user_data.get("expecting_rambler_creds"):
+        await rambler.rambler_text_received(update, context)
+        return
+
     if context.user_data.get('expecting_meta_dev_blob'):
         await meta_dev.meta_dev_text_received(update, context)
         return
@@ -136,6 +141,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
         "🎨 /bg_generator — Solid-color background PNG\n"
         "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
+        "📬 /rambler — Fetch latest FB code from a Rambler inbox\n"
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Autonomous Meta-for-Developers account setup\n",
         parse_mode='HTML')
@@ -151,6 +157,7 @@ async def post_init(application):
         BotCommand("bg_generator",  "Solid-color background PNG"),
         BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
         BotCommand("proxy_status",  "Last /proxy batch result"),
+        BotCommand("rambler",       "Fetch latest FB code from a Rambler inbox"),
         BotCommand("meta_dev_setup","Autonomous Meta-for-Developers acc setup"),
         BotCommand("start",         "Help"),
     ])
@@ -242,6 +249,7 @@ def main():
     application.add_handler(CommandHandler("proxy", proxy.proxy_command))
     application.add_handler(CommandHandler("proxy_status", proxy.proxy_status_command))
     application.add_handler(CommandHandler("meta_dev_setup", meta_dev.meta_dev_command))
+    application.add_handler(CommandHandler("rambler", rambler.rambler_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(
