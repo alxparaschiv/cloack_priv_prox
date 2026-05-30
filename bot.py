@@ -178,6 +178,9 @@ async def post_init(application):
         ("🧪 /proxy",       ["GOLOGIN_API_KEY", "IPROYAL_USERNAME", "IPROYAL_PASSWORD",
                             "IPQS_API_KEY", "ABUSEIPDB_API_KEY",
                             "FB_PROXY_TEST_PHONE", "FB_PROXY_TEST_PASSWORD"]),
+        ("📬 /rambler",     []),  # zero env deps — user provides creds per-call
+        ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
+                                "GOOGLE_TOKEN_PICKLE"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
