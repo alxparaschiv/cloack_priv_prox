@@ -204,10 +204,14 @@ async def run_account(profile_id, acc):
     try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
     except: pass
     time.sleep(3)
-    r = requests.post(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, json={}, timeout=45)
-    info = r.json() if r.status_code in (200,202) else {}
-    if info.get('status') != 'profileStatuses.running':
-        hb('❌ session restart failed'); return None
+    info = {}
+    for attempt in range(20):
+        r = requests.post(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, json={}, timeout=45)
+        info = r.json() if r.status_code in (200,202) else {}
+        if info.get('status') == 'profileStatuses.running': break
+        time.sleep(3)
+    else:
+        hb(f'❌ session restart failed after 20 retries; last={info!r}'); return None
 
     cdp = f'wss://cloudbrowser.gologin.com/connect?token={pm.GOLOGIN_API_KEY}&profile={profile_id}'
 
