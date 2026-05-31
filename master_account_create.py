@@ -93,7 +93,15 @@ def start_session(profile_id):
     return None
 
 def rent_phone():
-    """7-day non-renewable Facebook rental. Returns (rental_id, e164_phone, phone_10digit)."""
+    """7-day non-renewable Facebook rental. Returns (rental_id, e164_phone, phone_10digit).
+    If REUSE_RENTAL_ID env var is set, reuses that rental + REUSE_RENTAL_PHONE without creating a new one."""
+    import os as _os, re as _re
+    if _os.environ.get('REUSE_RENTAL_ID'):
+        rental_id = _os.environ['REUSE_RENTAL_ID']
+        e164 = _os.environ.get('REUSE_RENTAL_PHONE', '')
+        ten = _re.sub(r'\D', '', e164)[-10:] if e164 else ''
+        hb(f're-using rental: {rental_id} {e164}')
+        return rental_id, e164, ten
     cli = tv_client()
     sale = cli._request('POST', '/api/pub/v2/reservations/rental', json={
         'allowBackOrderReservations': False, 'alwaysOn': True,
@@ -212,6 +220,9 @@ async def run_account(profile_id, acc):
         time.sleep(3)
     else:
         hb(f'❌ session restart failed after 20 retries; last={info!r}'); return None
+    # Settle: GoLogin reports 'running' before the Chromium process has fully loaded cookies.
+    # Wait ~6s so cookies are persisted before CDP connect (otherwise FB.com sees stale state).
+    time.sleep(6)
 
     cdp = f'wss://cloudbrowser.gologin.com/connect?token={pm.GOLOGIN_API_KEY}&profile={profile_id}'
 
