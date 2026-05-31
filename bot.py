@@ -45,6 +45,7 @@ import bg
 import proxy
 import meta_dev
 import rambler
+import sms_verified
 
 
 logging.basicConfig(
@@ -118,6 +119,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("expecting_rambler_creds"):
         await rambler.rambler_text_received(update, context)
         return
+    if context.user_data.get("expecting_sms_phone"):
+        await sms_verified.sms_text_received(update, context)
+        return
 
     if context.user_data.get('expecting_meta_dev_blob'):
         await meta_dev.meta_dev_text_received(update, context)
@@ -142,6 +146,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎨 /bg_generator — Solid-color background PNG\n"
         "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
         "📬 /rambler — Fetch latest FB code from a Rambler inbox\n"
+        "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Autonomous Meta-for-Developers account setup\n",
         parse_mode='HTML')
@@ -158,6 +163,7 @@ async def post_init(application):
         BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
         BotCommand("proxy_status",  "Last /proxy batch result"),
         BotCommand("rambler",       "Fetch latest FB code from a Rambler inbox"),
+        BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
         BotCommand("meta_dev_setup","Autonomous Meta-for-Developers acc setup"),
         BotCommand("start",         "Help"),
     ])
@@ -179,6 +185,7 @@ async def post_init(application):
                             "IPQS_API_KEY", "ABUSEIPDB_API_KEY",
                             "FB_PROXY_TEST_PHONE", "FB_PROXY_TEST_PASSWORD"]),
         ("📬 /rambler",     []),  # zero env deps — user provides creds per-call
+        ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
     ]
@@ -253,6 +260,7 @@ def main():
     application.add_handler(CommandHandler("proxy_status", proxy.proxy_status_command))
     application.add_handler(CommandHandler("meta_dev_setup", meta_dev.meta_dev_command))
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
+    application.add_handler(CommandHandler("sms", sms_verified.sms_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(
