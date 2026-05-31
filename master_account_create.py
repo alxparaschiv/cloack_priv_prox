@@ -20,6 +20,7 @@ import email as em
 
 sys.path.insert(0, '/app')
 import proxy as pm, meta_dev as mdm, accounts_sheet as asm, privacy
+import human_behavior as hbeh
 from textverified_client import _client as tv_client
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
@@ -42,6 +43,9 @@ def shot(b, c):
     try: requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto', files={'photo':('s.png',b,'image/png')}, data={'chat_id':CHAT,'caption':c[:1024]}, timeout=30)
     except: pass
 def vision(png, q, model='gpt-4o', max_tok=500):
+    if not png:
+        hb('vision skipped (no png)')
+        return '{}'
     b64 = base64.b64encode(png).decode()
     r = requests.post('https://api.openai.com/v1/chat/completions',
         headers={'Authorization':f'Bearer {OAI}'},
@@ -56,7 +60,7 @@ def pj(v):
     except: return {}
 
 def random_name():
-    return f'{random.choice(ADJ)} {random.choice(NOUN)} {random.randint(1,99)}'
+    return hbeh.random_app_name()
 
 def parse_blob(blob):
     """email:fbpw:email:emailpw:profile_url:dob:UA:base64_cookies → dict
@@ -76,22 +80,16 @@ def parse_blob(blob):
     }
 
 def start_session(profile_id):
-    """15-retry fresh IPRoyal + PATCH + restart. Returns exit_ip or None."""
-    pipeline = pm._pipeline()
-    for attempt in range(1, 16):
-        raw, _ = pipeline.get_iproyal_proxy_nyc()
-        ip, _, _ = pipeline.probe_proxy_exit_ip(raw)
-        if not ip: continue
-        parts = raw.split(':')
-        payload = {'mode':'http','host':parts[0],'port':int(parts[1]),'username':parts[2],'password':':'.join(parts[3:])}
-        r = requests.patch(f'https://api.gologin.com/browser/{profile_id}/proxy', json=payload, headers=H_GL, timeout=30)
-        if r.status_code != 204: continue
-        try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
-        except: pass
-        time.sleep(2)
+    """HARD RULE [feedback-never-touch-gologin-proxy]: no proxy ops. Restart session only."""
+    try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
+    except: pass
+    time.sleep(2)
+    for _ in range(20):
         r = requests.post(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, json={}, timeout=45)
         info = r.json() if r.status_code in (200,202) else {}
-        if info.get('status') == 'profileStatuses.running': return ip
+        if info.get('status') == 'profileStatuses.running':
+            return 'no-proxy-change'
+        time.sleep(3)
     return None
 
 def rent_phone():
@@ -195,6 +193,7 @@ async def run_account(profile_id, acc):
     from playwright.async_api import async_playwright
 
     hb(f'━━━━━━━ {acc["email"]} → Profile id={profile_id[:10]}… ━━━━━━━')
+    _hb_state = {'pos': None}  # human-behavior cursor tracking
 
     # Phase A: setup proxy + cookies + session
     ip = start_session(profile_id)
@@ -235,7 +234,7 @@ async def run_account(profile_id, acc):
         try:
             await page.goto('https://www.facebook.com/', wait_until='domcontentloaded', timeout=60000)
         except: pass
-        await asyncio.sleep(8)
+        await hbeh.sleep(5.6, 12.0)
         s = await page.screenshot(type='png')
         shot(s, f'1️⃣ FB.com first load — {acc["email"]}')
         v = pj(vision(s, 'Reply ONLY JSON: {"is_logged_in":true|false,"profile_name_visible":"..."}'))
@@ -244,9 +243,17 @@ async def run_account(profile_id, acc):
             result['status'] = 'fb_login_failed'
             return result
 
+        # Phase B.5: warm-up browse on fb.com — human-cadence signal
+        # See project-self-critique-and-warmup-hypotheses.md
+        hb('🛋️ warm-up browse 90s (scroll/hover fb.com)')
+        try:
+            await hbeh.fb_warmup_browse(page, ctx, seconds=90, state=_hb_state)
+        except Exception as e:
+            hb(f'warmup err (swallowed): {e}')
+
         # Phase C: dev portal Get Started
         await page.goto('https://developers.facebook.com/', wait_until='domcontentloaded', timeout=60000)
-        await asyncio.sleep(8)
+        await hbeh.sleep(5.6, 12.0)
         # Dismiss cookies banner
         await click_btn(page, 'Allow all cookies')
         await asyncio.sleep(3)
@@ -262,7 +269,7 @@ async def run_account(profile_id, acc):
                 if clicked: break
             except: pass
         hb(f'Get Started: {clicked}')
-        await asyncio.sleep(8)
+        await hbeh.sleep(5.6, 12.0)
         shot(await page.screenshot(type='png'), '2️⃣ after Get Started')
 
         # Phase D: walk Register → Verify
@@ -272,7 +279,7 @@ async def run_account(profile_id, acc):
         if d.get('sidebar_step_active') == 'Register':
             await asyncio.sleep(3)
             await click_btn(page, 'Continue')
-            await asyncio.sleep(10)
+            await hbeh.sleep(7.0, 15.0)
 
         # Phase D2: Verify Account — check for AC redirection
         s, d = await (lambda: (None, None))()  # placeholder
@@ -291,7 +298,7 @@ async def run_account(profile_id, acc):
                 return result
             # Back to dev portal verify
             await page.goto('https://developers.facebook.com/async/registration/dialog/?src=default', wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(8)
+            await hbeh.sleep(5.6, 12.0)
 
         # Type phone in verify account
         await asyncio.sleep(3)
@@ -308,14 +315,14 @@ async def run_account(profile_id, acc):
         if not pin: hb('❌ no phone input'); result['status']='no_phone_input'; return result
         await pin[1].click(); await asyncio.sleep(1.5); await pin[1].fill('')
         await pin[1].type(phone10, delay=140)
-        hb(f'typed phone {phone10}'); await asyncio.sleep(5)
+        hb(f'typed phone {phone10}'); await hbeh.sleep(3.5, 7.5)
 
         seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id))
         ok = await click_btn(page, 'Send Verification SMS')
         if not ok: ok = await click_btn(page, 'Send verification')
         hb(f'Send SMS: {ok}')
         if not ok: result['status']='no_send_btn'; return result
-        await asyncio.sleep(10)
+        await hbeh.sleep(7.0, 15.0)
 
         hb('📨 polling for SMS code (5min)…')
         code=None; deadline=time.time()+300
@@ -326,18 +333,18 @@ async def run_account(profile_id, acc):
                 cm=re.search(r'\b(\d{4,8})\b', t)
                 if cm: code=cm.group(1); break
             if code: break
-            await asyncio.sleep(10)
+            await hbeh.sleep(7.0, 15.0)
         if not code: result['status']='no_sms'; return result
         hb(f'📨 SMS: {code}')
         shot(await page.screenshot(type='png'), f'3️⃣ got SMS code {code}')
 
-        await asyncio.sleep(4)
+        await hbeh.sleep(2.8, 6.0)
         ci = await find_visible_input(page, exclude_with_value=True)
         if not ci: hb('❌ no code input'); result['status']='no_code_input'; return result
         await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
-        hb(f'typed code'); await asyncio.sleep(5)
+        hb(f'typed code'); await hbeh.sleep(3.5, 7.5)
         await click_btn(page, 'Continue')
-        await asyncio.sleep(12)
+        await hbeh.sleep(8.4, 18.0)
 
         # Phase E: Review Email → Confirm Email (no code expected — cookies skip)
         d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
@@ -345,7 +352,7 @@ async def run_account(profile_id, acc):
         if d.get('page_kind') in ('review_email',):
             await asyncio.sleep(3)
             await click_btn(page, 'Confirm Email')
-            await asyncio.sleep(10)
+            await hbeh.sleep(7.0, 15.0)
 
         # Phase F: Contact info → just continue if shown
         d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
@@ -353,7 +360,7 @@ async def run_account(profile_id, acc):
         if d.get('page_kind') == 'contact_info':
             await asyncio.sleep(3)
             await click_btn(page, 'Continue')
-            await asyncio.sleep(10)
+            await hbeh.sleep(7.0, 15.0)
 
         # Phase G: About You — random role + Complete Registration
         d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
@@ -366,9 +373,9 @@ async def run_account(profile_id, acc):
                 hb(f'❌ unexpected page: {d}'); result['status']='unexpected_post_phone'; return result
         else:
             # Click role card
-            await asyncio.sleep(4)
+            await hbeh.sleep(2.8, 6.0)
             await click_text(page, role)
-            await asyncio.sleep(5)
+            await hbeh.sleep(3.5, 7.5)
             # Vision verify CR enabled
             d2 = pj(vision(await page.screenshot(type='png'), 'Reply ONLY JSON: {"main_cta_enabled":true|false}'))
             if not d2.get('main_cta_enabled'):
@@ -380,18 +387,18 @@ async def run_account(profile_id, acc):
                         if await loc.count()>0:
                             box = await loc.bounding_box()
                             if box:
-                                await page.mouse.click(box['x']+800, box['y']+box['height']/2)
+                                await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                                 break
                     except: pass
-                await asyncio.sleep(4)
-            await asyncio.sleep(5)
+                await hbeh.sleep(2.8, 6.0)
+            await hbeh.sleep(3.5, 7.5)
             cr = await click_btn(page, 'Complete Registration')
             hb(f'🎯 Complete Registration: {cr}')
             if not cr: result['status']='no_cr_btn'; return result
             # 6-MIN SILENT WAIT — DO NOTHING
             shot(await page.screenshot(type='png'), '4️⃣ Complete Registration clicked — entering 6-min silent wait')
             hb('⏳ 6-min silent wait per RUNBOOK §post-CR')
-            await asyncio.sleep(360)
+            await hbeh.sleep(252.0, 540.0)
 
         # Phase H: verify dashboard
         d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
@@ -400,7 +407,7 @@ async def run_account(profile_id, acc):
         if d.get('page_kind') not in ('my_apps','dashboard') and 'apps' not in (d.get('main_cta','').lower() + ' '):
             # Still on about_you — Meta is processing slowly. Try another 3 min
             hb('still not on dashboard, +3min wait')
-            await asyncio.sleep(180)
+            await hbeh.sleep(126.0, 270.0)
             d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
 {"page_kind":"about_you|my_apps|dashboard|other","main_cta":"<text>"}'''))
         if d.get('page_kind') not in ('my_apps','dashboard') and 'create app' not in (d.get('main_cta','').lower()):
@@ -417,7 +424,7 @@ async def run_account(profile_id, acc):
 
         # Phase J: navigate back to /apps + Create IG app
         await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
-        await asyncio.sleep(8)
+        await hbeh.sleep(5.6, 12.0)
         ig_id = await create_app_wizard(page, ig_app_name, 'Manage messaging & content on Instagram', acc['fb_pw'])
         result['ig_app'] = ig_app_name
         result['ig_app_id'] = ig_id
@@ -440,12 +447,12 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     """Bind phone to FB account via Accounts Center first, then return."""
     hb('🔁 entering AC binding flow')
     await page.goto('https://accountscenter.facebook.com/personal_info/contact_points/', wait_until='domcontentloaded', timeout=60000)
-    await asyncio.sleep(7)
+    await hbeh.sleep(4.9, 10.5)
     await asyncio.sleep(3)
     await click_btn(page, 'Add new contact')
-    await asyncio.sleep(5)
+    await hbeh.sleep(3.5, 7.5)
     await click_btn(page, 'Add mobile number')
-    await asyncio.sleep(6)
+    await hbeh.sleep(4.2, 9.0)
     pin = None
     for f in page.frames:
         for sel in ['input[placeholder*="mobile" i]','input[placeholder*="phone" i]','input[type="tel"]']:
@@ -457,7 +464,7 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     if not pin: hb('❌ no AC phone input'); return False
     await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
     await pin[1].type(phone10, delay=140)
-    await asyncio.sleep(4)
+    await hbeh.sleep(2.8, 6.0)
     # Click profile name row (toggle checkbox)
     if profile_name:
         for f in page.frames:
@@ -474,27 +481,27 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
                 if await loc.count()>0 and await loc.is_visible():
                     await loc.click(); break
             except: pass
-    await asyncio.sleep(4)
+    await hbeh.sleep(2.8, 6.0)
     seen_email = email_snap(email, email_pw)
     await asyncio.sleep(3)
     await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(7.0, 15.0)
     hb('📨 polling for AC email code (3min)…')
     code = None
     deadline = time.time()+180
     while time.time()<deadline:
         code = email_poll(email, email_pw, seen_email)
         if code: break
-        await asyncio.sleep(10)
+        await hbeh.sleep(7.0, 15.0)
     if not code: hb('❌ no AC email code'); return False
     hb(f'AC code: {code}')
-    await asyncio.sleep(4)
+    await hbeh.sleep(2.8, 6.0)
     ci = await find_visible_input(page, exclude_with_value=True)
     if not ci: hb('❌ no AC code input'); return False
     await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
-    await asyncio.sleep(5)
+    await hbeh.sleep(3.5, 7.5)
     await click_btn(page, 'Next')
-    await asyncio.sleep(8)
+    await hbeh.sleep(5.6, 12.0)
     hb('✅ AC bound')
     return True
 
@@ -503,7 +510,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     """Walk Create App wizard for one app. Returns app ID from /apps list, or None."""
     hb(f'creating app: {app_name} ({use_case_text})')
     await click_btn(page, 'Create App') or await click_btn(page, 'Create app')
-    await asyncio.sleep(8)
+    await hbeh.sleep(5.6, 12.0)
     # Dismiss "new way" guidance modal
     await page.keyboard.press('Escape')
     await asyncio.sleep(3)
@@ -516,7 +523,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.press('Control+a'); await el.press('Delete')
                     break
         except: pass
-    await page.mouse.click(100, 100)
+    await hbeh.click(page, 100, 100, _hb_state)
     await asyncio.sleep(2)
 
     # Type App name in the y=200..350 input (avoid search bar at y=17)
@@ -525,9 +532,9 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
-    hb(f'name typed'); await asyncio.sleep(4)
+    hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
     await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(7.0, 15.0)
 
     # Use cases → All (19) → click the target use case card
     for f in page.frames:
@@ -546,12 +553,12 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await asyncio.sleep(2)
                 box = await loc.bounding_box()
                 if box:
-                    await page.mouse.click(box['x']+800, box['y']+box['height']/2)
+                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
-    await asyncio.sleep(4)
+    await hbeh.sleep(2.8, 6.0)
     await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(7.0, 15.0)
 
     # Business: I don't want
     for f in page.frames:
@@ -560,15 +567,15 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
             if await loc.count()>0 and await loc.is_visible():
                 await loc.click(); break
         except: pass
-    await asyncio.sleep(4)
+    await hbeh.sleep(2.8, 6.0)
     await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(7.0, 15.0)
     # Requirements: just Next
     await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(7.0, 15.0)
     # Overview: Create app
     await click_btn(page, 'Create app')
-    await asyncio.sleep(6)
+    await hbeh.sleep(4.2, 9.0)
     # Password popup
     for i in range(20):
         await asyncio.sleep(2)
@@ -580,16 +587,16 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.type(fb_pw, delay=140)
                     await asyncio.sleep(3)
                     await click_btn(page, 'Submit')
-                    await asyncio.sleep(15)
+                    await hbeh.sleep(10.5, 22.5)
                     break
             except: pass
         else: continue
         break
 
     # Verify via /apps
-    await asyncio.sleep(5)
+    await hbeh.sleep(3.5, 7.5)
     await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
-    await asyncio.sleep(8)
+    await hbeh.sleep(5.6, 12.0)
     s = await page.screenshot(type='png')
     shot(s, f'6️⃣ /apps list after creating {app_name}')
     v = vision(s, f'In the apps list, find "{app_name}". Reply ONLY JSON: {{"app_listed":true|false,"app_id":"<the App ID number visible next to it, or null>"}}')
