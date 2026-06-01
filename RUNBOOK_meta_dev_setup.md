@@ -745,20 +745,28 @@ User's framing: *"this will be it for today tomorrow we're gonna work on publish
 
 ---
 
-## 9. The 5 shards (implementation status)
+## 9. The shards (implementation status)
 
 | Shard | What it does | Status |
 |---|---|---|
-| 1 | Profile picker + FB cookie login | ✅ working |
-| 2 | Meta Dev signup form-fill | ✅ working (manual AC phone-bind triggered) |
-| 3 | TextVerified phone verify | ✅ working via snapshot-then-poll |
-| 4 | Rambler email + CAPTCHA for FB confirmation codes | partial — IMAP poll works, login CAPTCHA pending |
-| 5 | Per-step DMs, /meta_dev_status, audit log, error recovery | partial — DMs + CSV done |
-| 6 | First app (FB / Pages API) creation | ✅ working — Profile 4 / `Sample Project 99` / App ID `101734734125658` (2026-05-29) |
-| 7 | Second app (IG / Manage messaging) creation | ⏸ open — wizard got stuck on Profile 4, retry tomorrow with fresh login |
-| 8 | Publish app + privacy URL + app secret env-var wiring | ⏸ tomorrow |
-| 9 | Connect separately-created FB Page to dev account | ⏸ tomorrow |
-| 10 | Posting-workflow integration with App ID/Secret | ⏸ tomorrow |
+| 1 | Profile picker + FB cookie login | ✅ working — `master_account_create.py` Phase A/B |
+| 2 | Meta Dev signup form-fill | ✅ working — Phase C/D (Register → Verify Account → Contact info → About you → Complete Registration). AC-first ordering implemented per [[feedback-ac-bind-before-wizard]]. |
+| 3 | TextVerified phone verify | ✅ working — snapshot-then-poll, also used by `/sms` bot command. |
+| 4 | Rambler email IMAP for FB codes | ✅ working — `rambler.py` + `/rambler` bot command. (Login CAPTCHA path still unsolved — see [[troubleshooting-capsolver-rambler-blocked]].) |
+| 5 | Per-step DMs + screenshots + state vision-gate | ✅ working — every gated_click + safe_passkey_dismiss sends Telegram screenshots + GPT-4o vision check. |
+| 6 | FB app (Pages API) creation | ✅ working — `master_account_create.create_app_wizard()`. |
+| 7 | IG app (Manage messaging) creation | ✅ working — same wizard, different use case. Per [[feedback-create-ig-app-also]]. |
+| 8 | Publish app + privacy URL + capture App Secret | ✅ **COMPLETE — `shard1_publish.py` (2026-06-02)**. Settings/Basic privacy URL → Save → reload-verify → Show secret + password popup capture (32-hex) → sidebar 'App Publish Status' → action Publish (.last to avoid sidebar nav) → verify "Published" in body. |
+| 9 | Customize page perms + Graph Explorer typeahead + Generate Token + extend | ✅ **COMPLETE — `shard2_perms_token.py` (2026-06-02)**. Customize Add 4 advanced perms → 10min cooldown → Explorer typeahead 5 perms (ArrowDown+Enter) → Generate → OAuth popup walker (Continue as → opt-in radio → Continue → Save → Got it) → capture short token via framenavigated → `/oauth/access_token?grant_type=fb_exchange_token` to extend → `/debug_token` to verify scopes. |
+| 10 | Telegram orchestrator `/setup_full` | ✅ **COMPLETE — `full_pipeline.py` + `setup_pipeline.py` (2026-06-02)**. User pastes blob into Telegram → bot validates + auto-picks Validated Profile N → spawns full_pipeline.py which chains master + shard1 + shard2. Screenshots stream to Telegram throughout. |
+| 11 | Connect separately-created FB Page to dev account + get long Page token | ⏸ MANUAL (low priority). After shard2's long user token, user connects a Page manually → `GET /me/accounts?access_token={long_user}` returns long-lived Page token. |
+| 12 | Posting-workflow integration with App ID/Secret + Page token | ⏸ MANUAL. Done via `/fb_setup` in poster bot — paste the long Page token, bot stores it. |
+
+**Validated end-to-end on META APP 12 (Coiedia Dannicus, 2026-06-02):**
+- FB app `LaunchLy` (2107024670234005) — published, secret `e280583110...14fdcb`
+- IG app `team app 40` (27097548376569946)
+- Privacy URL: https://telegra.ph/Privacy-Policy--LaunchLy-06-01
+- Long user token: 60-day, 6 scopes (read_insights + pages_show_list + pages_read_engagement + pages_manage_metadata + pages_manage_posts + public_profile)
 
 ---
 
