@@ -46,6 +46,7 @@ import proxy
 import meta_dev
 import rambler
 import sms_verified
+import setup_pipeline
 
 
 logging.basicConfig(
@@ -125,6 +126,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get('expecting_meta_dev_blob'):
         await meta_dev.meta_dev_text_received(update, context)
+        return
+    # Setup-pipeline: chat-scoped state (not user_data — see setup_pipeline._state)
+    if await setup_pipeline.setup_full_text_received(update, context):
         return
     # No active flow — silently ignore (or could echo a help hint)
 
@@ -261,6 +265,8 @@ def main():
     application.add_handler(CommandHandler("meta_dev_setup", meta_dev.meta_dev_command))
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
+    application.add_handler(CommandHandler("setup_full", setup_pipeline.setup_full_command))
+    application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
     application.add_handler(CallbackQueryHandler(
