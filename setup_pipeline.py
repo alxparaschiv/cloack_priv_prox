@@ -110,12 +110,13 @@ async def setup_full_text_received(update: Update, context: ContextTypes.DEFAULT
         parse_mode='Markdown'
     )
 
-    # Spawn full_pipeline.py as background subprocess
+    # Spawn master_account_create.py — the ONE unified script (no more full_pipeline shim).
+    # Per [[feedback-one-script-no-parallel]]: shards 1+2 are inlined into master now.
     log_path = f'/tmp/setup_full_{c_user}.log'
     try:
         with open(log_path, 'w') as logf:
             subprocess.Popen(
-                ['python3', '-u', '/app/full_pipeline.py', blob, profile_name],
+                ['python3', '-u', '/app/master_account_create.py', blob, profile_name],
                 stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True,  # detach from this process group
             )

@@ -1,19 +1,64 @@
-"""Master flow for ONE account end-to-end.
+"""ONE FILE — end-to-end Meta Dev account creation.
 
-Stages:
-  1. Setup: fresh IPRoyal proxy + cookies push + session start
-  2. FB login confirm
-  3. Dev portal → Get Started → Register Continue
-  4. Verify Account: type phone, snapshot SMS, Send, poll NEW, type code, Continue
-       — If "You can only complete this action in Accounts Center" → AC bind detour
-  5. Review Email → Confirm Email (cookies skip the code)
-  6. Contact info auto-advance
-  7. About You → random role → Complete Registration
-  8. 6-MIN SILENT WAIT
-  9. FB app: Create App → name → Next → All(19) → Manage Page → Next → Business no → Next → Next → Create app → password
- 10. IG app: same flow but Manage messaging & content on Instagram
- 11. Privacy URL via privacy.py
- 12. Save .txt to Drive blobs folder + upsert CSV
+═══════════════════════════════════════════════════════════════════
+🛑 ARCHITECTURE RULES (immovable — break = burn an account)
+═══════════════════════════════════════════════════════════════════
+
+1. ONE SCRIPT, ONE PROCESS. Never subprocess.Popen another script
+   while this one is running. Never run multiple Python files in
+   parallel against the same GoLogin profile. (VP43 burn 2026-06-02
+   was caused by concurrent scripts.)
+
+2. NEVER goto AWAY from the wizard tab during stages D-G. After
+   clicking Get Started, the wizard tab is the wizard. NO goto to
+   /apps, /tools/explorer, /settings, etc. until Phase H (after CR
+   + 6min wait + dashboard reached).
+
+3. NEVER click the BLUE button on the passkey 'Next time, skip the
+   code' modal. ONLY the gray 'Not now'/'Skip'. NEVER any fallback
+   button if Not now is unclickable — HALT and surface to user.
+
+4. After typing the AC email confirmation code + Next, do a PURE
+   asyncio.sleep(90) with ZERO Playwright operations on the modal.
+   Playwright's click(timeout=...) auto-retries on disabled buttons
+   can dispatch events that wake the BLUE button.
+
+5. Vision is a VALIDATION layer, NOT a decision driver. After every
+   meaningful click, screenshot + GPT-4o vision YES/NO. If vision
+   says NO or hallucinates → HALT, don't proceed.
+
+6. Body-text keyword check is STRONGER than vision JSON keys.
+   Vision can misread 'Review Your Email Address' as page_kind=
+   'contact_info'. Read body.innerText and check for literal
+   keyword strings before deciding the wizard step.
+
+7. Never close/escape/restart any tab during the wizard. NO
+   resumes. NO state save + reload. ONE GO from blob to long token.
+
+8. AC binding goes FIRST (Phase C-NEW), wizard SECOND (Phase D).
+   This avoids the FB silent-SMS-throttle that burns rentals.
+
+═══════════════════════════════════════════════════════════════════
+Stages (all inline, single process):
+═══════════════════════════════════════════════════════════════════
+  A: Setup — proxy + cookies push + session restart
+  B: FB login confirm + interstitial dismiss
+  B.5: 90s warmup browse on fb.com
+  C-NEW: AC phone binding (FIRST — before wizard) [feedback-ac-bind-before-wizard]
+  C: Dev portal → Get Started → Register Continue
+  D: Verify Account: type phone, snapshot SMS, Send, poll, type code, Continue
+  E: Review Email → Confirm Email (body-keyword check, not vision JSON)
+  F: Contact info auto-advance
+  G: About You → random role → Complete Registration
+  H: 6-MIN SILENT WAIT (no reload, no click)
+  I: Create FB app + IG app (use case wizard, business=no, password popup)
+  J: Privacy URL via telegra.ph
+  K: SHARD 1 — Settings/Basic privacy URL + Save + Show secret + Publish
+  L: SHARD 2 — Customize add 4 perms + 10min cooldown + Explorer 5 perms +
+              Generate OAuth + extend programmatically + verify scopes
+  M: Save .txt to Drive + CSV with full credentials
+
+Triggered from Telegram via /setup_full (see setup_pipeline.py).
 """
 import sys, os, asyncio, requests, base64, time, re, json, random, imaplib, pickle
 import email as em
@@ -249,19 +294,49 @@ async def safe_passkey_dismiss(page, label='passkey'):
 
     Raises on Not now click failure — caller MUST halt (never click any fallback button).
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-    has_passkey, _ = await vision_gate(page, f'{label}-passkey-detect',
-        'Is the FB "Next time, skip the code" passkey modal currently visible (with gray "Not now" / "Skip" button on the LEFT and a blue "Create a passkey" button on the RIGHT)?',
-        max_wait=60)
-    if not has_passkey: return False
-    hb('⏳ passkey detected — 25s settle wait before Not now click')
-    await asyncio.sleep(25)
+    # First: check if a passkey modal is even on screen (body keyword check is more reliable than vision)
+    body = await page.evaluate("() => document.body.innerText")
+    if 'Next time, skip the code' not in body and 'skip the code' not in body:
+        hb(f'[{label}] no passkey modal on screen (body keyword check)')
+        return False
+
+    # 🛑 PASSIVE 90s WAIT — ZERO Playwright operations on the modal
+    # Critical: Playwright's click(timeout=...) auto-retries on disabled buttons
+    # which can dispatch events to the focused (blue) button. VP43 was burned this
+    # way 2026-06-02. Pure asyncio.sleep is the ONLY safe operation here.
+    hb('⏳ passkey detected — PASSIVE 90s WAIT (zero Playwright touches on modal)')
+    await asyncio.sleep(90)
+    shot(await page.screenshot(type='png'), f'[{label}] post-90s — Not now should be enabled now')
+
+    # POLL Not now disabled state via read-only evaluate (no clicks)
+    for poll in range(6):  # up to 6 × 15s = 90s additional
+        info = await page.evaluate("""() => {
+            const b = Array.from(document.querySelectorAll('button,[role=button],div[role=button]'))
+                .find(b => (b.innerText||'').trim() === 'Not now' && b.offsetParent !== null);
+            return b ? {disabled: b.disabled || b.getAttribute('aria-disabled') === 'true'} : null;
+        }""")
+        hb(f'[{label}] Not now poll {poll+1}: {info}')
+        if not info:
+            hb(f'[{label}] no Not now button — modal may have closed itself')
+            return True  # treat as success
+        if not info['disabled']: break
+        await asyncio.sleep(15)
+    else:
+        # Loop completed without break = button stayed disabled the whole time
+        hb(f'[{label}] ❌ Not now NEVER became enabled — HALT, surface to user')
+        raise Exception(f'passkey Not now stayed disabled for 180s+ — manual intervention required')
+
+    # NOW click — Not now is enabled, modal-scoped role locator
+    hb(f'[{label}] Not now ENABLED — clicking via modal-scoped role')
     modal = page.locator('div[role="dialog"]:has-text("skip the code")')
-    btn = modal.get_by_role('button', name='Not now')
-    await btn.wait_for(state='visible', timeout=10000)
-    await btn.click(timeout=15000)
-    hb('✅ passkey dismissed via Not now (modal-scoped role locator)')
-    await asyncio.sleep(4)
-    return True
+    try:
+        await modal.get_by_role('button', name='Not now').click(timeout=8000)
+        hb(f'[{label}] ✅ passkey dismissed')
+        await asyncio.sleep(5)
+        return True
+    except Exception as e:
+        hb(f'[{label}] ❌ Not now click failed: {e}')
+        raise  # caller HALTS — never fall back to other button
 
 def random_name():
     return hbeh.random_app_name()
@@ -647,20 +722,32 @@ async def run_account(profile_id, acc):
         except Exception as e:
             hb(f'❌ HALT: passkey Not now click failed: {e}'); result['status']='passkey_dismiss_failed'; return result
 
-        # Phase E: Review Email → Confirm Email (no code expected — cookies skip)
-        d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
-{"page_kind":"review_email|contact_info|about_you|other","main_cta":"<text>"}'''))
-        if d.get('page_kind') in ('review_email',):
+        # Phase E: Review Email → Confirm Email
+        # ⚠️ VP43 LESSON: vision JSON page_kind misread Review Email as 'contact_info'.
+        # Use body-keyword check instead — much more reliable.
+        body = await page.evaluate("() => document.body.innerText")
+        if 'Review Your Email Address' in body and 'Confirm Email' in body:
+            hb('📧 Phase E: on Review Email step (body keyword check)')
             await asyncio.sleep(3)
             await gated_click(page, 'Confirm Email',
                 'Is this the Review Email step with a Confirm Email button?',
                 label='confirm-email')
             await hbeh.sleep(7.0, 15.0)
+        else:
+            hb('Phase E: not on Review Email — skip')
 
         # Phase F: Contact info → just continue if shown
-        d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
-{"page_kind":"contact_info|about_you|other","main_cta":"<text>"}'''))
-        if d.get('page_kind') == 'contact_info':
+        body = await page.evaluate("() => document.body.innerText")
+        # Body-keyword check: Contact info step shows the Contact info nav AND Continue button
+        # AND does NOT show role choices (which would indicate About You)
+        on_contact_info = (
+            'Contact info' in body
+            and 'Continue' in body
+            and not any(role in body for role in ['Developer','Analyst','Marketer','Product manager','Student'])
+            and 'Confirm Email' not in body  # not on review email
+        )
+        if on_contact_info:
+            hb('📞 Phase F: on Contact info step')
             await asyncio.sleep(3)
             await gated_click(page, 'Continue',
                 'Is this the Contact info wizard step with a Continue button?',
@@ -738,16 +825,332 @@ async def run_account(profile_id, acc):
         hb(f'IG app: {ig_app_name} → {ig_id}')
         shot(await page.screenshot(type='png'), '7️⃣ both apps created — final state')
 
-    # Phase K: privacy URL (telegra.ph) for FB app
-    try:
-        url, err = privacy._create_telegraph_privacy_policy(fb_app_name)
-        result['privacy_url'] = url
-        hb(f'privacy URL for FB app: {url}')
-    except Exception as e:
-        hb(f'privacy err: {e}')
+        # Phase J: privacy URL (telegra.ph) for FB app — pure HTTP, but keep inside async with
+        try:
+            url, err = privacy._create_telegraph_privacy_policy(fb_app_name)
+            result['privacy_url'] = url
+            hb(f'privacy URL for FB app: {url}')
+        except Exception as e:
+            hb(f'privacy err: {e}')
+            result['privacy_url'] = None
 
-    result['status'] = 'apps_created'
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Phase K: SHARD 1 (inlined) — privacy URL + Save + Show secret + Publish
+        # Per [[project-shard1-publish-runbook]]. Inlined to avoid subprocess.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if os.environ.get('SKIP_SHARD1') != '1' and fb_id and result['privacy_url']:
+            try:
+                await phase_k_publish(page, fb_id, result['privacy_url'], acc['fb_pw'], result)
+            except Exception as e:
+                hb(f'⚠️ shard1 (publish) failed: {e}')
+                result['shard1_error'] = str(e)
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Phase L: SHARD 2 (inlined) — Customize 4 perms + 10min cooldown + Explorer 5 perms
+        #                              + Generate OAuth + extend programmatically
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if os.environ.get('SKIP_SHARD2') != '1' and fb_id and result.get('app_secret'):
+            try:
+                await phase_l_perms_and_token(page, ctx, fb_id, result['app_secret'], acc['fb_pw'], result)
+            except Exception as e:
+                hb(f'⚠️ shard2 (perms+token) failed: {e}')
+                result['shard2_error'] = str(e)
+
+    # — exited async with —
+    result['status'] = 'apps_created' if not result.get('long_user_token') else 'apps_created_published_with_token'
     return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SHARD 1 — Settings/Basic privacy URL + Save + Show Secret + Publish (inlined)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
+    """Set privacy URL → Save → reload-verify → Show secret + capture → sidebar Publish.
+    Per [[project-shard1-publish-runbook]]."""
+    hb(f'━━━ Phase K (shard 1): publish app {app_id} ━━━')
+    await page.goto(f'https://developers.facebook.com/apps/{app_id}/settings/basic/', wait_until='domcontentloaded', timeout=60000)
+    await hbeh.sleep(8, 14)
+    shot(await page.screenshot(type='png'), 'K1: Settings/Basic loaded')
+
+    # Find + fill privacy URL input
+    priv_loc = page.locator('input[placeholder="Privacy policy for Login dialog and app details"]').first
+    await priv_loc.scroll_into_view_if_needed(timeout=8000)
+    await hbeh.sleep(1, 2)
+    await priv_loc.click()
+    await page.keyboard.press('Control+A'); await hbeh.sleep(0.3, 0.6)
+    await page.keyboard.press('Delete'); await hbeh.sleep(0.5, 1)
+    await page.keyboard.type(privacy_url, delay=random.randint(50, 90))
+    await hbeh.sleep(2, 3.5)
+    val = await priv_loc.input_value()
+    if val != privacy_url:
+        hb(f'❌ privacy URL mismatch — got {val!r}')
+        result['shard1_error'] = 'privacy_url_typing_mismatch'
+        return
+    shot(await page.screenshot(type='png'), 'K2: privacy typed')
+
+    # Save changes
+    save_loc = page.get_by_role('button', name='Save changes').first
+    await save_loc.scroll_into_view_if_needed(timeout=8000)
+    await hbeh.sleep(1.5, 2.5)
+    await save_loc.click(timeout=8000)
+    hb('Save changes clicked'); await hbeh.sleep(7, 12)
+
+    # Reload + verify
+    await page.reload(wait_until='domcontentloaded'); await hbeh.sleep(8, 12)
+    final = await page.locator('input[placeholder="Privacy policy for Login dialog and app details"]').first.input_value()
+    if final != privacy_url:
+        hb(f'❌ privacy URL did not persist — got {final!r}')
+        result['shard1_error'] = 'privacy_url_persist_failed'
+        return
+    hb('✅ privacy URL persisted')
+    shot(await page.screenshot(type='png'), 'K3: privacy persisted')
+
+    # Show App Secret + password popup
+    app_secret = None
+    try:
+        # Try get_by_role first
+        try:
+            await page.get_by_role('button', name='Show', exact=True).first.click(timeout=5000)
+            hb('Show clicked')
+        except:
+            # Fallback: coord-based on the App Secret row
+            cands = await page.evaluate("""() => Array.from(document.querySelectorAll('button,div[role=button]')).filter(b => (b.innerText||'').trim() === 'Show' && b.offsetParent !== null).map(b => { const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })""")
+            if cands:
+                await page.mouse.click(cands[0]['x'], cands[0]['y'])
+                hb('Show clicked via coords')
+        await hbeh.sleep(3, 5)
+        # Password modal
+        pwin = await page.query_selector('input[type="password"]')
+        if pwin and await pwin.is_visible():
+            await pwin.click(); await hbeh.sleep(1, 2)
+            await pwin.fill('')
+            await pwin.type(fb_pw, delay=random.randint(60, 100))
+            await hbeh.sleep(2, 3)
+            try: await page.get_by_role('button', name='Submit').click(timeout=8000)
+            except:
+                try: await page.keyboard.press('Enter')
+                except: pass
+            await hbeh.sleep(5, 8)
+            app_secret = await page.evaluate("""() => {
+                for (const inp of document.querySelectorAll('input')) {
+                    const v = (inp.value || '').trim();
+                    if (/^[a-f0-9]{32}$/.test(v)) return v;
+                }
+                return null;
+            }""")
+            hb(f'App Secret: {app_secret[:10] if app_secret else None}...')
+            result['app_secret'] = app_secret
+    except Exception as e: hb(f'secret capture err: {e}')
+
+    # Sidebar Publish click (NOT goto — that 302s to dashboard)
+    sidebar_pub = await page.evaluate("""() => {
+        for (const el of document.querySelectorAll('div[role="button"], a, button')) {
+            const t = (el.innerText || '').trim();
+            if (t.includes('App Publish Status')) {
+                const r = el.getBoundingClientRect();
+                if (r.x < 300) return {x: r.x + r.width/2, y: r.y + r.height/2};
+            }
+        }
+        return null;
+    }""")
+    if not sidebar_pub:
+        hb('❌ no sidebar App Publish Status item')
+        result['shard1_error'] = 'no_sidebar_publish'
+        return
+    await page.mouse.move(sidebar_pub['x']-30, sidebar_pub['y']-10, steps=8); await hbeh.sleep(0.3, 0.7)
+    await page.mouse.move(sidebar_pub['x'], sidebar_pub['y'], steps=5); await hbeh.sleep(0.2, 0.4)
+    await page.mouse.click(sidebar_pub['x'], sidebar_pub['y'])
+    await hbeh.sleep(8, 14)
+    shot(await page.screenshot(type='png'), 'K4: go_live page')
+
+    # Click Publish action — use .last
+    pub = page.get_by_role('button', name='Publish').last
+    try: await pub.scroll_into_view_if_needed(timeout=5000)
+    except: pass
+    await hbeh.sleep(1.5, 2.5)
+    await pub.click(timeout=8000)
+    hb('Publish action clicked')
+    await hbeh.sleep(12, 18)
+    shot(await page.screenshot(type='png'), 'K5: after Publish')
+
+    body = await page.evaluate("() => document.body.innerText.substring(0, 800)")
+    published = 'Published' in body and 'Unpublished' not in body[:500]
+    result['published'] = published
+    hb(f'PUBLISHED? {published}')
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SHARD 2 — Customize 4 perms + 10min cooldown + Explorer 5 perms + Generate + extend
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
+    """Customize page Add 4 perms + 10min cooldown + Graph Explorer typeahead + OAuth walker + extend.
+    Per [[project-shard2-page-token-runbook]]."""
+    hb(f'━━━ Phase L (shard 2): perms + token for app {app_id} ━━━')
+    CUSTOMIZE_PERMS = ['pages_manage_posts', 'pages_read_engagement', 'pages_manage_metadata', 'read_insights']
+    EXPLORER_PERMS = ['pages_show_list', 'pages_manage_posts', 'pages_read_engagement', 'pages_manage_metadata', 'read_insights']
+
+    # Customize Add 4 perms
+    await page.goto(f'https://developers.facebook.com/apps/{app_id}/use_cases/customize/?use_case_enum=PAGES_API', wait_until='domcontentloaded', timeout=60000)
+    await hbeh.sleep(10, 16)
+    shot(await page.screenshot(type='png'), 'L1: customize page')
+    for perm in CUSTOMIZE_PERMS:
+        hb(f'Customize: looking for {perm}')
+        try:
+            loc = page.get_by_text(perm, exact=True).first
+            await loc.scroll_into_view_if_needed(timeout=8000)
+            await hbeh.sleep(1.5, 2.5)
+            handle = await page.evaluate_handle("""(perm) => {
+                let pe = null;
+                for (const el of document.querySelectorAll('*')) {
+                    if ((el.innerText || '').trim() === perm && el.children.length < 3) { pe = el; break; }
+                }
+                if (!pe) return null;
+                let row = pe;
+                for (let d=0; d<6; d++) {
+                    row = row.parentElement;
+                    if (!row) return null;
+                    const rr = row.getBoundingClientRect();
+                    if (rr.width > 600 && rr.height > 40 && rr.height < 250) break;
+                }
+                for (const b of row.querySelectorAll('button, div[role="button"]')) {
+                    if ((b.innerText || '').trim() === 'Add') return b;
+                }
+                return null;
+            }""", perm)
+            el = handle.as_element() if handle else None
+            if el:
+                await el.click(timeout=6000)
+                hb(f'  ✅ Added {perm}')
+            else:
+                hb(f'  ⏭ {perm} no Add button (already granted?)')
+        except Exception as e: hb(f'  err {perm}: {e}')
+        await hbeh.sleep(3, 5)
+    shot(await page.screenshot(type='png'), 'L2: after add perms')
+
+    # 10-min cooldown
+    hb('⏳ 10-min cooldown before Graph Explorer (anti-flag)')
+    await asyncio.sleep(600)
+
+    # Graph Explorer
+    await page.goto('https://developers.facebook.com/tools/explorer/', wait_until='domcontentloaded', timeout=60000)
+    await hbeh.sleep(10, 16)
+    shot(await page.screenshot(type='png'), 'L3: explorer')
+
+    # Token capture via framenavigated on ALL pages
+    captured = {'val': None}
+    def hook(p):
+        async def on_nav(frame):
+            try:
+                u = frame.url
+                if 'access_token=' in u:
+                    m = re.search(r'access_token=([^&#]+)', u)
+                    if m and not captured['val']: captured['val'] = m.group(1); hb(f'token URL: {m.group(1)[:30]}...')
+            except: pass
+        p.on('framenavigated', on_nav)
+    for p in ctx.pages: hook(p)
+    ctx.on('page', hook)
+
+    # Type each perm
+    combo = page.locator('input[placeholder="Add a Permission"]').first
+    for perm in EXPLORER_PERMS:
+        try:
+            await combo.click(); await hbeh.sleep(0.7, 1.3)
+            await page.keyboard.press('Control+A'); await hbeh.sleep(0.3, 0.6)
+            await page.keyboard.press('Delete'); await hbeh.sleep(0.5, 1)
+            await page.keyboard.type(perm, delay=random.randint(60, 100))
+            await hbeh.sleep(2, 3.5)
+            await page.keyboard.press('ArrowDown'); await hbeh.sleep(0.5, 1)
+            await page.keyboard.press('Enter')
+            hb(f'+ {perm}')
+            await hbeh.sleep(2.5, 4)
+        except Exception as e: hb(f'  {perm}: {e}')
+    shot(await page.screenshot(type='png'), 'L4: perms typed')
+
+    # Generate Access Token
+    try:
+        gen = page.get_by_role('button', name='Generate Access Token').first
+        await gen.scroll_into_view_if_needed(timeout=5000); await hbeh.sleep(1, 2)
+        await gen.click(timeout=8000); hb('Generate clicked')
+    except Exception as e: hb(f'Generate fail: {e}'); result['shard2_error']='generate_fail'; return
+    await hbeh.sleep(6, 10)
+    shot(await page.screenshot(type='png'), 'L5: post Generate')
+
+    # OAuth popup walker (looped — handles screens in order: Continue as → opt-in radio → Continue → Save → Got it)
+    for step in range(10):
+        popup = next((p for p in ctx.pages if 'dialog/oauth' in p.url or 'dialog/permissions' in p.url), None)
+        if not popup or popup.is_closed():
+            hb(f'OAuth popup closed at step {step}')
+            break
+        try:
+            body = await popup.evaluate("() => document.body ? document.body.innerText.substring(0,800) : ''")
+        except: break
+        hb(f'OAuth step {step}: body[:120]: {body[:120]!r}')
+        try:
+            if 'Continue as' in body and 'Continue' in body:
+                await popup.get_by_role('button', name='Continue', exact=True).click(timeout=5000); hb('  → Continue (continue-as)')
+            elif 'Opt in to all' in body:
+                try: await popup.get_by_role('radio', name='Opt in to all current and future Pages').click(timeout=4000); hb('  radio: Opt in')
+                except: pass
+                await asyncio.sleep(2)
+                await popup.get_by_role('button', name='Continue', exact=True).click(timeout=5000); hb('  → Continue (opt-in)')
+            elif 'Save' in body:
+                await popup.get_by_role('button', name='Save', exact=True).click(timeout=5000); hb('  → Save')
+            elif 'Got it' in body:
+                await popup.get_by_role('button', name='Got it', exact=True).click(timeout=5000); hb('  → Got it')
+            else:
+                hb(f'  unknown popup state — break')
+                break
+        except Exception as e:
+            hb(f'  step {step} err: {str(e)[:120]}')
+            if captured['val']: break
+        await asyncio.sleep(5)
+    await asyncio.sleep(5)
+    shot(await page.screenshot(type='png'), 'L6: post OAuth')
+
+    # Capture short token
+    short_token = captured['val']
+    if not short_token:
+        for p in ctx.pages:
+            m = re.search(r'access_token=([^&#]+)', p.url)
+            if m: short_token = m.group(1); break
+    if not short_token:
+        try:
+            val = await page.evaluate("""() => { for (const inp of document.querySelectorAll('input,textarea')) { const v=(inp.value||'').trim(); if (v.startsWith('EAA') && v.length > 100) return v; } return null; }""")
+            if val: short_token = val
+        except: pass
+    if not short_token:
+        hb('❌ no short token captured')
+        result['shard2_error'] = 'no_short_token'
+        return
+    hb(f'short token: {short_token[:30]}...')
+    result['short_user_token'] = short_token
+
+    # Extend programmatically
+    r = requests.get('https://graph.facebook.com/v25.0/oauth/access_token', params={
+        'grant_type': 'fb_exchange_token',
+        'client_id': app_id,
+        'client_secret': app_secret,
+        'fb_exchange_token': short_token,
+    }, timeout=30)
+    data = r.json()
+    long_token = data.get('access_token')
+    if not long_token:
+        hb(f'❌ extend failed: {json.dumps(data)[:300]}')
+        result['shard2_error'] = 'extend_failed'
+        return
+    result['long_user_token'] = long_token
+    result['expires_in'] = data.get('expires_in')
+    hb(f'✅ long token: {long_token[:30]}... expires_in={data.get("expires_in")}')
+
+    # Verify scopes via debug_token
+    r2 = requests.get('https://graph.facebook.com/v25.0/debug_token', params={
+        'input_token': long_token,
+        'access_token': f'{app_id}|{app_secret}',
+    }, timeout=30)
+    debug = r2.json().get('data', {})
+    scopes = debug.get('scopes', [])
+    result['scopes'] = scopes
+    hb(f'scopes ({len(scopes)}): {scopes}')
 
 
 async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
