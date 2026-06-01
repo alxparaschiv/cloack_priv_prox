@@ -59,6 +59,210 @@ def pj(v):
     try: return json.loads(s)
     except: return {}
 
+async def wait_for_rendered(page, label, max_wait=90, poll=8):
+    """STAGE 1 (RULE #1): poll until page is RENDERED (not LOADING). Returns vision response or None.
+
+    Per feedback-vision-gates-every-action + feedback-wait-for-stable-screen:
+    one-shot vision checks fire during loading gap → script proceeds on stale info.
+    This loop separates 'still loading' from 'rendered with content'."""
+    deadline = time.time() + max_wait
+    n = 0
+    while time.time() < deadline:
+        n += 1
+        try:
+            png = await page.screenshot(type='png')
+        except Exception as e:
+            hb(f'[render {label} #{n}] screenshot err: {e}')
+            await asyncio.sleep(poll); continue
+        shot(png, f'[render-poll {label} #{n}]')
+        r = vision(png,
+            "Is this page RENDERED (showing actual text/buttons/content) or LOADING (skeleton bars, spinner, blank, gray placeholders)? "
+            "Reply EXACTLY: 'RENDERED: <1-sent>' or 'LOADING: <1-sent>'.", max_tok=120)
+        hb(f'[render {label} #{n}] {r[:200]}')
+        if r.strip().upper().startswith('RENDERED'): return r
+        await asyncio.sleep(poll)
+    hb(f'⚠️ [render {label}] never RENDERED in {max_wait}s')
+    return None
+
+async def vision_gate(page, label, question, max_wait=90):
+    """STAGE 1 + STAGE 2 (RULE #1): wait rendered, then validate state. Returns (yes_bool, full_response).
+
+    If page never renders → returns (False, None) — caller should halt.
+    If page renders but question is NO → returns (False, response) — caller should halt.
+    If page renders and question is YES → returns (True, response) — caller proceeds."""
+    rendered = await wait_for_rendered(page, label, max_wait=max_wait)
+    if not rendered: return False, None
+    try:
+        png = await page.screenshot(type='png')
+    except: return False, None
+    r = vision(png, f'Page is rendered. {question}\nReply EXACTLY: "YES: <1-sent>" or "NO: <1-sent>".', max_tok=200)
+    hb(f'[gate {label}] {r[:300]}')
+    yes = r.strip().upper().startswith('YES')
+    return yes, r
+
+async def dismiss_fb_interstitials(page, max_loops=8):
+    """Dismiss FB blocking interstitials (ads choice, etc.) before proceeding.
+
+    [feedback-fb-ads-choice-interstitial]:
+    - First screen: "Make a choice about your ads" — click Get started
+    - Second screen: radio "Use for free with ads" + Continue button — pick free radio, click Continue
+    - May have 1-2 more confirmation screens
+
+    Variability: SOME accounts see this, SOME don't (region + A/B). Always check first."""
+    for i in range(max_loops):
+        try:
+            body = await page.evaluate("() => document.body.innerText")
+            url = page.url
+        except: return
+        hb(f'[interstitial-check #{i+1}] url={url[:80]} body[:120]={body[:120]!r}')
+
+        # Screen 1: initial ads-choice with Get started
+        if 'Make a choice about your ads' in body or ('choice about your ads' in body and 'Get started' in body):
+            hb(f'🚧 [#{i+1}] ads-choice screen 1 (Get started)')
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 1: clicking Get started')
+            try: await page.get_by_role('button', name='Get started').click(timeout=10000)
+            except Exception as e: hb(f'Get started err: {e}'); return
+            await asyncio.sleep(7)
+            continue
+
+        # Screen 2: "Use for free with ads" radio + Continue button
+        if 'Use for free with ads' in body and 'Continue' in body:
+            hb(f'🚧 [#{i+1}] screen 2 — selecting "Use for free with ads" radio')
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 2: about to click free radio')
+            # Click the "Use for free with ads" radio option
+            clicked_radio = False
+            for sel_fn, desc in [
+                (lambda: page.get_by_role('radio', name='Use for free with ads'), 'role=radio'),
+                (lambda: page.locator('text="Use for free with ads"').first, 'text-exact'),
+                (lambda: page.locator('label:has-text("Use for free with ads")').first, 'label-has-text'),
+            ]:
+                try:
+                    await sel_fn().click(timeout=5000); clicked_radio = True
+                    hb(f'  → "Use for free with ads" clicked via {desc}'); break
+                except Exception as e: hb(f'  fail {desc}: {str(e)[:80]}')
+            if not clicked_radio:
+                hb('⚠️ could not click "Use for free with ads"'); shot(await page.screenshot(type='png'), '⚠️ free radio click FAILED')
+                return
+            await asyncio.sleep(4)
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] after radio — Continue should be enabled')
+            # Now click Continue
+            try: await page.get_by_role('button', name='Continue').click(timeout=10000); hb('  → Continue clicked')
+            except Exception as e: hb(f'Continue err: {e}'); return
+            await asyncio.sleep(8)
+            continue
+
+        # Screen 3: Terms agreement with "Agree" button
+        if 'agree to' in body.lower() and ('terms' in body.lower() or 'meta using your info' in body.lower()):
+            hb(f'🚧 [#{i+1}] screen 3 — Terms agreement, clicking Agree')
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 3: clicking Agree')
+            try: await page.get_by_role('button', name='Agree').click(timeout=10000); hb('  → Agree clicked')
+            except Exception as e: hb(f'Agree err: {e}'); return
+            await asyncio.sleep(8)
+            continue
+
+        # Screen 4: Cookies consent "Allow the use of cookies by Facebook?"
+        if 'Allow all cookies' in body and ('cookies' in body.lower() and 'Facebook' in body):
+            hb(f'🚧 [#{i+1}] screen 4 — Cookies consent, clicking Allow all cookies')
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 4: Allow all cookies')
+            try: await page.get_by_role('button', name='Allow all cookies').click(timeout=10000); hb('  → Allow all cookies clicked')
+            except Exception as e: hb(f'Allow all cookies err: {e}'); return
+            await asyncio.sleep(8)
+            continue
+
+        # Generic confirmation screen with Continue button (fallback)
+        if 'Continue' in body and ('confirm' in body.lower() or 'review' in body.lower() or 'understand' in body.lower()):
+            hb(f'🚧 [#{i+1}] generic confirmation screen — clicking Continue')
+            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] generic confirm')
+            try: await page.get_by_role('button', name='Continue').click(timeout=8000)
+            except Exception as e: hb(f'Continue err: {e}'); return
+            await asyncio.sleep(7)
+            continue
+
+        # No known interstitial detected — done
+        hb(f'[interstitial-check #{i+1}] no blocking interstitial — exiting loop')
+        return
+
+async def gated_click(page, btn_name, expect_q, label=None):
+    """🔒 RULE #1 (universal): vision-gate before EVERY meaningful click.
+
+    Flow:
+    1. STAGE 1 — poll until page is RENDERED (not LOADING)
+    2. STAGE 2 — ask 'is the page in the expected state for clicking <btn_name>?'
+    3. If YES → call click_btn(page, btn_name)
+    4. POST-CLICK screenshot — visual proof the click happened
+    5. If NO → HALT, return False (caller checks)
+
+    Pattern from feedback-vision-gates-every-action: the click only fires when
+    vision confirms we're on the right screen. Never click blindly."""
+    lbl = label or f'click-{btn_name}'
+    yes, summary = await vision_gate(page, lbl, expect_q)
+    if not yes:
+        hb(f'❌ [gated_click] HALT before clicking "{btn_name}": gate said NO → {summary}')
+        return False
+    ok = await click_btn(page, btn_name)
+    hb(f'[gated_click] "{btn_name}" → clicked={ok}')
+    # POST-CLICK screenshot — proof the click happened (user can see in TG)
+    try:
+        await asyncio.sleep(2)  # small settle so UI starts reacting
+        png = await page.screenshot(type='png')
+        shot(png, f'[post-click {lbl}] clicked="{btn_name}" → clicked_ok={ok}')
+    except Exception as e:
+        hb(f'[post-click-shot {lbl}] err: {e}')
+    return ok
+
+async def safe_passkey_dismiss(page, label='passkey'):
+    """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🚨 CRITICAL — ACCOUNT-BINDING SAFETY GATE 🚨
+
+    This is THE most important function in the script. Misbehavior here has
+    burned 2+ accounts (rental + phone + FB acct all lost). DO NOT modify
+    without rereading screenshots/passkey-modal-blue-button-trap.png.
+
+    AFTER VERIFYING A PHONE NUMBER (email-code OR SMS-code submission), FB
+    shows the "Next time, skip the code" passkey modal:
+
+        ┌──────────────────────────────────────────────────────┐
+        │            Next time, skip the code                  │
+        │   Use your fingerprint, face or screen lock...       │
+        │                                                      │
+        │   [ Not now ]    [ ★ blue: Create a passkey ★ ]      │
+        │      ✅ SKIP             ❌ FORBIDDEN                │
+        └──────────────────────────────────────────────────────┘
+
+    Rules (per feedback-blue-passkey-button-never + feedback-passkey-prompt-not-now):
+    1. WAIT 25s for the modal to fully load (it lazy-renders + button is
+       not-yet-interactive for the first ~10-20s)
+    2. ONLY click the gray "Not now" button on the LEFT
+    3. NEVER click the blue button — that creates a passkey, rolls back
+       the phone confirmation, burns the rental + account
+    4. Use modal-scoped role locator: find via
+         page.locator('div[role=dialog]:has-text("skip the code"))
+                .get_by_role('button', name='Not now')
+       — NOT a naive innerText eval (the blue button has a hidden
+       screen-reader child containing "Not now" that naive matchers click!)
+    5. If Not now click fails for ANY reason → RAISE → caller HALTS
+       Never fall back to "click any other button" — that's how accounts burn.
+
+    Returns:
+      True  — passkey was present and dismissed
+      False — no passkey on screen (page rendered, just not the passkey modal)
+
+    Raises on Not now click failure — caller MUST halt (never click any fallback button).
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+    has_passkey, _ = await vision_gate(page, f'{label}-passkey-detect',
+        'Is the FB "Next time, skip the code" passkey modal currently visible (with gray "Not now" / "Skip" button on the LEFT and a blue "Create a passkey" button on the RIGHT)?',
+        max_wait=60)
+    if not has_passkey: return False
+    hb('⏳ passkey detected — 25s settle wait before Not now click')
+    await asyncio.sleep(25)
+    modal = page.locator('div[role="dialog"]:has-text("skip the code")')
+    btn = modal.get_by_role('button', name='Not now')
+    await btn.wait_for(state='visible', timeout=10000)
+    await btn.click(timeout=15000)
+    hb('✅ passkey dismissed via Not now (modal-scoped role locator)')
+    await asyncio.sleep(4)
+    return True
+
 def random_name():
     return hbeh.random_app_name()
 
@@ -80,7 +284,13 @@ def parse_blob(blob):
     }
 
 def start_session(profile_id):
-    """HARD RULE [feedback-never-touch-gologin-proxy]: no proxy ops. Restart session only."""
+    """HARD RULE [feedback-never-touch-gologin-proxy]: no proxy ops. Restart session only.
+
+    SKIP_SESSION_RESTART=1 env var → skip DELETE+POST entirely (use existing live session).
+    Useful when GoLogin parallel-session limit is hit AND the profile is already running."""
+    if os.environ.get('SKIP_SESSION_RESTART') == '1':
+        hb('SKIP_SESSION_RESTART=1 → using existing live session')
+        return 'session-skipped'
     try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
     except: pass
     time.sleep(2)
@@ -207,19 +417,23 @@ async def run_account(profile_id, acc):
     ip = start_session(profile_id)
     if not ip: hb(f'❌ session start failed'); return None
     hb(f'session running, IP={ip}')
-    ok, _ = mdm._persist_cookies_to_gologin_profile(profile_id, acc['cookies'])
-    hb(f'cookies push: {ok}')
-    try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
-    except: pass
-    time.sleep(3)
-    info = {}
-    for attempt in range(20):
-        r = requests.post(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, json={}, timeout=45)
-        info = r.json() if r.status_code in (200,202) else {}
-        if info.get('status') == 'profileStatuses.running': break
-        time.sleep(3)
+    if os.environ.get('SKIP_SESSION_RESTART') == '1':
+        hb('skipping cookies push + 2nd restart (using existing live session)')
+        info = {'status': 'profileStatuses.running'}
     else:
-        hb(f'❌ session restart failed after 20 retries; last={info!r}'); return None
+        ok, _ = mdm._persist_cookies_to_gologin_profile(profile_id, acc['cookies'])
+        hb(f'cookies push: {ok}')
+        try: requests.delete(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, timeout=15)
+        except: pass
+        time.sleep(3)
+        info = {}
+        for attempt in range(20):
+            r = requests.post(f'https://api.gologin.com/browser/{profile_id}/web', headers=H_GL, json={}, timeout=45)
+            info = r.json() if r.status_code in (200,202) else {}
+            if info.get('status') == 'profileStatuses.running': break
+            time.sleep(3)
+        else:
+            hb(f'❌ session restart failed after 20 retries; last={info!r}'); return None
     # Settle: GoLogin reports 'running' before the Chromium process has fully loaded cookies.
     # Wait ~6s so cookies are persisted before CDP connect (otherwise FB.com sees stale state).
     time.sleep(6)
@@ -245,18 +459,31 @@ async def run_account(profile_id, acc):
         ctx = br.contexts[0]
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-        # Phase B: confirm FB login
+        # Phase B: confirm FB login + dismiss blocking interstitials
         try:
             await page.goto('https://www.facebook.com/', wait_until='domcontentloaded', timeout=60000)
         except: pass
         await hbeh.sleep(5.6, 12.0)
         s = await page.screenshot(type='png')
         shot(s, f'1️⃣ FB.com first load — {acc["email"]}')
-        v = pj(vision(s, 'Reply ONLY JSON: {"is_logged_in":true|false,"profile_name_visible":"..."}'))
-        hb(f'FB.com: logged_in={v.get("is_logged_in")} name={v.get("profile_name_visible")}')
+        v = pj(vision(s, 'Reply ONLY JSON: {"is_logged_in":true|false,"profile_name_visible":"...","feed_visible":true|false,"interstitial_kind":"ads_choice|password_confirm|identity_check|none"}'))
+        hb(f'FB.com: logged_in={v.get("is_logged_in")} name={v.get("profile_name_visible")} feed_visible={v.get("feed_visible")} interstitial={v.get("interstitial_kind")}')
         if not v.get('is_logged_in'):
             result['status'] = 'fb_login_failed'
             return result
+        # NEW [feedback-fb-ads-choice-interstitial]: dismiss any blocking interstitials BEFORE warmup
+        if v.get('interstitial_kind') and v.get('interstitial_kind') != 'none':
+            hb(f'🚧 dismissing FB {v.get("interstitial_kind")} interstitial before warmup')
+            await dismiss_fb_interstitials(page)
+            # Re-confirm feed is now visible
+            s2 = await page.screenshot(type='png')
+            shot(s2, '1️⃣b after interstitial dismiss')
+            v2 = pj(vision(s2, 'Reply ONLY JSON: {"feed_visible":true|false,"interstitial_kind":"ads_choice|password_confirm|identity_check|none"}'))
+            hb(f'post-dismiss: feed_visible={v2.get("feed_visible")} interstitial={v2.get("interstitial_kind")}')
+            if v2.get('interstitial_kind') not in (None, 'none'):
+                hb(f'❌ HALT: FB interstitial still blocking after dismiss attempt: {v2}')
+                result['status'] = 'fb_interstitial_blocking'
+                return result
 
         # Phase B.5: warm-up browse on fb.com — human-cadence signal
         # See project-self-critique-and-warmup-hypotheses.md
@@ -266,12 +493,59 @@ async def run_account(profile_id, acc):
         except Exception as e:
             hb(f'warmup err (swallowed): {e}')
 
+        # ════════════════════════════════════════════════════════════════
+        # Phase C-NEW [feedback-ac-bind-before-wizard]: AC BINDING FIRST
+        # Bind phone in Accounts Center BEFORE opening the Meta Dev wizard.
+        # Avoids the FB silent-SMS-throttle bug where back-to-back SMS to the
+        # same phone (AC then wizard) within ~10min get throttled by FB.
+        # ════════════════════════════════════════════════════════════════
+        if os.environ.get('SKIP_AC_BINDING') == '1':
+            hb('SKIP_AC_BINDING=1 → assuming phone already bound, going straight to wizard')
+        else:
+            # First check if already bound — look for phone NOT followed by Pending confirmation
+            await page.goto('https://accountscenter.facebook.com/youraccount/contact_points/', wait_until='domcontentloaded', timeout=60000)
+            await hbeh.sleep(4.9, 10.5)
+            body_pre = await page.evaluate("() => document.body.innerText")
+            # Better check: find the phone in body, then look at next 60 chars for "Pending"
+            already_bound = False
+            idx = body_pre.find('+1' + phone10)
+            if idx >= 0:
+                window_after = body_pre[idx:idx+80]
+                if 'Pending confirmation' not in window_after:
+                    already_bound = True
+            if already_bound:
+                hb(f'✅ phone +1{phone10} already bound in AC — skipping AC binding')
+            else:
+                hb(f'📞 AC-FIRST: binding phone +1{phone10} before wizard')
+                ac_ok = await ac_bind_flow(page, phone10, acc['email'], acc['email_pw'], v.get('profile_name_visible',''))
+                if not ac_ok:
+                    result['status'] = 'ac_bind_failed'
+                    return result
+                # Verify bound (same windowed check)
+                await page.goto('https://accountscenter.facebook.com/youraccount/contact_points/', wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(5)
+                body_post = await page.evaluate("() => document.body.innerText")
+                idx2 = body_post.find('+1' + phone10)
+                bound = idx2 >= 0 and 'Pending confirmation' not in body_post[idx2:idx2+80]
+                if not bound:
+                    hb(f'❌ AC bind verification failed: phone +1{phone10} not confirmed')
+                    result['status'] = 'ac_bind_verify_failed'
+                    return result
+                hb('✅ AC phone bound — proceeding to wizard')
+
         # Phase C: dev portal Get Started
         await page.goto('https://developers.facebook.com/', wait_until='domcontentloaded', timeout=60000)
         await hbeh.sleep(5.6, 12.0)
-        # Dismiss cookies banner
-        await click_btn(page, 'Allow all cookies')
+        # Dismiss cookies banner — gated (only click if banner visible)
+        await gated_click(page, 'Allow all cookies',
+            'Is a cookies consent banner visible (with an "Allow all cookies" or similar button)?',
+            label='cookies-banner')
         await asyncio.sleep(3)
+        # RULE #1 GATE: confirm we're on dev portal homepage with Get Started before clicking
+        yes, _ = await vision_gate(page, 'dev-home-pre-get-started',
+            'Is this the Meta for Developers homepage with a Get Started button visible (typically top-right header)?')
+        if not yes:
+            hb('❌ HALT: not on expected dev portal homepage'); result['status']='dev_portal_unexpected'; return result
         # Click Get Started in top header
         clicked = False
         for sel in ['header a:has-text("Get Started")','nav a:has-text("Get Started")','[role="banner"] a:has-text("Get Started")']:
@@ -293,7 +567,9 @@ async def run_account(profile_id, acc):
 {"sidebar_step_active":"<step>","main_cta":"<text>","main_cta_enabled":true|false,"any_error_text":"<verbatim or null>"}'''))
         if d.get('sidebar_step_active') == 'Register':
             await asyncio.sleep(3)
-            await click_btn(page, 'Continue')
+            await gated_click(page, 'Continue',
+                'Is this the wizard Register stage with a Continue button (typically displaying terms/agree)?',
+                label='register-continue')
             await hbeh.sleep(7.0, 15.0)
 
         # Phase D2: Verify Account — check for AC redirection
@@ -332,6 +608,11 @@ async def run_account(profile_id, acc):
         hb(f'typed phone {phone10}'); await hbeh.sleep(3.5, 7.5)
 
         seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id))
+        # RULE #1 GATE: confirm we're on Verify Account with phone typed before sending SMS
+        yes, _ = await vision_gate(page, 'pre-send-sms',
+            f'Is this the Verify Account step with phone {phone10} typed in the mobile field and a Send Verification SMS button enabled?')
+        if not yes:
+            hb('❌ HALT: not on expected Verify Account state before Send SMS'); result['status']='verify_state_unexpected'; return result
         ok = await click_btn(page, 'Send Verification SMS')
         if not ok: ok = await click_btn(page, 'Send verification')
         hb(f'Send SMS: {ok}')
@@ -357,15 +638,23 @@ async def run_account(profile_id, acc):
         if not ci: hb('❌ no code input'); result['status']='no_code_input'; return result
         await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
         hb(f'typed code'); await hbeh.sleep(3.5, 7.5)
-        await click_btn(page, 'Continue')
+        await gated_click(page, 'Continue',
+            f'Is the wizard SMS code {code} typed in the input and a Continue button enabled?',
+            label='wizard-sms-continue')
         await hbeh.sleep(8.4, 18.0)
+        # RULE [feedback-blue-passkey-button-never]: detect + safely dismiss passkey if present
+        try: await safe_passkey_dismiss(page, label='post-wizard-sms')
+        except Exception as e:
+            hb(f'❌ HALT: passkey Not now click failed: {e}'); result['status']='passkey_dismiss_failed'; return result
 
         # Phase E: Review Email → Confirm Email (no code expected — cookies skip)
         d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
 {"page_kind":"review_email|contact_info|about_you|other","main_cta":"<text>"}'''))
         if d.get('page_kind') in ('review_email',):
             await asyncio.sleep(3)
-            await click_btn(page, 'Confirm Email')
+            await gated_click(page, 'Confirm Email',
+                'Is this the Review Email step with a Confirm Email button?',
+                label='confirm-email')
             await hbeh.sleep(7.0, 15.0)
 
         # Phase F: Contact info → just continue if shown
@@ -373,7 +662,9 @@ async def run_account(profile_id, acc):
 {"page_kind":"contact_info|about_you|other","main_cta":"<text>"}'''))
         if d.get('page_kind') == 'contact_info':
             await asyncio.sleep(3)
-            await click_btn(page, 'Continue')
+            await gated_click(page, 'Continue',
+                'Is this the Contact info wizard step with a Continue button?',
+                label='contact-info-continue')
             await hbeh.sleep(7.0, 15.0)
 
         # Phase G: About You — random role + Complete Registration
@@ -406,7 +697,9 @@ async def run_account(profile_id, acc):
                     except: pass
                 await hbeh.sleep(2.8, 6.0)
             await hbeh.sleep(3.5, 7.5)
-            cr = await click_btn(page, 'Complete Registration')
+            cr = await gated_click(page, 'Complete Registration',
+                'Is this the About You wizard step with a role selected and Complete Registration button enabled?',
+                label='complete-registration')
             hb(f'🎯 Complete Registration: {cr}')
             if not cr: result['status']='no_cr_btn'; return result
             # 6-MIN SILENT WAIT — DO NOTHING
@@ -463,9 +756,14 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     await page.goto('https://accountscenter.facebook.com/personal_info/contact_points/', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(4.9, 10.5)
     await asyncio.sleep(3)
-    await click_btn(page, 'Add new contact')
+    # Gated clicks: vision-validate each screen before firing
+    await gated_click(page, 'Add new contact',
+        'Is this the Accounts Center Contact information page with an Add new contact button visible?',
+        label='ac-add-new-contact')
     await hbeh.sleep(3.5, 7.5)
-    await click_btn(page, 'Add mobile number')
+    await gated_click(page, 'Add mobile number',
+        'Is there a choice modal asking what type of contact to add (Add mobile number / Add email options)?',
+        label='ac-add-mobile')
     await hbeh.sleep(4.2, 9.0)
     pin = None
     for f in page.frames:
@@ -498,7 +796,9 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     await hbeh.sleep(2.8, 6.0)
     seen_email = email_snap(email, email_pw)
     await asyncio.sleep(3)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        f'Is this the AC Add mobile number modal with phone {phone10} typed and the account-profile checkbox toggled? Is Next enabled?',
+        label='ac-add-mobile-next')
     await hbeh.sleep(7.0, 15.0)
     hb('📨 polling for AC email code (3min)…')
     code = None
@@ -514,16 +814,29 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     if not ci: hb('❌ no AC code input'); return False
     await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
     await hbeh.sleep(3.5, 7.5)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        f'Is the AC email confirmation code {code} typed in the input field, with Next enabled?',
+        label='ac-email-code-next')
     await hbeh.sleep(5.6, 12.0)
+    # RULE [feedback-blue-passkey-button-never]: dismiss passkey if present
+    try: await safe_passkey_dismiss(page, label='ac-post-email-code')
+    except Exception as e:
+        hb(f'❌ HALT: AC passkey Not now click failed: {e}'); return False
     hb('✅ AC bound')
     return True
 
 
 async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     """Walk Create App wizard for one app. Returns app ID from /apps list, or None."""
+    _hb_state = {}  # local human-behavior cursor state (empty dict — move() picks random initial pos)
     hb(f'creating app: {app_name} ({use_case_text})')
-    await click_btn(page, 'Create App') or await click_btn(page, 'Create app')
+    ok = await gated_click(page, 'Create App',
+        'Is this the developer dashboard (My Apps page) with a Create App button visible?',
+        label='create-app-entry')
+    if not ok:
+        await gated_click(page, 'Create app',
+            'Is this the developer dashboard with a Create app button (lowercase "app")?',
+            label='create-app-lowercase')
     await hbeh.sleep(5.6, 12.0)
     # Dismiss "new way" guidance modal
     await page.keyboard.press('Escape')
@@ -547,7 +860,9 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
     hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        f'Is the app name "{app_name}" typed in the input, with Next enabled?',
+        label='app-name-next')
     await hbeh.sleep(7.0, 15.0)
 
     # Use cases → All (19) → click the target use case card
@@ -571,7 +886,9 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
+        label='use-case-next')
     await hbeh.sleep(7.0, 15.0)
 
     # Business: I don't want
@@ -582,13 +899,19 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
+        label='business-no-next')
     await hbeh.sleep(7.0, 15.0)
     # Requirements: just Next
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        'Is this the app Requirements step with a Next button enabled?',
+        label='requirements-next')
     await hbeh.sleep(7.0, 15.0)
     # Overview: Create app
-    await click_btn(page, 'Create app')
+    await gated_click(page, 'Create app',
+        'Is this the Overview/Confirmation step with a Create app button enabled?',
+        label='overview-create-app')
     await hbeh.sleep(4.2, 9.0)
     # Password popup
     for i in range(20):
@@ -600,7 +923,9 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.click(); await asyncio.sleep(1); await el.fill('')
                     await el.type(fb_pw, delay=140)
                     await asyncio.sleep(3)
-                    await click_btn(page, 'Submit')
+                    await gated_click(page, 'Submit',
+                        'Is a password confirmation popup visible with the password field filled and a Submit button?',
+                        label='password-popup-submit')
                     await hbeh.sleep(10.5, 22.5)
                     break
             except: pass
