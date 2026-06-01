@@ -297,7 +297,6 @@ async def run_account(profile_id, acc):
             await hbeh.sleep(7.0, 15.0)
 
         # Phase D2: Verify Account — check for AC redirection
-        s, d = await (lambda: (None, None))()  # placeholder
         s = await page.screenshot(type='png')
         d = pj(vision(s, '''Reply ONLY JSON:
 {"page_kind":"verify_account|review_email|email_code|contact_info|about_you|dashboard|ac_required|other",
