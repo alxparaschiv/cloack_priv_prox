@@ -130,19 +130,43 @@ async def wait_for_rendered(page, label, max_wait=90, poll=8):
     return None
 
 async def vision_gate(page, label, question, max_wait=90):
-    """STAGE 1 + STAGE 2 (RULE #1): wait rendered, then validate state. Returns (yes_bool, full_response).
+    """🔒 3-STAGE anti-spasming gate (per user 2026-06-02):
+       Stage 1: screenshot RENDERED? (wait_for_rendered loop, polls until not LOADING)
+       Stage 2: DESCRIBE — what is literally on screen (forces the model to ground its answer)
+       Stage 3: ANSWER — does that description match what we expect for this step? YES/NO
 
-    If page never renders → returns (False, None) — caller should halt.
-    If page renders but question is NO → returns (False, response) — caller should halt.
-    If page renders and question is YES → returns (True, response) — caller proceeds."""
+    Returns (yes_bool, full_response). Caller HALTS on (False, *).
+
+    The DESCRIBE step is the critical addition: it makes the model verbalize what
+    it sees BEFORE answering, which catches the failure mode where the model
+    blindly says YES because it pattern-matches the question rather than the
+    image. Description is logged to Telegram so the operator can audit live."""
     rendered = await wait_for_rendered(page, label, max_wait=max_wait)
     if not rendered: return False, None
     try:
         png = await page.screenshot(type='png')
     except: return False, None
-    r = vision(png, f'Page is rendered. {question}\nReply EXACTLY: "YES: <1-sent>" or "NO: <1-sent>".', max_tok=200)
-    hb(f'[gate {label}] {r[:300]}')
-    yes = r.strip().upper().startswith('YES')
+    prompt = (
+        "TWO-PART CHECK. Be precise — your description must match the image, not the question.\n"
+        "PART A (DESCRIBE): In one sentence, describe what is literally on the page right now "
+        "(main heading + main interactive element/state). Do NOT mention the question yet.\n"
+        f"PART B (ANSWER the question): {question}\n\n"
+        "Reply EXACTLY in this format (two lines):\n"
+        "DESCRIBE: <1-sentence factual description of what's on screen>\n"
+        "ANSWER: YES — <1-sent reason> | OR | ANSWER: NO — <1-sent reason>"
+    )
+    r = vision(png, prompt, max_tok=300)
+    hb(f'[gate {label}]\n{r[:500]}')
+    # Robust YES/NO parse — accept either "ANSWER: YES" anywhere, or first non-DESCRIBE line starting with YES
+    upper = r.upper()
+    yes = ('ANSWER: YES' in upper) or ('ANSWER:YES' in upper)
+    no  = ('ANSWER: NO'  in upper) or ('ANSWER:NO'  in upper)
+    if not yes and not no:
+        # legacy fallback — first non-empty line starts with YES
+        for ln in r.strip().splitlines():
+            t = ln.strip().upper()
+            if t.startswith('YES'): yes = True; break
+            if t.startswith('NO'):  no  = True; break
     return yes, r
 
 async def dismiss_fb_interstitials(page, max_loops=8):
@@ -729,9 +753,11 @@ async def run_account(profile_id, acc):
                     except: pass
                 if pin: break
         if not pin: hb('❌ no phone input'); result['status']='no_phone_input'; return result
+        shot(await page.screenshot(type='png'), f'[wizard-phone-pre] about to type {phone10} into Verify Account phone field')
         await pin[1].click(); await asyncio.sleep(1.5); await pin[1].fill('')
         await pin[1].type(phone10, delay=140)
         hb(f'typed phone {phone10}'); await hbeh.sleep(3.5, 7.5)
+        shot(await page.screenshot(type='png'), f'[wizard-phone-post] typed {phone10} — field should show the number')
 
         seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id))
         # VP44 LESSON 2026-06-02: when AC binding is done FIRST, FB sometimes auto-sends
@@ -757,6 +783,8 @@ async def run_account(profile_id, acc):
             if not ok: ok = await click_btn(page, 'Send verification')
             hb(f'Send SMS: {ok}')
             if not ok: result['status']='no_send_btn'; return result
+            await asyncio.sleep(2)
+            shot(await page.screenshot(type='png'), f'[wizard-send-sms-post] clicked Send Verification SMS → page should now show code-entry state')
         await hbeh.sleep(7.0, 15.0)
 
         hb('📨 polling for SMS code (5min)…')
@@ -776,8 +804,10 @@ async def run_account(profile_id, acc):
         await hbeh.sleep(2.8, 6.0)
         ci = await find_visible_input(page, exclude_with_value=True)
         if not ci: hb('❌ no code input'); result['status']='no_code_input'; return result
+        shot(await page.screenshot(type='png'), f'[wizard-code-pre] about to type SMS code {code} into the code field')
         await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
         hb(f'typed code'); await hbeh.sleep(3.5, 7.5)
+        shot(await page.screenshot(type='png'), f'[wizard-code-post] typed code {code} — field should show the digits')
         await gated_click(page, 'Continue',
             f'Is the wizard SMS code {code} typed in the input and a Continue button enabled?',
             label='wizard-sms-continue')
@@ -1242,9 +1272,11 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
             except: pass
         if pin: break
     if not pin: hb('❌ no AC phone input'); return False
+    shot(await page.screenshot(type='png'), f'[ac-phone-pre] about to type {phone10} into AC phone field')
     await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
     await pin[1].type(phone10, delay=140)
     await hbeh.sleep(2.8, 6.0)
+    shot(await page.screenshot(type='png'), f'[ac-phone-post] typed {phone10} — AC modal should show the number')
     # Click profile name row (toggle checkbox)
     if profile_name:
         for f in page.frames:
@@ -1262,6 +1294,7 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
                     await loc.click(); break
             except: pass
     await hbeh.sleep(2.8, 6.0)
+    shot(await page.screenshot(type='png'), f'[ac-checkbox-post] clicked profile checkbox ({profile_name or "Facebook"}) — should be checked now')
     seen_email = email_snap(email, email_pw)
     await asyncio.sleep(3)
     await gated_click(page, 'Next',
@@ -1280,8 +1313,10 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     await hbeh.sleep(2.8, 6.0)
     ci = await find_visible_input(page, exclude_with_value=True)
     if not ci: hb('❌ no AC code input'); return False
+    shot(await page.screenshot(type='png'), f'[ac-code-pre] about to type AC email code {code} into the field')
     await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
     await hbeh.sleep(3.5, 7.5)
+    shot(await page.screenshot(type='png'), f'[ac-code-post] typed code {code} — Next should be enabled')
     await gated_click(page, 'Next',
         f'Is the AC email confirmation code {code} typed in the input field, with Next enabled?',
         label='ac-email-code-next')
@@ -1324,10 +1359,12 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     # Type App name in the y=200..350 input (avoid search bar at y=17)
     nin = await find_visible_input(page, exclude_with_value=False, y_range=(200, 400))
     if not nin: hb('❌ no name input'); return None
+    shot(await page.screenshot(type='png'), f'[app-name-pre] about to type app name "{app_name}" into the input')
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
     hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
+    shot(await page.screenshot(type='png'), f'[app-name-post] typed "{app_name}" — input should show the name')
     await gated_click(page, 'Next',
         f'Is the app name "{app_name}" typed in the input, with Next enabled?',
         label='app-name-next')
@@ -1341,6 +1378,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await asyncio.sleep(3)
+    shot(await page.screenshot(type='png'), f'[use-case-all19] clicked All (19) tab — should now show all 19 use cases including "{use_case_text}"')
     # Scroll target into view + click its checkbox (use mouse click far right)
     for f in page.frames:
         try:
@@ -1354,6 +1392,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 break
         except: pass
     await hbeh.sleep(2.8, 6.0)
+    shot(await page.screenshot(type='png'), f'[use-case-clicked] clicked "{use_case_text}" card — its checkbox should be checked')
     await gated_click(page, 'Next',
         f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
         label='use-case-next')
@@ -1367,6 +1406,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await hbeh.sleep(2.8, 6.0)
+    shot(await page.screenshot(type='png'), '[business-no-clicked] selected "I don\'t want to connect a business portfolio" — radio should be filled')
     await gated_click(page, 'Next',
         'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
         label='business-no-next')
