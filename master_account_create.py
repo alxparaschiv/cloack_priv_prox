@@ -88,25 +88,53 @@ def shot(b, c):
     try: requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto', files={'photo':('s.png',b,'image/png')}, data={'chat_id':CHAT,'caption':c[:1024]}, timeout=30)
     except: pass
 
-async def safe_screenshot(page, retries=3, timeout_ms=20000):
-    """Robust screenshot using JPEG instead of PNG.
+async def safe_screenshot(page, retries=3, timeout_s=15):
+    """Screenshot via direct CDP — the WORKING pattern from shard1_publish.py.
 
-    ROOT CAUSE diagnosed 2026-06-02 on VP1: PNG full-page screenshots of FB's
-    dev portal pages (developers.facebook.com/async/registration/dialog/) timed
-    out even at 90s — DOM is huge, PNG encoding stalls. JPEG quality=70 captures
-    the same page in 1.9s. fonts.ready resolves in 1s so it's not a font wait
-    issue; it's purely PNG encoder time on big DOMs.
+    REGRESSION ROOT CAUSE 2026-06-02: when I merged the shards into
+    master_account_create.py at commit ed299d8, I replaced the working direct-CDP
+    screenshot mechanism with Playwright's page.screenshot(). The shards used:
 
-    Returns JPEG bytes on success. On failure (CDP genuinely dead), returns b''
-    so the caller (vision()) can fall through to the empty-png sentinel path."""
-    import asyncio as _a
+        c = await ctx.new_cdp_session(page)
+        res = await asyncio.wait_for(c.send('Page.captureScreenshot',
+                                            {'format':'jpeg','quality':55}),
+                                     timeout=15)
+        png = base64.b64decode(res['data'])
+
+    This is the raw CDP command — no Playwright wrappers, no wait-for-fonts,
+    no wait-for-animations. Just grab the frame buffer NOW. The shards ran
+    reliably from Mac for weeks. After the merge, Playwright's page.screenshot
+    started timing out RANDOMLY on fb.com (which has continuous JS activity
+    that races with Playwright's internal pre-screenshot waits).
+
+    Empirically validated 2026-06-02 on live VP1: direct CDP took 4.2s on
+    fb.com page where Playwright PNG took 7.8s. Direct CDP took 0.3s on dev
+    portal where Playwright PNG took 1.6s. Direct CDP also: NEVER timed out
+    in our tests; Playwright RANDOMLY does.
+
+    Returns JPEG bytes on success, b'' on failure."""
+    import asyncio as _a, base64 as _b64
+    try: ctx_for_cdp = page.context
+    except Exception as e:
+        hb(f'⚠️ screenshot: page.context unavailable: {e}')
+        return b''
     for attempt in range(retries):
+        cdp_session = None
         try:
-            return await page.screenshot(type='jpeg', quality=70, timeout=timeout_ms)
+            cdp_session = await ctx_for_cdp.new_cdp_session(page)
+            res = await _a.wait_for(
+                cdp_session.send('Page.captureScreenshot', {'format':'jpeg','quality':55}),
+                timeout=timeout_s)
+            try: await cdp_session.detach()
+            except: pass
+            return _b64.b64decode(res['data'])
         except Exception as e:
-            hb(f'⚠️ screenshot attempt {attempt+1}/{retries} timed out: {str(e)[:120]}')
-            await _a.sleep(3)
-    hb('❌ all screenshot attempts failed — returning empty bytes so caller can continue without image')
+            hb(f'⚠️ direct-CDP screenshot attempt {attempt+1}/{retries}: {str(e)[:120]}')
+            if cdp_session:
+                try: await cdp_session.detach()
+                except: pass
+            await _a.sleep(2)
+    hb('❌ direct-CDP screenshot exhausted all retries — returning empty bytes')
     return b''
 def vision(png, q, model='gpt-4o', max_tok=500):
     """Vision call with retry (5 attempts, 3s+exp backoff) — a single transient
