@@ -626,8 +626,10 @@ async def run_account(profile_id, acc):
         else:
             hb(f'❌ session restart failed after 20 retries; last={info!r}'); return None
     # Settle: GoLogin reports 'running' before the Chromium process has fully loaded cookies.
-    # Wait ~6s so cookies are persisted before CDP connect (otherwise FB.com sees stale state).
-    time.sleep(6)
+    # Wait ~15s so cookies are persisted before CDP connect. VP1 burn 2026-06-02 showed
+    # 6s was too short — runtime jar was empty when CDP connected, fb.com showed login page.
+    # Manual hard-reset with 15-20s wait consistently shows storage cookies loaded by then.
+    time.sleep(15)
 
     cdp = f'wss://cloudbrowser.gologin.com/connect?token={pm.GOLOGIN_API_KEY}&profile={profile_id}'
 
@@ -650,31 +652,36 @@ async def run_account(profile_id, acc):
         ctx = br.contexts[0]
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-        # CRITICAL [reference-gologin-cookie-persistence]: the storage push
-        # (POST /cookies) is necessary but NOT SUFFICIENT for Cloud Browser
-        # CDP sessions — they do NOT auto-load the persisted cookies into
-        # the runtime jar. We must ALSO call ctx.add_cookies() with the
-        # CE-format cookies converted to Playwright format. Without this,
-        # FB.com lands on the login page and Phase B bails as fb_login_failed
-        # (VP1 burn 2026-06-02 root cause).
-        pw_cookies = []
-        for c in acc['cookies']:
-            pc = {'name': c['name'], 'value': c['value'],
-                  'domain': c.get('domain',''), 'path': c.get('path','/'),
-                  'secure': bool(c.get('secure', False)),
-                  'httpOnly': bool(c.get('httponly') or c.get('httpOnly') or False)}
-            ss = c.get('sameSite', 'no_restriction')
-            ss_map = {'no_restriction':'None','unspecified':'Lax','lax':'Lax','strict':'Strict','none':'None'}
-            pc['sameSite'] = ss_map.get(str(ss).lower(), 'None')
-            # session=False AND expirationDate present → use it
-            if not c.get('session', False) and c.get('expirationDate'):
-                pc['expires'] = int(c['expirationDate'])
-            pw_cookies.append(pc)
-        try:
-            await ctx.add_cookies(pw_cookies)
-            hb(f'🍪 runtime cookies injected: {len(pw_cookies)} (incl c_user + xs for CDP session)')
-        except Exception as e:
-            hb(f'⚠️ ctx.add_cookies err: {e}')
+        # COOKIE STRATEGY [reference-gologin-cookie-persistence, CORRECTED 2026-06-02]:
+        # After 15s post-restart settle, the GoLogin profile's persistent cookies
+        # auto-load into the runtime jar (validated by direct ctx.cookies() probe).
+        # We CHECK first — if c_user + xs are already present, skip add_cookies
+        # entirely (avoid overwriting good cookies with our CE-format conversion
+        # which may have subtle sameSite/expires differences that break auth).
+        # Only inject if the storage auto-load didn't take.
+        existing = await ctx.cookies(['https://www.facebook.com'])
+        existing_names = {c['name'] for c in existing}
+        has_auth = 'c_user' in existing_names and 'xs' in existing_names
+        if has_auth:
+            hb(f'🍪 runtime jar already has c_user+xs from storage auto-load (skipping add_cookies)')
+        else:
+            pw_cookies = []
+            for c in acc['cookies']:
+                pc = {'name': c['name'], 'value': c['value'],
+                      'domain': c.get('domain',''), 'path': c.get('path','/'),
+                      'secure': bool(c.get('secure', False)),
+                      'httpOnly': bool(c.get('httponly') or c.get('httpOnly') or False)}
+                ss = c.get('sameSite', 'no_restriction')
+                ss_map = {'no_restriction':'None','unspecified':'Lax','lax':'Lax','strict':'Strict','none':'None'}
+                pc['sameSite'] = ss_map.get(str(ss).lower(), 'None')
+                if not c.get('session', False) and c.get('expirationDate'):
+                    pc['expires'] = int(c['expirationDate'])
+                pw_cookies.append(pc)
+            try:
+                await ctx.add_cookies(pw_cookies)
+                hb(f'🍪 runtime cookies injected: {len(pw_cookies)} (storage auto-load did NOT cover c_user/xs)')
+            except Exception as e:
+                hb(f'⚠️ ctx.add_cookies err: {e}')
 
         # Phase B: confirm FB login + dismiss blocking interstitials
         try:
