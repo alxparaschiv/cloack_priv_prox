@@ -88,18 +88,24 @@ def shot(b, c):
     try: requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto', files={'photo':('s.png',b,'image/png')}, data={'chat_id':CHAT,'caption':c[:1024]}, timeout=30)
     except: pass
 
-async def safe_screenshot(page, retries=3, timeout_ms=90000):
-    """Robust screenshot: tries with progressively longer timeouts. Slow wifi causes
-    Playwright's 30s default to expire while it waits for fonts/images. We bump the
-    timeout AND tolerate complete failure by returning b'' (caller can fall back to
-    body-text-only reasoning). Never lets a transient screenshot failure crash the run."""
+async def safe_screenshot(page, retries=3, timeout_ms=20000):
+    """Robust screenshot using JPEG instead of PNG.
+
+    ROOT CAUSE diagnosed 2026-06-02 on VP1: PNG full-page screenshots of FB's
+    dev portal pages (developers.facebook.com/async/registration/dialog/) timed
+    out even at 90s — DOM is huge, PNG encoding stalls. JPEG quality=70 captures
+    the same page in 1.9s. fonts.ready resolves in 1s so it's not a font wait
+    issue; it's purely PNG encoder time on big DOMs.
+
+    Returns JPEG bytes on success. On failure (CDP genuinely dead), returns b''
+    so the caller (vision()) can fall through to the empty-png sentinel path."""
     import asyncio as _a
     for attempt in range(retries):
         try:
-            return await page.screenshot(type='png', timeout=timeout_ms)
+            return await page.screenshot(type='jpeg', quality=70, timeout=timeout_ms)
         except Exception as e:
             hb(f'⚠️ screenshot attempt {attempt+1}/{retries} timed out: {str(e)[:120]}')
-            await _a.sleep(5)
+            await _a.sleep(3)
     hb('❌ all screenshot attempts failed — returning empty bytes so caller can continue without image')
     return b''
 def vision(png, q, model='gpt-4o', max_tok=500):
