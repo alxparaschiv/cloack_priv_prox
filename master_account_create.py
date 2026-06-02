@@ -1351,33 +1351,98 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
             except: pass
     await hbeh.sleep(2.8, 6.0)
     shot(await page.screenshot(type='png'), f'[ac-checkbox-post] clicked profile checkbox ({profile_name or "Facebook"}) — should be checked now')
+    # AC FLOW ORDER (validated 2026-06-02 on VP1, see [feedback-ac-bind-sms-before-email]):
+    # After clicking Next on "Add mobile number", FB asks for the SMS code FIRST
+    # (sent to the rental phone). The EMAIL step comes after SMS — sometimes it
+    # auto-passes invisibly (FB binds the phone on SMS submit alone) and sometimes
+    # it presents an explicit email-code modal. We handle both.
+    # Snapshot Rambler inbox BEFORE the click so we can detect a new FB email later
     seen_email = email_snap(email, email_pw)
+    seen_sms = set(str(it.get('id','')) for it in (list_sms.__wrapped__ if hasattr(list_sms,'__wrapped__') else list_sms)('lr_placeholder')) if False else set()
     await asyncio.sleep(3)
     await gated_click(page, 'Next',
         f'Is this the AC Add mobile number modal with phone {phone10} typed and the account-profile checkbox toggled? Is Next enabled?',
         label='ac-add-mobile-next')
     await hbeh.sleep(7.0, 15.0)
-    hb('📨 polling for AC email code (3min)…')
-    code = None
-    deadline = time.time()+180
-    while time.time()<deadline:
-        code = email_poll(email, email_pw, seen_email)
-        if code: break
-        await hbeh.sleep(7.0, 15.0)
-    if not code: hb('❌ no AC email code'); return False
-    hb(f'AC code: {code}')
-    await hbeh.sleep(2.8, 6.0)
-    ci = await find_visible_input(page, exclude_with_value=True)
-    if not ci: hb('❌ no AC code input'); return False
-    shot(await page.screenshot(type='png'), f'[ac-code-pre] about to type AC email code {code} into the field')
-    await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
-    await hbeh.sleep(3.5, 7.5)
-    shot(await page.screenshot(type='png'), f'[ac-code-post] typed code {code} — Next should be enabled')
-    await gated_click(page, 'Next',
-        f'Is the AC email confirmation code {code} typed in the input field, with Next enabled?',
-        label='ac-email-code-next')
-    await hbeh.sleep(5.6, 12.0)
-    # RULE [feedback-blue-passkey-button-never]: dismiss passkey if present
+
+    # STEP 6 — SMS code (sent to rental phone via TextVerified)
+    # rental_id is not in scope here; pull from the env if needed. Better: derive
+    # the rental_id by checking module-level state — for now, we accept the caller
+    # passed rental_id via env REUSE_RENTAL_ID (used in this codepath when re-running)
+    # or by being in the same process. ac_bind_flow signature would need updating;
+    # for backward compat we read os.environ.
+    rental_id_for_sms = os.environ.get('REUSE_RENTAL_ID') or os.environ.get('AC_RENTAL_ID') or ''
+    sms_code = None
+    if rental_id_for_sms:
+        seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id_for_sms))
+        hb(f'📨 polling for AC SMS code on rental {rental_id_for_sms} (3min)…')
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            try:
+                for it in list_sms(rental_id_for_sms):
+                    if str(it.get('id','')) in seen_sms: continue
+                    t = it.get('smsContent') or ''
+                    cm = re.search(r'\b(\d{4,8})\b', t)
+                    if cm: sms_code = cm.group(1); break
+            except Exception as e: hb(f'list_sms err: {e}')
+            if sms_code: break
+            await hbeh.sleep(7.0, 15.0)
+    else:
+        hb('⚠️ no rental_id in env — cannot poll SMS; falling through to email-only path')
+
+    if sms_code:
+        hb(f'📱 AC SMS code: {sms_code}')
+        ci_sms = await find_visible_input(page, exclude_with_value=True)
+        if ci_sms:
+            shot(await page.screenshot(type='png'), f'[ac-sms-pre] about to type SMS code {sms_code}')
+            await ci_sms[1].click(); await asyncio.sleep(0.5); await ci_sms[1].type(sms_code, delay=140)
+            await hbeh.sleep(2.8, 6.0)
+            shot(await page.screenshot(type='png'), f'[ac-sms-post] typed SMS {sms_code} — Next should be enabled')
+            # Click Next via modal-scoped locator (the modal-Next button can be the outer container of inner Next text)
+            clicked = False
+            try:
+                modal = page.locator('div[role="dialog"]:has-text("confirmation code"), div[role="dialog"]:has-text("text message")')
+                await modal.get_by_role('button', name='Next').first.click(timeout=8000)
+                clicked = True; hb('✅ ac-sms-next clicked')
+            except Exception as e:
+                hb(f'modal Next fail: {e}')
+            if not clicked:
+                # coord fallback — Next button is centered ~y=560 on 1920-wide viewport
+                vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+                await page.mouse.click(int(vp['w']/2), int(vp['h']*0.55))
+                hb(f'✅ coord click Next at center/55%')
+            await hbeh.sleep(7.0, 15.0)
+            shot(await page.screenshot(type='png'), '[ac-sms-post-click] after ac-sms-next click')
+
+    # STEP 7 — EMAIL code (may or may not appear)
+    # Wait briefly to see if an email-code modal renders. If not, the SMS submit alone bound the phone.
+    await asyncio.sleep(8)
+    body_after = await page.evaluate("() => document.body.innerText")
+    needs_email = 'Enter your confirmation code' in body_after and ('sent you' in body_after.lower() or '@' in body_after)
+    if needs_email:
+        hb('📨 polling for AC EMAIL code on Rambler (3min)…')
+        email_code = None
+        deadline = time.time()+180
+        while time.time()<deadline:
+            email_code = email_poll(email, email_pw, seen_email)
+            if email_code: break
+            await hbeh.sleep(7.0, 15.0)
+        if not email_code: hb('❌ no AC email code'); return False
+        hb(f'📧 AC email code: {email_code}')
+        ci_em = await find_visible_input(page, exclude_with_value=True)
+        if not ci_em: hb('❌ no AC email-code input'); return False
+        shot(await page.screenshot(type='png'), f'[ac-email-pre] about to type email code {email_code}')
+        await ci_em[1].click(); await asyncio.sleep(0.5); await ci_em[1].type(email_code, delay=140)
+        await hbeh.sleep(3.5, 7.5)
+        shot(await page.screenshot(type='png'), f'[ac-email-post] typed email code {email_code}')
+        await gated_click(page, 'Next',
+            f'Is the AC email confirmation code {email_code} typed in the input field, with Next enabled?',
+            label='ac-email-code-next')
+        await hbeh.sleep(5.6, 12.0)
+    else:
+        hb('⏭ no email-code modal detected — SMS submit alone appears to have bound the phone')
+
+    # STEP 8 — passkey safeguard (regardless of whether email step happened)
     try: await safe_passkey_dismiss(page, label='ac-post-email-code')
     except Exception as e:
         hb(f'❌ HALT: AC passkey Not now click failed: {e}'); return False
