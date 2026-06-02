@@ -761,7 +761,21 @@ async def run_account(profile_id, acc):
                 hb('✅ AC phone bound — proceeding to wizard')
 
         # Phase C: dev portal Get Started
-        await page.goto('https://developers.facebook.com/', wait_until='domcontentloaded', timeout=60000)
+        # Retry goto on transient errors (ERR_EMPTY_RESPONSE, timeouts) — VP1 burn
+        # 2026-06-02: bot crashed on the very first dev portal goto with empty response.
+        # Single transient hiccup must not kill the run after AC was already bound.
+        goto_ok = False
+        for goto_try in range(4):
+            try:
+                await page.goto('https://developers.facebook.com/', wait_until='domcontentloaded', timeout=60000)
+                goto_ok = True; break
+            except Exception as e:
+                hb(f'⚠️ dev portal goto attempt {goto_try+1}/4 failed: {str(e)[:160]}')
+                await asyncio.sleep(8 + goto_try*4)
+        if not goto_ok:
+            hb('❌ HALT: dev portal unreachable after 4 retries')
+            result['status'] = 'dev_portal_unreachable'
+            return result
         await hbeh.sleep(5.6, 12.0)
         # Dismiss cookies banner — gated (only click if banner visible)
         await gated_click(page, 'Allow all cookies',
