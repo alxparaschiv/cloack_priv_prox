@@ -1044,7 +1044,10 @@ async def run_account(profile_id, acc):
         result['ig_app'] = ig_app_name
         result['ig_app_id'] = ig_id
         hb(f'IG app: {ig_app_name} → {ig_id}')
-        shot(await safe_screenshot(page), '7️⃣ both apps created — final state')
+        # Truthful final-state caption — fb_id and ig_id are None on failure
+        fb_status = f'{fb_app_name}={fb_id}' if fb_id else f'❌ {fb_app_name} FAILED'
+        ig_status = f'{ig_app_name}={ig_id}' if ig_id else f'❌ {ig_app_name} FAILED'
+        shot(await safe_screenshot(page), f'7️⃣ final state — FB: {fb_status} | IG: {ig_status}')
 
         # Phase J: privacy URL (telegra.ph) for FB app — pure HTTP, but keep inside async with
         try:
@@ -1078,7 +1081,19 @@ async def run_account(profile_id, acc):
                 result['shard2_error'] = str(e)
 
     # — exited async with —
-    result['status'] = 'apps_created' if not result.get('long_user_token') else 'apps_created_published_with_token'
+    # Truthful status reflecting actual outcomes
+    fb_ok = bool(result.get('fb_app_id'))
+    ig_ok = bool(result.get('ig_app_id'))
+    pub_ok = bool(result.get('published'))
+    token_ok = bool(result.get('long_user_token'))
+    if token_ok and pub_ok:
+        result['status'] = 'apps_created_published_with_token'
+    elif fb_ok and ig_ok:
+        result['status'] = 'apps_created' + ('_published' if pub_ok else '')
+    elif fb_ok or ig_ok:
+        result['status'] = f'partial_apps_created (FB={"ok" if fb_ok else "fail"}, IG={"ok" if ig_ok else "fail"})'
+    else:
+        result['status'] = 'app_creation_failed'
     return result
 
 
@@ -1570,20 +1585,96 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
         except: pass
     await asyncio.sleep(3)
     shot(await safe_screenshot(page), f'[use-case-all19] clicked All (19) tab — should now show all 19 use cases including "{use_case_text}"')
-    # Scroll target into view + click its checkbox (use mouse click far right)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # CLICK-VERIFY-RETRY [feedback-click-verify-retry, 2026-06-03]:
+    # try multiple click strategies and vision-verify after EACH that the
+    # checkbox is actually checked. Hardcoded +800px offset broke when FB
+    # changed card width — caught by post-click vision rather than failing
+    # downstream gates. User's design: feedback loop as a validation GATE,
+    # not just a logger.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Scroll target into view first
     for f in page.frames:
         try:
             loc = f.locator(f'text="{use_case_text}"').last
             if await loc.count()>0:
                 await loc.scroll_into_view_if_needed(timeout=8000)
-                await asyncio.sleep(2)
-                box = await loc.bounding_box()
-                if box:
-                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
+    await asyncio.sleep(2)
+
+    verify_q = (f'Look ONLY at the row containing the EXACT text "{use_case_text}". '
+                f'Is that row\'s checkbox/circle/radio CHECKED (filled, dotted, or with a visible checkmark)? '
+                f'Reply YES only if the SAME row\'s indicator is clearly selected.')
+    checkbox_checked = False
+    for attempt_idx, strategy in enumerate([
+        'checkbox-input-in-row',  # direct input[type=checkbox] inside the card row
+        'role-checkbox',           # ARIA role="checkbox"
+        'card-right-edge',         # mouse click 30px from card's right edge
+        'card-center',             # mouse click at card center
+        'text-element-direct',     # click the text element directly
+    ]):
+        if checkbox_checked: break
+        try:
+            click_info = await page.evaluate("""(args) => {
+                const text = args.text;
+                const strategy = args.strategy;
+                let textEl = null;
+                for (const el of document.querySelectorAll('*')) {
+                    if ((el.innerText || '').trim() === text && el.children.length < 3) { textEl = el; break; }
+                }
+                if (!textEl) return {ok:false, err:'text not found'};
+                let row = textEl;
+                for (let d=0; d<8; d++) {
+                    row = row.parentElement; if (!row) return {ok:false, err:'no row ancestor'};
+                    const rr = row.getBoundingClientRect();
+                    if (rr.width > 400 && rr.height > 50 && rr.height < 200) break;
+                }
+                const rb = row.getBoundingClientRect();
+                if (strategy === 'checkbox-input-in-row') {
+                    const cb = row.querySelector('input[type="checkbox"]');
+                    if (!cb) return {ok:false, err:'no input[type=checkbox] in row'};
+                    cb.click(); return {ok:true, method:'js-click', el:'input[checkbox]'};
+                }
+                if (strategy === 'role-checkbox') {
+                    const cb = row.querySelector('[role="checkbox"]');
+                    if (!cb) return {ok:false, err:'no role=checkbox in row'};
+                    cb.click(); return {ok:true, method:'js-click', el:'[role=checkbox]'};
+                }
+                if (strategy === 'card-right-edge')
+                    return {ok:true, method:'mouse', x: rb.right - 30, y: rb.y + rb.height/2};
+                if (strategy === 'card-center')
+                    return {ok:true, method:'mouse', x: rb.x + rb.width/2, y: rb.y + rb.height/2};
+                if (strategy === 'text-element-direct') {
+                    textEl.click(); return {ok:true, method:'js-click', el:'text'};
+                }
+                return {ok:false, err:'unknown strategy'};
+            }""", {'text': use_case_text, 'strategy': strategy})
+            if not click_info or not click_info.get('ok'):
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): {click_info}')
+                continue
+            if click_info.get('method') == 'mouse':
+                await hbeh.click(page, click_info['x'], click_info['y'], _hb_state)
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): mouse-clicked ({click_info["x"]:.0f},{click_info["y"]:.0f})')
+            else:
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): JS-clicked {click_info.get("el","?")}')
+            await asyncio.sleep(2.5)
+            # POST-CLICK VERIFY via vision — the feedback loop AS A GATE
+            yes, summary = await vision_gate(page, f'use-case-verify-{attempt_idx+1}', verify_q)
+            if yes:
+                hb(f'✅ use-case checkbox VERIFIED checked via {strategy}')
+                checkbox_checked = True
+                shot(await safe_screenshot(page), f'[use-case-verified] {use_case_text} CHECKED via {strategy}')
+                break
+            hb(f'⚠️ {strategy} click did not check the box (vision NO) — next strategy')
+        except Exception as e:
+            hb(f'use-case attempt {attempt_idx+1} ({strategy}) err: {str(e)[:120]}')
+
+    if not checkbox_checked:
+        hb(f'❌ HALT: could not verify use-case "{use_case_text}" checkbox checked after 5 strategies')
+        shot(await safe_screenshot(page), f'[use-case-FAILED] all 5 click strategies failed to check {use_case_text}')
+        return None
     await hbeh.sleep(2.8, 6.0)
-    shot(await safe_screenshot(page), f'[use-case-clicked] clicked "{use_case_text}" card — its checkbox should be checked')
     await gated_click(page, 'Next',
         f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
         label='use-case-next')
