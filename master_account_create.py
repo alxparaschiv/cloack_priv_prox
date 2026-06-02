@@ -482,10 +482,51 @@ async def find_visible_input(page, exclude_with_value=True, y_range=None):
     return None
 
 
+def precheck_account_uniqueness(acc):
+    """[feedback-account-uniqueness-precheck] Returns (is_new_bool, prior_runs_list).
+    Searches the accounts CSV for prior runs with the same FB ID or email."""
+    try:
+        rows = asm._read_all_rows()
+        if not rows or len(rows) < 2: return True, []
+        headers = rows[0]
+        fb_id_col = headers.index('FB Profile ID') if 'FB Profile ID' in headers else None
+        email_col = headers.index('FB Email') if 'FB Email' in headers else None
+        profile_col = headers.index('GoLogin Profile') if 'GoLogin Profile' in headers else None
+        status_col = headers.index('Status') if 'Status' in headers else None
+        ts_col = headers.index('Timestamp (UTC)') if 'Timestamp (UTC)' in headers else None
+        prior = []
+        for r in rows[1:]:
+            if len(r) <= max(c for c in [fb_id_col, email_col] if c is not None): continue
+            fb_id_match = fb_id_col is not None and r[fb_id_col] == acc.get('fb_id')
+            email_match = email_col is not None and r[email_col] == acc.get('email')
+            if fb_id_match or email_match:
+                prior.append({
+                    'timestamp': r[ts_col] if ts_col is not None and ts_col < len(r) else '',
+                    'profile':   r[profile_col] if profile_col is not None and profile_col < len(r) else '',
+                    'status':    r[status_col] if status_col is not None and status_col < len(r) else '',
+                })
+        return (len(prior) == 0), prior
+    except Exception as e:
+        hb(f'precheck err (treating as new): {e}')
+        return True, []
+
+
 async def run_account(profile_id, acc):
     from playwright.async_api import async_playwright
 
     hb(f'━━━━━━━ {acc["email"]} → Profile id={profile_id[:10]}… ━━━━━━━')
+
+    # 🚨 UNIQUENESS PRE-CHECK [feedback-account-uniqueness-precheck]
+    if os.environ.get('ALLOW_DUPLICATE_BLOB') != '1':
+        is_new, prior = precheck_account_uniqueness(acc)
+        if not is_new:
+            hb(f'🚨 UNIQUENESS CHECK FAILED: blob already used in {len(prior)} prior run(s):')
+            for p in prior: hb(f'  • {p["timestamp"]} → {p["profile"]} → {p["status"]}')
+            hb(f'❌ HALT: re-using a blob = same FB account on different GoLogin profile = '
+               f'compounded phone bindings + clustering signal + wasted rental. '
+               f'Use a fresh blob OR set ALLOW_DUPLICATE_BLOB=1 to override.')
+            return {'status': 'duplicate_blob_halted', 'prior_runs': prior, 'rental_phone': '', 'rental_id': '', 'role': '', 'fb_app': None, 'fb_app_id': None, 'ig_app': None, 'ig_app_id': None, 'privacy_url': None}
+
     _hb_state = {'pos': None}  # human-behavior cursor tracking
 
     # Phase A: setup proxy + cookies + session
@@ -581,6 +622,16 @@ async def run_account(profile_id, acc):
             await page.goto('https://accountscenter.facebook.com/youraccount/contact_points/', wait_until='domcontentloaded', timeout=60000)
             await hbeh.sleep(4.9, 10.5)
             body_pre = await page.evaluate("() => document.body.innerText")
+
+            # PRE-BIND CHECK [feedback-ac-prebind-check]: yellow-flag if account already has OTHER phones
+            other_phones = [p for p in re.findall(r'\+1\d{10}', body_pre) if p != '+1' + phone10]
+            if other_phones and os.environ.get('AUTO_SKIP_IF_BOUND') != '0':
+                hb(f'🚨 PRE-BIND CHECK: account already has phone(s) bound: {other_phones} (not our +{phone10})')
+                shot(await page.screenshot(type='png'), f'🚨 AC has existing phones {other_phones} — halting per pre-bind rule')
+                result['status'] = 'ac_has_existing_phone'
+                result['existing_phones'] = other_phones
+                hb(f'❌ HALT: account already touched (existing phones in AC). Use a fresh account or manually clean up + retry with AUTO_SKIP_IF_BOUND=0.')
+                return result
             # Better check: find the phone in body, then look at next 60 chars for "Pending"
             already_bound = False
             idx = body_pre.find('+1' + phone10)
@@ -683,15 +734,29 @@ async def run_account(profile_id, acc):
         hb(f'typed phone {phone10}'); await hbeh.sleep(3.5, 7.5)
 
         seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id))
-        # RULE #1 GATE: confirm we're on Verify Account with phone typed before sending SMS
-        yes, _ = await vision_gate(page, 'pre-send-sms',
-            f'Is this the Verify Account step with phone {phone10} typed in the mobile field and a Send Verification SMS button enabled?')
-        if not yes:
-            hb('❌ HALT: not on expected Verify Account state before Send SMS'); result['status']='verify_state_unexpected'; return result
-        ok = await click_btn(page, 'Send Verification SMS')
-        if not ok: ok = await click_btn(page, 'Send verification')
-        hb(f'Send SMS: {ok}')
-        if not ok: result['status']='no_send_btn'; return result
+        # VP44 LESSON 2026-06-02: when AC binding is done FIRST, FB sometimes auto-sends
+        # the wizard SMS the moment Verify Account page loads (because the phone is already
+        # bound). Body shows "Please wait N seconds before resending" + Continue button.
+        # In that case, SKIP the Send Verification SMS click — go straight to code-entry.
+        body_pre = await page.evaluate("() => document.body.innerText")
+        already_sent = (
+            'before resending' in body_pre.lower()
+            or 'Send SMS Again' in body_pre
+            or ('Continue by entering' in body_pre and 'verification code' in body_pre.lower())
+        )
+        if already_sent:
+            hb('⏭ wizard SMS auto-sent (phone pre-bound) — skipping Send Verification SMS click')
+            ok = True  # treat as if Send SMS was clicked
+        else:
+            # RULE #1 GATE: confirm we're on Verify Account with phone typed before sending SMS
+            yes, _ = await vision_gate(page, 'pre-send-sms',
+                f'Is this the Verify Account step with phone {phone10} typed in the mobile field and a Send Verification SMS button enabled? OR is it already showing a code-entry input (meaning SMS was already auto-sent)?')
+            if not yes:
+                hb('❌ HALT: not on expected Verify Account state before Send SMS'); result['status']='verify_state_unexpected'; return result
+            ok = await click_btn(page, 'Send Verification SMS')
+            if not ok: ok = await click_btn(page, 'Send verification')
+            hb(f'Send SMS: {ok}')
+            if not ok: result['status']='no_send_btn'; return result
         await hbeh.sleep(7.0, 15.0)
 
         hb('📨 polling for SMS code (5min)…')
