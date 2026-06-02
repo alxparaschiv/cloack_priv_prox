@@ -1547,24 +1547,57 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
             'Is this the developer dashboard with a Create app button (lowercase "app")?',
             label='create-app-lowercase')
     await hbeh.sleep(5.6, 12.0)
-    # Dismiss "new way" guidance modal
-    await page.keyboard.press('Escape')
-    await asyncio.sleep(3)
-    # Clear search bar (sometimes typed-into garbage)
-    for f in page.frames:
-        try:
-            for el in await f.query_selector_all('input[placeholder*="Search" i]'):
-                if await el.is_visible():
-                    await el.click(); await asyncio.sleep(0.3)
-                    await el.press('Control+a'); await el.press('Delete')
-                    break
-        except: pass
-    await hbeh.click(page, 100, 100, _hb_state)
-    await asyncio.sleep(2)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # POST-CLICK FEEDBACK LOOP [feedback-click-verify-retry, 2026-06-03]:
+    # After Create App click, the page transitions through:
+    #   (1) blank/loading → (2) "new way to create apps" modal → (3) Create App form with name input
+    # Without waiting for (3), we hit "❌ no name input" on slow loads. User caught this:
+    # "on a blank unloaded screen the bot should just wait for the screen to load".
+    # Poll vision up to 60s for the name input to be rendered, dismissing intermediate
+    # modals (Escape + Close) as they appear.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    name_input_ready = False
+    for poll in range(8):  # up to 8 × 8s = 64s
+        body = await page.evaluate("() => document.body.innerText.substring(0, 2000)")
+        # If "new way" modal is shown, dismiss it
+        if 'new way to create apps' in body.lower() or 'There\'s a new way to create apps' in body:
+            hb(f'[create-app poll {poll+1}] dismissing "new way" modal')
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(2)
+            # also try Close button
+            try:
+                await page.get_by_role('button', name='Close').first.click(timeout=3000)
+                await asyncio.sleep(2)
+            except: pass
+            # also Clear any garbage in search bar
+            for f in page.frames:
+                try:
+                    for el in await f.query_selector_all('input[placeholder*="Search" i]'):
+                        if await el.is_visible():
+                            await el.click(); await asyncio.sleep(0.3)
+                            await el.press('Control+a'); await el.press('Delete'); break
+                except: pass
+            await hbeh.click(page, 100, 100, _hb_state)
+            await asyncio.sleep(2)
+            continue
+        # Vision gate: is the name input rendered?
+        yes, summary = await vision_gate(page, f'create-app-form-{poll+1}',
+            'Is the "Create app" form visible with an App name text input field that I can type into? Reply YES only if a name input is clearly rendered and ready (not loading skeleton).')
+        if yes:
+            hb(f'✅ Create app form rendered after {poll+1} poll(s)')
+            name_input_ready = True
+            break
+        hb(f'[create-app poll {poll+1}] form not ready yet — waiting')
+        await asyncio.sleep(6)
+    if not name_input_ready:
+        hb('❌ Create app form never rendered after 60s — HALT')
+        shot(await safe_screenshot(page), '[create-app-FAILED] form never rendered')
+        return None
 
     # Type App name in the y=200..350 input (avoid search bar at y=17)
     nin = await find_visible_input(page, exclude_with_value=False, y_range=(200, 400))
-    if not nin: hb('❌ no name input'); return None
+    if not nin: hb('❌ no name input (after form-ready check passed — selector mismatch)'); return None
     shot(await safe_screenshot(page), f'[app-name-pre] about to type app name "{app_name}" into the input')
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
