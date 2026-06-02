@@ -599,6 +599,32 @@ async def run_account(profile_id, acc):
         ctx = br.contexts[0]
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
+        # CRITICAL [reference-gologin-cookie-persistence]: the storage push
+        # (POST /cookies) is necessary but NOT SUFFICIENT for Cloud Browser
+        # CDP sessions — they do NOT auto-load the persisted cookies into
+        # the runtime jar. We must ALSO call ctx.add_cookies() with the
+        # CE-format cookies converted to Playwright format. Without this,
+        # FB.com lands on the login page and Phase B bails as fb_login_failed
+        # (VP1 burn 2026-06-02 root cause).
+        pw_cookies = []
+        for c in acc['cookies']:
+            pc = {'name': c['name'], 'value': c['value'],
+                  'domain': c.get('domain',''), 'path': c.get('path','/'),
+                  'secure': bool(c.get('secure', False)),
+                  'httpOnly': bool(c.get('httponly') or c.get('httpOnly') or False)}
+            ss = c.get('sameSite', 'no_restriction')
+            ss_map = {'no_restriction':'None','unspecified':'Lax','lax':'Lax','strict':'Strict','none':'None'}
+            pc['sameSite'] = ss_map.get(str(ss).lower(), 'None')
+            # session=False AND expirationDate present → use it
+            if not c.get('session', False) and c.get('expirationDate'):
+                pc['expires'] = int(c['expirationDate'])
+            pw_cookies.append(pc)
+        try:
+            await ctx.add_cookies(pw_cookies)
+            hb(f'🍪 runtime cookies injected: {len(pw_cookies)} (incl c_user + xs for CDP session)')
+        except Exception as e:
+            hb(f'⚠️ ctx.add_cookies err: {e}')
+
         # Phase B: confirm FB login + dismiss blocking interstitials
         try:
             await page.goto('https://www.facebook.com/', wait_until='domcontentloaded', timeout=60000)
