@@ -110,11 +110,27 @@ async def fb_warmup_browse(page, ctx, seconds=120, state=None):
 
 
 APP_NAME_PATTERNS = [
-    lambda: f"{random.choice(['social','my','test','dev','beta','demo','side'])}-{random.choice(['app','tool','project','build','poc','dashboard','helper'])}-{random.randint(2,99)}",
-    lambda: f"{random.choice(['Dashboard','Pulse','Quill','Beacon','Pilot','Atlas','Compass','Forge','Anchor','Spark','Nimbus','Orbit'])} {random.choice(['Pro','Lite','Lab','Studio','Cloud','Stack','Notes',''])}".strip(),
-    lambda: f"{random.choice(['my','team','side','weekend','tinker','draft'])} {random.choice(['project','app','build','idea','prototype'])} {random.randint(2,98)}",
-    lambda: f"{random.choice(['Launch','Helper','Notes','Pages','Insights','Posts'])}{random.choice(['Pad','Bot','Pal','Lab','Kit','HQ','Ly','er'])}",
-    lambda: f"Test App {random.randint(10, 99)}",
+    # Pattern A: Concept + brandable suffix → LaunchLy, PulseHub, ForgeWave
+    # Per user 2026-06-03: real-product-sounding names, NO numbers, NO "test app".
+    lambda: random.choice(['Launch','Pulse','Forge','Beacon','Spark','Atlas','Quill','Nimbus','Drift',
+                            'Echo','Lumen','Pivot','Helper','Compass','Anchor','Orbit','Crest','Glide',
+                            'Bloom','Notes','Pages','Insights','Posts','Tide','Mosaic','Cinder'])
+              + random.choice(['Ly','Hub','Wave','Lab','HQ','Pad','Bay','Loop','Spot','Den','ify','er','io']),
+
+    # Pattern B: Adjective + Noun, CamelCase, no spaces → BlueRidge, OpenSky, SharpPixel
+    lambda: random.choice(['Blue','Sharp','Open','Bright','Quiet','Bold','Pure','Wild','Sunny','Calm',
+                            'Swift','Tiny','Quick','Soft','True','Even','Steady','Clear','Quiet','Lucky'])
+              + random.choice(['Ridge','Sky','Pixel','Cloud','Wave','Forest','Stack','Pulse','Brook',
+                                'Path','Stone','Light','Echo','Reef','Field','Meadow','Bay','Harbor','Trail']),
+
+    # Pattern C: Single invented brandable word
+    lambda: random.choice(['Forge','Spark','Atlas','Beacon','Nimbus','Pivot','Drift','Echo','Quill','Lumen',
+                            'Crest','Glide','Bloom','Anchor','Compass','Orbit','Halo','Ember','Solace','Vista',
+                            'Cinder','Plover','Larkly','Tessa','Mosaic','Wren','Saga','Veld','Plum','Skylark']),
+
+    # Pattern D: Concept + Studio/Co/Works (light corporate feel, no numbers)
+    lambda: random.choice(['Beacon','Forge','Quill','Atlas','Pivot','Crest','Lumen','Anchor','Tide','Echo'])
+              + ' ' + random.choice(['Studio','Co','Works','Labs','Bureau','Bench','House']),
 ]
 
 
