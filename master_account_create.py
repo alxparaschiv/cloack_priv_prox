@@ -87,6 +87,21 @@ def hb(t):
 def shot(b, c):
     try: requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto', files={'photo':('s.png',b,'image/png')}, data={'chat_id':CHAT,'caption':c[:1024]}, timeout=30)
     except: pass
+
+async def safe_screenshot(page, retries=3, timeout_ms=90000):
+    """Robust screenshot: tries with progressively longer timeouts. Slow wifi causes
+    Playwright's 30s default to expire while it waits for fonts/images. We bump the
+    timeout AND tolerate complete failure by returning b'' (caller can fall back to
+    body-text-only reasoning). Never lets a transient screenshot failure crash the run."""
+    import asyncio as _a
+    for attempt in range(retries):
+        try:
+            return await page.screenshot(type='png', timeout=timeout_ms)
+        except Exception as e:
+            hb(f'⚠️ screenshot attempt {attempt+1}/{retries} timed out: {str(e)[:120]}')
+            await _a.sleep(5)
+    hb('❌ all screenshot attempts failed — returning empty bytes so caller can continue without image')
+    return b''
 def vision(png, q, model='gpt-4o', max_tok=500):
     """Vision call with retry (5 attempts, 3s+exp backoff) — a single transient
     OpenAI hiccup must NOT crash the pipeline. VP1 burn 2026-06-02 traced to
@@ -145,7 +160,7 @@ async def wait_for_rendered(page, label, max_wait=90, poll=8):
     while time.time() < deadline:
         n += 1
         try:
-            png = await page.screenshot(type='png')
+            png = await safe_screenshot(page)
         except Exception as e:
             hb(f'[render {label} #{n}] screenshot err: {e}')
             await asyncio.sleep(poll); continue
@@ -174,7 +189,7 @@ async def vision_gate(page, label, question, max_wait=90):
     rendered = await wait_for_rendered(page, label, max_wait=max_wait)
     if not rendered: return False, None
     try:
-        png = await page.screenshot(type='png')
+        png = await safe_screenshot(page)
     except: return False, None
     prompt = (
         "TWO-PART CHECK. Be precise — your description must match the image, not the question.\n"
@@ -218,7 +233,7 @@ async def dismiss_fb_interstitials(page, max_loops=8):
         # Screen 1: initial ads-choice with Get started
         if 'Make a choice about your ads' in body or ('choice about your ads' in body and 'Get started' in body):
             hb(f'🚧 [#{i+1}] ads-choice screen 1 (Get started)')
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 1: clicking Get started')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] screen 1: clicking Get started')
             try: await page.get_by_role('button', name='Get started').click(timeout=10000)
             except Exception as e: hb(f'Get started err: {e}'); return
             await asyncio.sleep(7)
@@ -227,7 +242,7 @@ async def dismiss_fb_interstitials(page, max_loops=8):
         # Screen 2: "Use for free with ads" radio + Continue button
         if 'Use for free with ads' in body and 'Continue' in body:
             hb(f'🚧 [#{i+1}] screen 2 — selecting "Use for free with ads" radio')
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 2: about to click free radio')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] screen 2: about to click free radio')
             # Click the "Use for free with ads" radio option
             clicked_radio = False
             for sel_fn, desc in [
@@ -240,10 +255,10 @@ async def dismiss_fb_interstitials(page, max_loops=8):
                     hb(f'  → "Use for free with ads" clicked via {desc}'); break
                 except Exception as e: hb(f'  fail {desc}: {str(e)[:80]}')
             if not clicked_radio:
-                hb('⚠️ could not click "Use for free with ads"'); shot(await page.screenshot(type='png'), '⚠️ free radio click FAILED')
+                hb('⚠️ could not click "Use for free with ads"'); shot(await safe_screenshot(page), '⚠️ free radio click FAILED')
                 return
             await asyncio.sleep(4)
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] after radio — Continue should be enabled')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] after radio — Continue should be enabled')
             # Now click Continue
             try: await page.get_by_role('button', name='Continue').click(timeout=10000); hb('  → Continue clicked')
             except Exception as e: hb(f'Continue err: {e}'); return
@@ -253,7 +268,7 @@ async def dismiss_fb_interstitials(page, max_loops=8):
         # Screen 3: Terms agreement with "Agree" button
         if 'agree to' in body.lower() and ('terms' in body.lower() or 'meta using your info' in body.lower()):
             hb(f'🚧 [#{i+1}] screen 3 — Terms agreement, clicking Agree')
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 3: clicking Agree')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] screen 3: clicking Agree')
             try: await page.get_by_role('button', name='Agree').click(timeout=10000); hb('  → Agree clicked')
             except Exception as e: hb(f'Agree err: {e}'); return
             await asyncio.sleep(8)
@@ -262,7 +277,7 @@ async def dismiss_fb_interstitials(page, max_loops=8):
         # Screen 4: Cookies consent "Allow the use of cookies by Facebook?"
         if 'Allow all cookies' in body and ('cookies' in body.lower() and 'Facebook' in body):
             hb(f'🚧 [#{i+1}] screen 4 — Cookies consent, clicking Allow all cookies')
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] screen 4: Allow all cookies')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] screen 4: Allow all cookies')
             try: await page.get_by_role('button', name='Allow all cookies').click(timeout=10000); hb('  → Allow all cookies clicked')
             except Exception as e: hb(f'Allow all cookies err: {e}'); return
             await asyncio.sleep(8)
@@ -271,7 +286,7 @@ async def dismiss_fb_interstitials(page, max_loops=8):
         # Generic confirmation screen with Continue button (fallback)
         if 'Continue' in body and ('confirm' in body.lower() or 'review' in body.lower() or 'understand' in body.lower()):
             hb(f'🚧 [#{i+1}] generic confirmation screen — clicking Continue')
-            shot(await page.screenshot(type='png'), f'[interstitial #{i+1}] generic confirm')
+            shot(await safe_screenshot(page), f'[interstitial #{i+1}] generic confirm')
             try: await page.get_by_role('button', name='Continue').click(timeout=8000)
             except Exception as e: hb(f'Continue err: {e}'); return
             await asyncio.sleep(7)
@@ -303,7 +318,7 @@ async def gated_click(page, btn_name, expect_q, label=None):
     # POST-CLICK screenshot — proof the click happened (user can see in TG)
     try:
         await asyncio.sleep(2)  # small settle so UI starts reacting
-        png = await page.screenshot(type='png')
+        png = await safe_screenshot(page)
         shot(png, f'[post-click {lbl}] clicked="{btn_name}" → clicked_ok={ok}')
     except Exception as e:
         hb(f'[post-click-shot {lbl}] err: {e}')
@@ -360,7 +375,7 @@ async def safe_passkey_dismiss(page, label='passkey'):
     # way 2026-06-02. Pure asyncio.sleep is the ONLY safe operation here.
     hb('⏳ passkey detected — PASSIVE 90s WAIT (zero Playwright touches on modal)')
     await asyncio.sleep(90)
-    shot(await page.screenshot(type='png'), f'[{label}] post-90s — Not now should be enabled now')
+    shot(await safe_screenshot(page), f'[{label}] post-90s — Not now should be enabled now')
 
     # POLL Not now disabled state via read-only evaluate (no clicks)
     for poll in range(6):  # up to 6 × 15s = 90s additional
@@ -660,7 +675,7 @@ async def run_account(profile_id, acc):
             await page.goto('https://www.facebook.com/', wait_until='domcontentloaded', timeout=60000)
         except: pass
         await hbeh.sleep(5.6, 12.0)
-        s = await page.screenshot(type='png')
+        s = await safe_screenshot(page)
         shot(s, f'1️⃣ FB.com first load — {acc["email"]}')
         v = pj(vision(s, 'Reply ONLY JSON: {"is_logged_in":true|false,"profile_name_visible":"...","feed_visible":true|false,"interstitial_kind":"ads_choice|password_confirm|identity_check|none"}'))
         hb(f'FB.com: logged_in={v.get("is_logged_in")} name={v.get("profile_name_visible")} feed_visible={v.get("feed_visible")} interstitial={v.get("interstitial_kind")}')
@@ -672,7 +687,7 @@ async def run_account(profile_id, acc):
             hb(f'🚧 dismissing FB {v.get("interstitial_kind")} interstitial before warmup')
             await dismiss_fb_interstitials(page)
             # Re-confirm feed is now visible
-            s2 = await page.screenshot(type='png')
+            s2 = await safe_screenshot(page)
             shot(s2, '1️⃣b after interstitial dismiss')
             v2 = pj(vision(s2, 'Reply ONLY JSON: {"feed_visible":true|false,"interstitial_kind":"ads_choice|password_confirm|identity_check|none"}'))
             hb(f'post-dismiss: feed_visible={v2.get("feed_visible")} interstitial={v2.get("interstitial_kind")}')
@@ -707,7 +722,7 @@ async def run_account(profile_id, acc):
             other_phones = [p for p in re.findall(r'\+1\d{10}', body_pre) if p != '+1' + phone10]
             if other_phones and os.environ.get('AUTO_SKIP_IF_BOUND') != '0':
                 hb(f'🚨 PRE-BIND CHECK: account already has phone(s) bound: {other_phones} (not our +{phone10})')
-                shot(await page.screenshot(type='png'), f'🚨 AC has existing phones {other_phones} — halting per pre-bind rule')
+                shot(await safe_screenshot(page), f'🚨 AC has existing phones {other_phones} — halting per pre-bind rule')
                 result['status'] = 'ac_has_existing_phone'
                 result['existing_phones'] = other_phones
                 hb(f'❌ HALT: account already touched (existing phones in AC). Use a fresh account or manually clean up + retry with AUTO_SKIP_IF_BOUND=0.')
@@ -765,11 +780,11 @@ async def run_account(profile_id, acc):
             except: pass
         hb(f'Get Started: {clicked}')
         await hbeh.sleep(5.6, 12.0)
-        shot(await page.screenshot(type='png'), '2️⃣ after Get Started')
+        shot(await safe_screenshot(page), '2️⃣ after Get Started')
 
         # Phase D: walk Register → Verify
         # Register stage usually has just Continue
-        d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
+        d = pj(vision(await safe_screenshot(page), '''Reply ONLY JSON:
 {"sidebar_step_active":"<step>","main_cta":"<text>","main_cta_enabled":true|false,"any_error_text":"<verbatim or null>"}'''))
         if d.get('sidebar_step_active') == 'Register':
             await asyncio.sleep(3)
@@ -779,7 +794,7 @@ async def run_account(profile_id, acc):
             await hbeh.sleep(7.0, 15.0)
 
         # Phase D2: Verify Account — check for AC redirection
-        s = await page.screenshot(type='png')
+        s = await safe_screenshot(page)
         d = pj(vision(s, '''Reply ONLY JSON:
 {"page_kind":"verify_account|review_email|email_code|contact_info|about_you|dashboard|ac_required|other",
  "any_error_text":"<verbatim or null>",
@@ -809,11 +824,11 @@ async def run_account(profile_id, acc):
                     except: pass
                 if pin: break
         if not pin: hb('❌ no phone input'); result['status']='no_phone_input'; return result
-        shot(await page.screenshot(type='png'), f'[wizard-phone-pre] about to type {phone10} into Verify Account phone field')
+        shot(await safe_screenshot(page), f'[wizard-phone-pre] about to type {phone10} into Verify Account phone field')
         await pin[1].click(); await asyncio.sleep(1.5); await pin[1].fill('')
         await pin[1].type(phone10, delay=140)
         hb(f'typed phone {phone10}'); await hbeh.sleep(3.5, 7.5)
-        shot(await page.screenshot(type='png'), f'[wizard-phone-post] typed {phone10} — field should show the number')
+        shot(await safe_screenshot(page), f'[wizard-phone-post] typed {phone10} — field should show the number')
 
         seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id))
         # VP44 LESSON 2026-06-02: when AC binding is done FIRST, FB sometimes auto-sends
@@ -840,7 +855,7 @@ async def run_account(profile_id, acc):
             hb(f'Send SMS: {ok}')
             if not ok: result['status']='no_send_btn'; return result
             await asyncio.sleep(2)
-            shot(await page.screenshot(type='png'), f'[wizard-send-sms-post] clicked Send Verification SMS → page should now show code-entry state')
+            shot(await safe_screenshot(page), f'[wizard-send-sms-post] clicked Send Verification SMS → page should now show code-entry state')
         await hbeh.sleep(7.0, 15.0)
 
         hb('📨 polling for SMS code (5min)…')
@@ -855,15 +870,15 @@ async def run_account(profile_id, acc):
             await hbeh.sleep(7.0, 15.0)
         if not code: result['status']='no_sms'; return result
         hb(f'📨 SMS: {code}')
-        shot(await page.screenshot(type='png'), f'3️⃣ got SMS code {code}')
+        shot(await safe_screenshot(page), f'3️⃣ got SMS code {code}')
 
         await hbeh.sleep(2.8, 6.0)
         ci = await find_visible_input(page, exclude_with_value=True)
         if not ci: hb('❌ no code input'); result['status']='no_code_input'; return result
-        shot(await page.screenshot(type='png'), f'[wizard-code-pre] about to type SMS code {code} into the code field')
+        shot(await safe_screenshot(page), f'[wizard-code-pre] about to type SMS code {code} into the code field')
         await ci[1].click(); await asyncio.sleep(0.5); await ci[1].type(code, delay=140)
         hb(f'typed code'); await hbeh.sleep(3.5, 7.5)
-        shot(await page.screenshot(type='png'), f'[wizard-code-post] typed code {code} — field should show the digits')
+        shot(await safe_screenshot(page), f'[wizard-code-post] typed code {code} — field should show the digits')
         await gated_click(page, 'Continue',
             f'Is the wizard SMS code {code} typed in the input and a Continue button enabled?',
             label='wizard-sms-continue')
@@ -906,7 +921,7 @@ async def run_account(profile_id, acc):
             await hbeh.sleep(7.0, 15.0)
 
         # Phase G: About You — random role + Complete Registration
-        d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
+        d = pj(vision(await safe_screenshot(page), '''Reply ONLY JSON:
 {"page_kind":"about_you|dashboard|other","heading":"<verbatim>"}'''))
         if d.get('page_kind') != 'about_you' and 'describes' not in (d.get('heading','').lower()):
             # Maybe we're already past about_you and on dashboard?
@@ -920,7 +935,7 @@ async def run_account(profile_id, acc):
             await click_text(page, role)
             await hbeh.sleep(3.5, 7.5)
             # Vision verify CR enabled
-            d2 = pj(vision(await page.screenshot(type='png'), 'Reply ONLY JSON: {"main_cta_enabled":true|false}'))
+            d2 = pj(vision(await safe_screenshot(page), 'Reply ONLY JSON: {"main_cta_enabled":true|false}'))
             if not d2.get('main_cta_enabled'):
                 # Try clicking far right of viewport at role's y
                 hb('CR not enabled, trying mouse click on card right side')
@@ -941,25 +956,25 @@ async def run_account(profile_id, acc):
             hb(f'🎯 Complete Registration: {cr}')
             if not cr: result['status']='no_cr_btn'; return result
             # 6-MIN SILENT WAIT — DO NOTHING
-            shot(await page.screenshot(type='png'), '4️⃣ Complete Registration clicked — entering 6-min silent wait')
+            shot(await safe_screenshot(page), '4️⃣ Complete Registration clicked — entering 6-min silent wait')
             hb('⏳ 6-min silent wait per RUNBOOK §post-CR')
             await hbeh.sleep(252.0, 540.0)
 
         # Phase H: verify dashboard
-        d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
+        d = pj(vision(await safe_screenshot(page), '''Reply ONLY JSON:
 {"page_kind":"about_you|my_apps|dashboard|other","main_cta":"<text>"}'''))
         hb(f'post-wait: {d}')
         if d.get('page_kind') not in ('my_apps','dashboard') and 'apps' not in (d.get('main_cta','').lower() + ' '):
             # Still on about_you — Meta is processing slowly. Try another 3 min
             hb('still not on dashboard, +3min wait')
             await hbeh.sleep(126.0, 270.0)
-            d = pj(vision(await page.screenshot(type='png'), '''Reply ONLY JSON:
+            d = pj(vision(await safe_screenshot(page), '''Reply ONLY JSON:
 {"page_kind":"about_you|my_apps|dashboard|other","main_cta":"<text>"}'''))
         if d.get('page_kind') not in ('my_apps','dashboard') and 'create app' not in (d.get('main_cta','').lower()):
-            shot(await page.screenshot(type='png'), '❌ no dashboard after 9min')
+            shot(await safe_screenshot(page), '❌ no dashboard after 9min')
             result['status']='no_dashboard'; return result
         hb('✅ dashboard reached')
-        shot(await page.screenshot(type='png'), '5️⃣ dashboard reached — starting FB app')
+        shot(await safe_screenshot(page), '5️⃣ dashboard reached — starting FB app')
 
         # Phase I: Create FB app
         fb_id = await create_app_wizard(page, fb_app_name, 'Manage everything on your Page', acc['fb_pw'])
@@ -974,7 +989,7 @@ async def run_account(profile_id, acc):
         result['ig_app'] = ig_app_name
         result['ig_app_id'] = ig_id
         hb(f'IG app: {ig_app_name} → {ig_id}')
-        shot(await page.screenshot(type='png'), '7️⃣ both apps created — final state')
+        shot(await safe_screenshot(page), '7️⃣ both apps created — final state')
 
         # Phase J: privacy URL (telegra.ph) for FB app — pure HTTP, but keep inside async with
         try:
@@ -1021,7 +1036,7 @@ async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
     hb(f'━━━ Phase K (shard 1): publish app {app_id} ━━━')
     await page.goto(f'https://developers.facebook.com/apps/{app_id}/settings/basic/', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(8, 14)
-    shot(await page.screenshot(type='png'), 'K1: Settings/Basic loaded')
+    shot(await safe_screenshot(page), 'K1: Settings/Basic loaded')
 
     # Find + fill privacy URL input
     priv_loc = page.locator('input[placeholder="Privacy policy for Login dialog and app details"]').first
@@ -1037,7 +1052,7 @@ async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
         hb(f'❌ privacy URL mismatch — got {val!r}')
         result['shard1_error'] = 'privacy_url_typing_mismatch'
         return
-    shot(await page.screenshot(type='png'), 'K2: privacy typed')
+    shot(await safe_screenshot(page), 'K2: privacy typed')
 
     # Save changes
     save_loc = page.get_by_role('button', name='Save changes').first
@@ -1054,7 +1069,7 @@ async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
         result['shard1_error'] = 'privacy_url_persist_failed'
         return
     hb('✅ privacy URL persisted')
-    shot(await page.screenshot(type='png'), 'K3: privacy persisted')
+    shot(await safe_screenshot(page), 'K3: privacy persisted')
 
     # Show App Secret + password popup
     app_secret = None
@@ -1112,7 +1127,7 @@ async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
     await page.mouse.move(sidebar_pub['x'], sidebar_pub['y'], steps=5); await hbeh.sleep(0.2, 0.4)
     await page.mouse.click(sidebar_pub['x'], sidebar_pub['y'])
     await hbeh.sleep(8, 14)
-    shot(await page.screenshot(type='png'), 'K4: go_live page')
+    shot(await safe_screenshot(page), 'K4: go_live page')
 
     # Click Publish action — use .last
     pub = page.get_by_role('button', name='Publish').last
@@ -1122,7 +1137,7 @@ async def phase_k_publish(page, app_id, privacy_url, fb_pw, result):
     await pub.click(timeout=8000)
     hb('Publish action clicked')
     await hbeh.sleep(12, 18)
-    shot(await page.screenshot(type='png'), 'K5: after Publish')
+    shot(await safe_screenshot(page), 'K5: after Publish')
 
     body = await page.evaluate("() => document.body.innerText.substring(0, 800)")
     published = 'Published' in body and 'Unpublished' not in body[:500]
@@ -1143,7 +1158,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
     # Customize Add 4 perms
     await page.goto(f'https://developers.facebook.com/apps/{app_id}/use_cases/customize/?use_case_enum=PAGES_API', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(10, 16)
-    shot(await page.screenshot(type='png'), 'L1: customize page')
+    shot(await safe_screenshot(page), 'L1: customize page')
     for perm in CUSTOMIZE_PERMS:
         hb(f'Customize: looking for {perm}')
         try:
@@ -1176,7 +1191,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
                 hb(f'  ⏭ {perm} no Add button (already granted?)')
         except Exception as e: hb(f'  err {perm}: {e}')
         await hbeh.sleep(3, 5)
-    shot(await page.screenshot(type='png'), 'L2: after add perms')
+    shot(await safe_screenshot(page), 'L2: after add perms')
 
     # 10-min cooldown
     hb('⏳ 10-min cooldown before Graph Explorer (anti-flag)')
@@ -1185,7 +1200,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
     # Graph Explorer
     await page.goto('https://developers.facebook.com/tools/explorer/', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(10, 16)
-    shot(await page.screenshot(type='png'), 'L3: explorer')
+    shot(await safe_screenshot(page), 'L3: explorer')
 
     # Token capture via framenavigated on ALL pages
     captured = {'val': None}
@@ -1215,7 +1230,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
             hb(f'+ {perm}')
             await hbeh.sleep(2.5, 4)
         except Exception as e: hb(f'  {perm}: {e}')
-    shot(await page.screenshot(type='png'), 'L4: perms typed')
+    shot(await safe_screenshot(page), 'L4: perms typed')
 
     # Generate Access Token
     try:
@@ -1224,7 +1239,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
         await gen.click(timeout=8000); hb('Generate clicked')
     except Exception as e: hb(f'Generate fail: {e}'); result['shard2_error']='generate_fail'; return
     await hbeh.sleep(6, 10)
-    shot(await page.screenshot(type='png'), 'L5: post Generate')
+    shot(await safe_screenshot(page), 'L5: post Generate')
 
     # OAuth popup walker (looped — handles screens in order: Continue as → opt-in radio → Continue → Save → Got it)
     for step in range(10):
@@ -1256,7 +1271,7 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
             if captured['val']: break
         await asyncio.sleep(5)
     await asyncio.sleep(5)
-    shot(await page.screenshot(type='png'), 'L6: post OAuth')
+    shot(await safe_screenshot(page), 'L6: post OAuth')
 
     # Capture short token
     short_token = captured['val']
@@ -1328,11 +1343,11 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
             except: pass
         if pin: break
     if not pin: hb('❌ no AC phone input'); return False
-    shot(await page.screenshot(type='png'), f'[ac-phone-pre] about to type {phone10} into AC phone field')
+    shot(await safe_screenshot(page), f'[ac-phone-pre] about to type {phone10} into AC phone field')
     await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
     await pin[1].type(phone10, delay=140)
     await hbeh.sleep(2.8, 6.0)
-    shot(await page.screenshot(type='png'), f'[ac-phone-post] typed {phone10} — AC modal should show the number')
+    shot(await safe_screenshot(page), f'[ac-phone-post] typed {phone10} — AC modal should show the number')
     # Click profile name row (toggle checkbox)
     if profile_name:
         for f in page.frames:
@@ -1350,7 +1365,7 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
                     await loc.click(); break
             except: pass
     await hbeh.sleep(2.8, 6.0)
-    shot(await page.screenshot(type='png'), f'[ac-checkbox-post] clicked profile checkbox ({profile_name or "Facebook"}) — should be checked now')
+    shot(await safe_screenshot(page), f'[ac-checkbox-post] clicked profile checkbox ({profile_name or "Facebook"}) — should be checked now')
     # AC FLOW ORDER (validated 2026-06-02 on VP1, see [feedback-ac-bind-sms-before-email]):
     # After clicking Next on "Add mobile number", FB asks for the SMS code FIRST
     # (sent to the rental phone). The EMAIL step comes after SMS — sometimes it
@@ -1394,10 +1409,10 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
         hb(f'📱 AC SMS code: {sms_code}')
         ci_sms = await find_visible_input(page, exclude_with_value=True)
         if ci_sms:
-            shot(await page.screenshot(type='png'), f'[ac-sms-pre] about to type SMS code {sms_code}')
+            shot(await safe_screenshot(page), f'[ac-sms-pre] about to type SMS code {sms_code}')
             await ci_sms[1].click(); await asyncio.sleep(0.5); await ci_sms[1].type(sms_code, delay=140)
             await hbeh.sleep(2.8, 6.0)
-            shot(await page.screenshot(type='png'), f'[ac-sms-post] typed SMS {sms_code} — Next should be enabled')
+            shot(await safe_screenshot(page), f'[ac-sms-post] typed SMS {sms_code} — Next should be enabled')
             # Click Next via modal-scoped locator (the modal-Next button can be the outer container of inner Next text)
             clicked = False
             try:
@@ -1412,7 +1427,7 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
                 await page.mouse.click(int(vp['w']/2), int(vp['h']*0.55))
                 hb(f'✅ coord click Next at center/55%')
             await hbeh.sleep(7.0, 15.0)
-            shot(await page.screenshot(type='png'), '[ac-sms-post-click] after ac-sms-next click')
+            shot(await safe_screenshot(page), '[ac-sms-post-click] after ac-sms-next click')
 
     # STEP 7 — EMAIL code (may or may not appear)
     # Wait briefly to see if an email-code modal renders. If not, the SMS submit alone bound the phone.
@@ -1431,10 +1446,10 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
         hb(f'📧 AC email code: {email_code}')
         ci_em = await find_visible_input(page, exclude_with_value=True)
         if not ci_em: hb('❌ no AC email-code input'); return False
-        shot(await page.screenshot(type='png'), f'[ac-email-pre] about to type email code {email_code}')
+        shot(await safe_screenshot(page), f'[ac-email-pre] about to type email code {email_code}')
         await ci_em[1].click(); await asyncio.sleep(0.5); await ci_em[1].type(email_code, delay=140)
         await hbeh.sleep(3.5, 7.5)
-        shot(await page.screenshot(type='png'), f'[ac-email-post] typed email code {email_code}')
+        shot(await safe_screenshot(page), f'[ac-email-post] typed email code {email_code}')
         await gated_click(page, 'Next',
             f'Is the AC email confirmation code {email_code} typed in the input field, with Next enabled?',
             label='ac-email-code-next')
@@ -1480,12 +1495,12 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     # Type App name in the y=200..350 input (avoid search bar at y=17)
     nin = await find_visible_input(page, exclude_with_value=False, y_range=(200, 400))
     if not nin: hb('❌ no name input'); return None
-    shot(await page.screenshot(type='png'), f'[app-name-pre] about to type app name "{app_name}" into the input')
+    shot(await safe_screenshot(page), f'[app-name-pre] about to type app name "{app_name}" into the input')
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
     hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
-    shot(await page.screenshot(type='png'), f'[app-name-post] typed "{app_name}" — input should show the name')
+    shot(await safe_screenshot(page), f'[app-name-post] typed "{app_name}" — input should show the name')
     await gated_click(page, 'Next',
         f'Is the app name "{app_name}" typed in the input, with Next enabled?',
         label='app-name-next')
@@ -1499,7 +1514,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await asyncio.sleep(3)
-    shot(await page.screenshot(type='png'), f'[use-case-all19] clicked All (19) tab — should now show all 19 use cases including "{use_case_text}"')
+    shot(await safe_screenshot(page), f'[use-case-all19] clicked All (19) tab — should now show all 19 use cases including "{use_case_text}"')
     # Scroll target into view + click its checkbox (use mouse click far right)
     for f in page.frames:
         try:
@@ -1513,7 +1528,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    shot(await page.screenshot(type='png'), f'[use-case-clicked] clicked "{use_case_text}" card — its checkbox should be checked')
+    shot(await safe_screenshot(page), f'[use-case-clicked] clicked "{use_case_text}" card — its checkbox should be checked')
     await gated_click(page, 'Next',
         f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
         label='use-case-next')
@@ -1527,7 +1542,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    shot(await page.screenshot(type='png'), '[business-no-clicked] selected "I don\'t want to connect a business portfolio" — radio should be filled')
+    shot(await safe_screenshot(page), '[business-no-clicked] selected "I don\'t want to connect a business portfolio" — radio should be filled')
     await gated_click(page, 'Next',
         'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
         label='business-no-next')
@@ -1565,7 +1580,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await hbeh.sleep(3.5, 7.5)
     await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(5.6, 12.0)
-    s = await page.screenshot(type='png')
+    s = await safe_screenshot(page)
     shot(s, f'6️⃣ /apps list after creating {app_name}')
     v = vision(s, f'In the apps list, find "{app_name}". Reply ONLY JSON: {{"app_listed":true|false,"app_id":"<the App ID number visible next to it, or null>"}}')
     d = pj(v)
