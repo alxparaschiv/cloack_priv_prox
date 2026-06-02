@@ -136,6 +136,10 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _document_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_blob_input'):
         await cookies.blob_document_received(update, context)
+        return
+    # /setup_full also accepts a .txt document upload during step 1
+    if await setup_pipeline.setup_full_document_received(update, context):
+        return
 
 
 # ─── /start /help ─────────────────────────────────────────────────────

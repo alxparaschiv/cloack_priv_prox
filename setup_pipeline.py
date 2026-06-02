@@ -2,7 +2,7 @@
 
 User flow:
   /setup_full
-    → Step 1/3: paste the blob
+    → Step 1/3: paste the blob (as TEXT, multi-line OK, multi-message OK accumulate; OR upload as .txt)
     → Step 2/3: pick a GoLogin profile from numbered list of "Validated Profile N"
     → Step 3/3: pick rental — 'fresh' (auto-rent) OR 'lr_xxx +1xxx' (reuse existing)
     → Bot spawns master_account_create.py as one subprocess
@@ -23,7 +23,9 @@ _state: dict[int, dict] = {}
 
 STEP1 = (
     '🛤 *Full Meta Dev pipeline — Step 1/3*\n\n'
-    'Paste the account *blob* in your next message.\n\n'
+    'Send the account *blob* — one of:\n'
+    '  • paste as plain text (multi-line OK, I\'ll accumulate across messages)\n'
+    '  • upload a `.txt` file containing the blob\n\n'
     'Format: `email:fbpw:email:emailpw:fb_url:dob:UA:b64cookies`\n'
     '(or the FB-first variant: `fbid:fbpw:email:emailpw:token:b64cookies`)\n\n'
     'Cancel with /cancel'
@@ -92,10 +94,20 @@ async def setup_full_text_received(update: Update, context: ContextTypes.DEFAULT
 
     # ─── Step 1: blob ─────────────────────────────────────────────
     if awaiting == 'blob':
-        if ':' not in text or len(text) < 200:
-            await update.message.reply_text('❌ doesn\'t look like a valid blob (too short or no colons). Try /setup_full again.')
-            del _state[chat_id]
+        # Multi-message accumulation: keep appending text until a valid blob is recognized
+        accumulated = st.get('blob_buffer', '') + ('\n' if st.get('blob_buffer') else '') + text
+        # Strip whitespace/newlines from the accumulated string for parsing
+        flattened = ''.join(accumulated.split())
+        # Heuristic: a valid blob has many colons + a long base64 tail (W3si... is typical cookie JSON b64)
+        if ':' not in flattened or len(flattened) < 500 or 'W3si' not in flattened:
+            # Save what we have, prompt for more
+            st['blob_buffer'] = accumulated
+            await update.message.reply_text(
+                f'🟡 received {len(accumulated)} chars so far — keep pasting (need the full blob with `W3si...` base64 cookies tail), or /cancel'
+            )
             return True
+        # We have a candidate blob — try to parse
+        text = flattened
         try:
             b64 = text.rsplit(':', 1)[-1]
             cookies = json.loads(base64.b64decode(b64).decode('utf-8'))
@@ -230,6 +242,43 @@ async def setup_full_text_received(update: Update, context: ContextTypes.DEFAULT
         return True
 
     return False
+
+
+async def setup_full_document_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle .txt document uploads during step 1. Returns True if consumed."""
+    chat_id = update.effective_chat.id
+    st = _state.get(chat_id)
+    if not st or st.get('awaiting') != 'blob': return False
+    doc = update.message.document
+    if not doc: return False
+    # Accept any text-y document (mime text/plain or .txt extension)
+    name = (doc.file_name or '').lower()
+    if not (name.endswith('.txt') or (doc.mime_type or '').startswith('text/')):
+        return False  # not a text doc — let other handlers see it
+    if doc.file_size and doc.file_size > 200000:
+        await update.message.reply_text(f'❌ document too large ({doc.file_size} bytes, cap 200KB)')
+        return True
+    try:
+        f = await context.bot.get_file(doc.file_id)
+        content = await f.download_as_bytearray()
+        text = content.decode('utf-8', errors='replace').strip()
+    except Exception as e:
+        await update.message.reply_text(f'❌ failed to download document: {e}')
+        return True
+    # Replace any accumulated buffer with this document's content
+    st['blob_buffer'] = text
+    # Now feed it through the text handler logic by faking a message
+    # Easiest: call the text handler with the doc content as the "next text"
+    class _FakeMsg:
+        def __init__(self, t): self.text = t
+        async def reply_text(self, *a, **kw): return await update.message.reply_text(*a, **kw)
+    class _FakeUpdate:
+        def __init__(self, u, t):
+            self.message = _FakeMsg(t)
+            self.effective_chat = u.effective_chat
+    # Clear buffer so the call sees only the document content
+    st['blob_buffer'] = ''
+    return await setup_full_text_received(_FakeUpdate(update, text), context)
 
 
 async def _present_profile_picker(update: Update, st: dict):
