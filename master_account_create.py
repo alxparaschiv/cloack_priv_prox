@@ -88,16 +88,46 @@ def shot(b, c):
     try: requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto', files={'photo':('s.png',b,'image/png')}, data={'chat_id':CHAT,'caption':c[:1024]}, timeout=30)
     except: pass
 def vision(png, q, model='gpt-4o', max_tok=500):
+    """Vision call with retry (5 attempts, 3s+exp backoff) — a single transient
+    OpenAI hiccup must NOT crash the pipeline. VP1 burn 2026-06-02 traced to
+    one empty response body during AC bind → JSONDecodeError → pipeline died
+    mid-flow after rental was already half-used.
+
+    On total failure (5 retries all fail), returns a sentinel reply so the
+    caller's parsing yields a benign NO/empty-JSON rather than crashing. This
+    lets the gate decide to HALT cleanly instead of an uncaught exception."""
     if not png:
         hb('vision skipped (no png)')
         return '{}'
     b64 = base64.b64encode(png).decode()
-    r = requests.post('https://api.openai.com/v1/chat/completions',
-        headers={'Authorization':f'Bearer {OAI}'},
-        json={'model':model,'messages':[{'role':'user','content':[
-            {'type':'text','text':q},
-            {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}]}],'max_tokens':max_tok}, timeout=45)
-    return r.json()['choices'][0]['message']['content']
+    payload = {'model':model,'messages':[{'role':'user','content':[
+        {'type':'text','text':q},
+        {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}]}],'max_tokens':max_tok}
+    last_err = None
+    for attempt in range(5):
+        try:
+            r = requests.post('https://api.openai.com/v1/chat/completions',
+                headers={'Authorization':f'Bearer {OAI}'}, json=payload, timeout=60)
+            if r.status_code != 200:
+                last_err = f'HTTP {r.status_code}: {r.text[:200]}'
+                hb(f'⚠️ vision attempt {attempt+1}/5 → {last_err}')
+                time.sleep(3 + attempt*2)
+                continue
+            data = r.json()
+            content = data.get('choices',[{}])[0].get('message',{}).get('content')
+            if not content:
+                last_err = f'empty content in response: {str(data)[:200]}'
+                hb(f'⚠️ vision attempt {attempt+1}/5 → {last_err}')
+                time.sleep(3 + attempt*2)
+                continue
+            return content
+        except Exception as e:
+            last_err = f'{type(e).__name__}: {e}'
+            hb(f'⚠️ vision attempt {attempt+1}/5 → {last_err}')
+            time.sleep(3 + attempt*2)
+    hb(f'❌ vision failed all 5 attempts: {last_err} — returning fallback so caller can halt cleanly')
+    # Fallback that parses to a benign NO for gate questions and empty {} for JSON questions
+    return 'ANSWER: NO — vision unavailable\nDESCRIBE: vision API failed all retries'
 def pj(v):
     s = v.strip()
     if '```' in s: s = s.split('```')[1].lstrip('json').strip()
