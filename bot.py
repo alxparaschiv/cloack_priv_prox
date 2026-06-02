@@ -43,7 +43,6 @@ import privacy
 import cookies
 import bg
 import proxy
-import meta_dev
 import rambler
 import sms_verified
 import setup_pipeline
@@ -124,10 +123,7 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sms_verified.sms_text_received(update, context)
         return
 
-    if context.user_data.get('expecting_meta_dev_blob'):
-        await meta_dev.meta_dev_text_received(update, context)
-        return
-    # Setup-pipeline: chat-scoped state (not user_data — see setup_pipeline._state)
+    # /meta_dev_setup wizard: chat-scoped state (not user_data — see setup_pipeline._state)
     if await setup_pipeline.setup_full_text_received(update, context):
         return
     # No active flow — silently ignore (or could echo a help hint)
@@ -137,7 +133,7 @@ async def _document_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_blob_input'):
         await cookies.blob_document_received(update, context)
         return
-    # /setup_full also accepts a .txt document upload during step 1
+    # /meta_dev_setup step 1 also accepts a .txt document upload
     if await setup_pipeline.setup_full_document_received(update, context):
         return
 
@@ -156,7 +152,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📬 /rambler — Fetch latest FB code from a Rambler inbox\n"
         "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
-        "🛠 /meta_dev_setup — Autonomous Meta-for-Developers account setup\n",
+        "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n",
         parse_mode='HTML')
 
 
@@ -172,7 +168,7 @@ async def post_init(application):
         BotCommand("proxy_status",  "Last /proxy batch result"),
         BotCommand("rambler",       "Fetch latest FB code from a Rambler inbox"),
         BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
-        BotCommand("meta_dev_setup","Autonomous Meta-for-Developers acc setup"),
+        BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -266,10 +262,11 @@ def main():
     application.add_handler(CommandHandler("bg_generator", bg.bg_generator_command))
     application.add_handler(CommandHandler("proxy", proxy.proxy_command))
     application.add_handler(CommandHandler("proxy_status", proxy.proxy_status_command))
-    application.add_handler(CommandHandler("meta_dev_setup", meta_dev.meta_dev_command))
+    # /meta_dev_setup is the SINGLE entry point — 3-step wizard then end-to-end pipeline.
+    # (The legacy meta_dev.meta_dev_command is no longer registered.)
+    application.add_handler(CommandHandler("meta_dev_setup", setup_pipeline.setup_full_command))
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
-    application.add_handler(CommandHandler("setup_full", setup_pipeline.setup_full_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
@@ -283,8 +280,6 @@ def main():
         bg.bg_callback, pattern=r'^bg_gen:'))
     application.add_handler(CallbackQueryHandler(
         proxy.proxy_callback, pattern=r'^proxy:'))
-    application.add_handler(CallbackQueryHandler(
-        meta_dev.meta_dev_callback, pattern=r'^mdev:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(

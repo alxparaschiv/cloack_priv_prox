@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _state: dict[int, dict] = {}
 
 STEP1 = (
-    '🛤 *Full Meta Dev pipeline — Step 1/3*\n\n'
+    '🛠 *Meta Dev account setup — Step 1/3*\n\n'
     'Send the account *blob* — one of:\n'
     '  • paste as plain text (multi-line OK, I\'ll accumulate across messages)\n'
     '  • upload a `.txt` file containing the blob\n\n'
@@ -31,9 +31,9 @@ STEP1 = (
     'Cancel with /cancel'
 )
 
-STEP2_HEADER = '🛤 *Step 2/3 — pick a GoLogin profile*\n\nReply with a number (1, 2, 3…):'
+STEP2_HEADER = '🛠 *Step 2/3 — pick a GoLogin profile*\n\nReply with a number (1, 2, 3…):'
 STEP3 = (
-    '🛤 *Step 3/3 — rental phone*\n\n'
+    '🛠 *Step 3/3 — rental phone*\n\n'
     'Reply with one of:\n'
     '  • `fresh` — I\'ll rent a brand-new 7-day Facebook phone via TextVerified\n'
     '  • `lr_xxxxxxxxxxxx +1XXXXXXXXXX` — reuse this rental (id + space + +1phone)'
@@ -217,7 +217,7 @@ async def setup_full_text_received(update: Update, context: ContextTypes.DEFAULT
         del _state[chat_id]
 
         await update.message.reply_text(
-            f'🛤 *spawning pipeline*\n'
+            f'🛠 *Meta Dev setup starting (stages 0-12)*\n'
             f'  c_user: `{c_user}`\n'
             f'  profile: `{profile_name}`\n'
             f'  rental: `{env_extra.get("REUSE_RENTAL_ID", "fresh")}`\n\n'
