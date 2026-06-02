@@ -1536,17 +1536,25 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
 
 
 async def create_app_wizard(page, app_name, use_case_text, fb_pw):
-    """Walk Create App wizard. Returns app ID from /apps list, or None.
+    """Walk Create App wizard for one app. Returns app ID from /apps list, or None.
 
-    RESTORED 2026-06-03 to the original 85c7711 architecture per user request:
-    feedback-loop gates were causing FB to silently reject app creation. The
-    pre-merge shard-era code below empirically worked for META APP 10/11/12.
-    Only added back: safe_screenshot (direct-CDP, JPEG, reliable), keyword-based
-    Submit click on the password popup (more robust than role-based).
+    RESTORED 2026-06-03 from ed299d8 (the MERGE commit dated 2026-06-02) per user:
+    "go back to the day when the script is working like three days ago and then
+    take that chart implement back here". META APP 12 was created with this exact
+    code on June 2. My subsequent fixes (5f7fbee click-verify-retry, 6aa80b8
+    post-Create-App feedback loop) broke it. Only deltas from ed299d8:
+      - safe_screenshot() for the /apps verification (direct-CDP regression fix)
     """
+    _hb_state = {}  # local human-behavior cursor state (empty dict — move() picks random initial pos)
     hb(f'creating app: {app_name} ({use_case_text})')
-    await click_btn(page, 'Create App') or await click_btn(page, 'Create app')
-    await asyncio.sleep(8)
+    ok = await gated_click(page, 'Create App',
+        'Is this the developer dashboard (My Apps page) with a Create App button visible?',
+        label='create-app-entry')
+    if not ok:
+        await gated_click(page, 'Create app',
+            'Is this the developer dashboard with a Create app button (lowercase "app")?',
+            label='create-app-lowercase')
+    await hbeh.sleep(5.6, 12.0)
     # Dismiss "new way" guidance modal
     await page.keyboard.press('Escape')
     await asyncio.sleep(3)
@@ -1559,7 +1567,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.press('Control+a'); await el.press('Delete')
                     break
         except: pass
-    await page.mouse.click(100, 100)
+    await hbeh.click(page, 100, 100, _hb_state)
     await asyncio.sleep(2)
 
     # Type App name in the y=200..350 input (avoid search bar at y=17)
@@ -1568,9 +1576,11 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
-    hb(f'name typed'); await asyncio.sleep(4)
-    await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
+    await gated_click(page, 'Next',
+        f'Is the app name "{app_name}" typed in the input, with Next enabled?',
+        label='app-name-next')
+    await hbeh.sleep(7.0, 15.0)
 
     # Use cases → All (19) → click the target use case card
     for f in page.frames:
@@ -1589,12 +1599,14 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await asyncio.sleep(2)
                 box = await loc.bounding_box()
                 if box:
-                    await page.mouse.click(box['x']+800, box['y']+box['height']/2)
+                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
-    await asyncio.sleep(4)
-    await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(2.8, 6.0)
+    await gated_click(page, 'Next',
+        f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
+        label='use-case-next')
+    await hbeh.sleep(7.0, 15.0)
 
     # Business: I don't want
     for f in page.frames:
@@ -1603,15 +1615,21 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
             if await loc.count()>0 and await loc.is_visible():
                 await loc.click(); break
         except: pass
-    await asyncio.sleep(4)
-    await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await hbeh.sleep(2.8, 6.0)
+    await gated_click(page, 'Next',
+        'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
+        label='business-no-next')
+    await hbeh.sleep(7.0, 15.0)
     # Requirements: just Next
-    await click_btn(page, 'Next')
-    await asyncio.sleep(10)
+    await gated_click(page, 'Next',
+        'Is this the app Requirements step with a Next button enabled?',
+        label='requirements-next')
+    await hbeh.sleep(7.0, 15.0)
     # Overview: Create app
-    await click_btn(page, 'Create app')
-    await asyncio.sleep(6)
+    await gated_click(page, 'Create app',
+        'Is this the Overview/Confirmation step with a Create app button enabled?',
+        label='overview-create-app')
+    await hbeh.sleep(4.2, 9.0)
     # Password popup
     for i in range(20):
         await asyncio.sleep(2)
@@ -1622,17 +1640,19 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.click(); await asyncio.sleep(1); await el.fill('')
                     await el.type(fb_pw, delay=140)
                     await asyncio.sleep(3)
-                    await click_btn(page, 'Submit')
-                    await asyncio.sleep(15)
+                    await gated_click(page, 'Submit',
+                        'Is a password confirmation popup visible with the password field filled and a Submit button?',
+                        label='password-popup-submit')
+                    await hbeh.sleep(10.5, 22.5)
                     break
             except: pass
         else: continue
         break
 
     # Verify via /apps
-    await asyncio.sleep(5)
+    await hbeh.sleep(3.5, 7.5)
     await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
-    await asyncio.sleep(8)
+    await hbeh.sleep(5.6, 12.0)
     s = await safe_screenshot(page)
     shot(s, f'6️⃣ /apps list after creating {app_name}')
     v = vision(s, f'In the apps list, find "{app_name}". Reply ONLY JSON: {{"app_listed":true|false,"app_id":"<the App ID number visible next to it, or null>"}}')

@@ -86,6 +86,19 @@ async def main(profile_name):
         result['fb_app_id'] = fb_id
         hb(f'FB app: {fb_app_name} → {fb_id}')
 
+        # HARD HALT if FB app failed — don't blindly proceed to IG.
+        # Per user 2026-06-03: "if the app hasn't been created why is the bot
+        # just going to the next step? Create the Instagram app if the Facebook
+        # app hasn't been created that's also super stupid". Override via env
+        # CONTINUE_ON_FB_FAIL=1 if you want to test IG flow despite FB failure.
+        if not fb_id and os.environ.get('CONTINUE_ON_FB_FAIL') != '1':
+            hb(f'❌ HALT: FB app "{fb_app_name}" was not created (None returned). '
+               f'Not proceeding to IG. Set CONTINUE_ON_FB_FAIL=1 to override.')
+            result['status'] = 'fb_app_failed'
+            save_account_record(profile_name, acc, result)
+            print(f'DONE  status={result["status"]}')
+            return
+
         # ─── Phase I: navigate back + Create IG app ───
         try:
             await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
