@@ -1590,18 +1590,92 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await asyncio.sleep(3)
-    # Scroll target into view + click its checkbox (use mouse click far right)
+    # Scroll target into view first
     for f in page.frames:
         try:
             loc = f.locator(f'text="{use_case_text}"').last
             if await loc.count()>0:
                 await loc.scroll_into_view_if_needed(timeout=8000)
-                await asyncio.sleep(2)
-                box = await loc.bounding_box()
-                if box:
-                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
+    await asyncio.sleep(2)
+
+    # CHECKBOX CLICK — multi-strategy with post-click vision verification.
+    # FB UI shifted between June 2 and June 3: the hardcoded +800px offset that
+    # worked for META APP 12 no longer hits the checkbox on current card width.
+    # Strategy 1 (right-edge from box) recovers the original behavior with a
+    # DYNAMIC offset based on actual card geometry. Strategy 2 is the legacy +800
+    # offset (in case FB rolls back). Strategy 3 is card-center, 4 is text-direct.
+    verify_q = (f'Look ONLY at the row containing the EXACT text "{use_case_text}". '
+                f'Is that row\'s checkbox CHECKED (filled circle, checkmark, or selected indicator)? '
+                f'Reply YES only if the SAME row\'s checkbox is clearly selected.')
+    checkbox_checked = False
+    for attempt, strategy in enumerate(['dynamic-right-edge', 'legacy-plus-800', 'card-center', 'text-direct']):
+        if checkbox_checked: break
+        clicked_at = None
+        try:
+            for f in page.frames:
+                try:
+                    loc = f.locator(f'text="{use_case_text}"').last
+                    if await loc.count() == 0: continue
+                    box = await loc.bounding_box()
+                    if not box: continue
+                    if strategy == 'dynamic-right-edge':
+                        # Find the actual CARD container (parent with reasonable width), click 30px from its right
+                        card_box = await page.evaluate("""(t) => {
+                            for (const el of document.querySelectorAll('*')) {
+                                if ((el.innerText || '').trim() === t && el.children.length < 3) {
+                                    let row = el;
+                                    for (let d=0; d<8; d++) {
+                                        row = row.parentElement; if (!row) return null;
+                                        const r = row.getBoundingClientRect();
+                                        if (r.width > 400 && r.height > 50 && r.height < 200) return {x:r.right - 30, y:r.y + r.height/2};
+                                    }
+                                }
+                            }
+                            return null;
+                        }""", use_case_text)
+                        if card_box: clicked_at = (card_box['x'], card_box['y'])
+                    elif strategy == 'legacy-plus-800':
+                        clicked_at = (box['x']+800, box['y']+box['height']/2)
+                    elif strategy == 'card-center':
+                        # Find card width and click center
+                        card_box = await page.evaluate("""(t) => {
+                            for (const el of document.querySelectorAll('*')) {
+                                if ((el.innerText || '').trim() === t && el.children.length < 3) {
+                                    let row = el;
+                                    for (let d=0; d<8; d++) {
+                                        row = row.parentElement; if (!row) return null;
+                                        const r = row.getBoundingClientRect();
+                                        if (r.width > 400 && r.height > 50 && r.height < 200) return {x:r.x + r.width/2, y:r.y + r.height/2};
+                                    }
+                                }
+                            }
+                            return null;
+                        }""", use_case_text)
+                        if card_box: clicked_at = (card_box['x'], card_box['y'])
+                    elif strategy == 'text-direct':
+                        clicked_at = (box['x']+box['width']/2, box['y']+box['height']/2)
+                    break
+                except: pass
+            if not clicked_at:
+                hb(f'use-case attempt {attempt+1} ({strategy}): could not compute coordinates')
+                continue
+            await hbeh.click(page, clicked_at[0], clicked_at[1], _hb_state)
+            hb(f'use-case attempt {attempt+1} ({strategy}): clicked ({clicked_at[0]:.0f},{clicked_at[1]:.0f})')
+            await asyncio.sleep(2.5)
+            # POST-CLICK VERIFY — the feedback loop as a gate
+            yes, _ = await vision_gate(page, f'use-case-verify-{attempt+1}', verify_q)
+            if yes:
+                hb(f'✅ use-case checkbox VERIFIED via {strategy}')
+                checkbox_checked = True
+                break
+            hb(f'⚠️ {strategy} did not check the box (vision NO) — next strategy')
+        except Exception as e:
+            hb(f'use-case strategy {strategy} err: {str(e)[:120]}')
+    if not checkbox_checked:
+        hb(f'❌ HALT: use-case "{use_case_text}" checkbox could not be checked')
+        return None
     await hbeh.sleep(2.8, 6.0)
     await gated_click(page, 'Next',
         f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
