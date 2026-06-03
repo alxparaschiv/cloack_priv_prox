@@ -1,179 +1,192 @@
 #!/usr/bin/env python3
-"""Force-finish the Create App wizard — recreates F34/K34 behavior from June 1.
+"""Force-finish the Create App wizard — line-for-line port of the F34 script
+that created LaunchLy app ID 2107024670234005 on June 1.
 
-Per VP34 Telegram logs from June 1 (the empirically working run that created
-LaunchLy app ID 2107024670234005), the working pattern was:
-  1. Try use-case checkbox click — TOLERATE errors (Locator timeout, etc.)
-  2. Click Next ANYWAY ("Next clicked → advancing")
-  3. Click "I don't want to connect business portfolio"
-  4. Click Next (business)
-  5. Click Next (Requirements)
-  6. Click Create app (Overview)
-  7. Password popup if it appears
-  8. Navigate /apps → verify
+Recovered from conversation transcript line 17408. Original ran via
+`railway ssh` (on Railway). Same code runs identically here via `railway run`
+(which injects env vars but executes locally).
 
-No vision gates. No halt. Just push through and check the final state.
+F34's logic:
+  - Body-keyword detection for each step ("Use cases" → "Business" → "Requirements" → "Overview")
+  - +800px offset from text bounding box for use-case checkbox click
+  - get_by_role('button', name='Next').click(timeout=8000) for Next clicks (NOT click_btn)
+  - Tolerant of errors (try/except around each step)
+  - Password popup loop (15 iter × 3s)
+  - Final verification via /apps body keyword check
 
 Usage:
     BLOB=<blob>
-    APP_NAME=<name>
-    USE_CASE_TEXT=<exact card text e.g. "Manage everything on your Page">
+    APP_NAME=<name>            (e.g. LaunchLy)
+    USE_CASE_TEXT=<exact text> (e.g. "Manage everything on your Page")
     railway run python3 force_complete_app_wizard.py "Validated Profile 1"
-"""
-import os, sys, asyncio, random, requests, base64
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from master_account_create import (
-    parse_blob, hb, shot, safe_screenshot, vision, pj, click_btn,
-    find_visible_input, hbeh,
-)
-import meta_dev as mdm
+Output: APP_ID=<id> on stdout if the app was created.
+"""
+import asyncio, os, sys, requests, base64
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import human_behavior as hbeh
 from playwright.async_api import async_playwright
 
 GL = os.environ['GOLOGIN_API_KEY']
+TOK = os.environ['TELEGRAM_BOT_TOKEN']
+CHAT = int(os.environ['TELEGRAM_CHAT_ID'])
 BLOB = os.environ['BLOB']
 APP_NAME = os.environ['APP_NAME']
 USE_CASE_TEXT = os.environ.get('USE_CASE_TEXT', 'Manage everything on your Page')
+FB_PW = BLOB.split(':')[1]  # blob position 2 — same as F34
+
+
+def hb(t):
+    print(f'HB: {t}', flush=True)
+    try: requests.post(f'https://api.telegram.org/bot{TOK}/sendMessage',
+                       json={'chat_id': CHAT, 'text': f'⚙️ {t[:300]}'}, timeout=15)
+    except: pass
+
+
+async def shot(ctx, page, label):
+    """Direct CDP screenshot — matches F34's shot() exactly."""
+    try:
+        c = await ctx.new_cdp_session(page)
+        res = await asyncio.wait_for(
+            c.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 55}),
+            timeout=15)
+        png = base64.b64decode(res['data'])
+        requests.post(f'https://api.telegram.org/bot{TOK}/sendPhoto',
+                      files={'photo': ('s.jpg', png, 'image/jpeg')},
+                      data={'chat_id': CHAT, 'caption': f'[F-{label}]'}, timeout=30)
+    except Exception as e: hb(f'shot err: {e}')
 
 
 async def main(profile_name):
+    import meta_dev as mdm
     profs = mdm._list_validated_profiles()
     target = next((p for p in profs if p['name'] == profile_name), None)
     if not target: sys.exit(f'profile {profile_name!r} not found')
-    profile_id = target['id']
-    acc = parse_blob(BLOB)
+    PID = target['id']
+    hb(f'━━━ F34-style finish for "{APP_NAME}" ({USE_CASE_TEXT}) on {PID[:12]}… ━━━')
 
-    hb(f'━━━ FORCE-FINISH wizard for "{APP_NAME}" ({USE_CASE_TEXT}) on {profile_id[:12]}… ━━━')
-
-    cdp = f'wss://cloudbrowser.gologin.com/connect?token={GL}&profile={profile_id}'
-    async with async_playwright() as p:
-        br = await p.chromium.connect_over_cdp(cdp, timeout=60000)
+    cdp = f'wss://cloudbrowser.gologin.com/connect?token={GL}&profile={PID}'
+    async with async_playwright() as pw:
+        br = await pw.chromium.connect_over_cdp(cdp, timeout=30000)
         ctx = br.contexts[0]
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.bring_to_front()
-        shot(await safe_screenshot(page), f'[F-1-start] starting force-finish for {APP_NAME}')
+        wiz = next((pg for pg in ctx.pages if 'developers.facebook.com' in pg.url), None) or ctx.pages[-1]
+        await wiz.bring_to_front()
+        state = {}
+        await shot(ctx, wiz, '1-start')
+        body = await wiz.evaluate("() => document.body.innerText")
 
-        # ─── STEP 1: Try to click use-case checkbox (tolerant) ───
-        hb(f'on Use Cases page → selecting "{USE_CASE_TEXT}"')
-        try:
-            for f in page.frames:
+        # STEP 1: select use case via x+800 offset (F34's exact approach)
+        if USE_CASE_TEXT in body and 'Use cases' in body:
+            hb(f'on Use Cases page → selecting "{USE_CASE_TEXT}"')
+            try:
+                # Click All (19) first to ensure full list
                 try:
-                    loc = f.locator(f'text="{USE_CASE_TEXT}"').last
-                    if await loc.count() > 0:
-                        await loc.scroll_into_view_if_needed(timeout=8000)
-                        await asyncio.sleep(2)
-                        box = await loc.bounding_box()
-                        if box:
-                            # Try multiple offsets (FB may have moved the checkbox)
-                            for offset_x in [box['width']+200, 800, box['width']-30]:
-                                await page.mouse.click(box['x']+offset_x, box['y']+box['height']/2)
-                                await asyncio.sleep(0.8)
-                        break
-                except Exception as e:
-                    hb(f'radio click err: {str(e)[:120]}')
-        except Exception as e:
-            hb(f'use-case section err: {str(e)[:120]}')
-        shot(await safe_screenshot(page), '[F-2-after-use-case-click]')
-
-        # ─── STEP 2: Click Next (regardless of whether checkbox got checked) ───
-        try:
-            await click_btn(page, 'Next')
-            hb('Next clicked → advancing')
-        except Exception as e:
-            hb(f'Next click err: {e}')
-        await asyncio.sleep(8)
-        shot(await safe_screenshot(page), '[F-3-after-use-case-next]')
-
-        # ─── STEP 3: Business page → "I don't want" ───
-        hb('on Business page → selecting "I dont want"')
-        try:
-            for f in page.frames:
-                try:
-                    loc = f.locator('text=/I don.t want to connect a business portfolio/').last
-                    if await loc.count() > 0 and await loc.is_visible():
-                        await loc.click()
-                        hb('business choice clicked')
-                        break
+                    await wiz.locator('text="All (19)"').first.click(timeout=4000)
+                    await asyncio.sleep(2)
                 except: pass
-        except: pass
-        await asyncio.sleep(3)
-        shot(await safe_screenshot(page), '[F-4-after-business-choice]')
+                loc = wiz.locator(f'text="{USE_CASE_TEXT}"').last
+                await loc.scroll_into_view_if_needed(timeout=8000)
+                await asyncio.sleep(2)
+                box = await loc.bounding_box()
+                if box:
+                    target_x = box['x'] + 800
+                    target_y = box['y'] + box['height'] / 2
+                    hb(f'clicking radio at ({target_x:.0f}, {target_y:.0f}) [F34 +800 offset]')
+                    await hbeh.click(wiz, target_x, target_y, state)
+                await asyncio.sleep(3)
+                await shot(ctx, wiz, '2-after-radio')
+            except Exception as e: hb(f'radio click err: {e}')
+            # Click Next (F34's get_by_role pattern)
+            try:
+                await wiz.get_by_role('button', name='Next').click(timeout=8000)
+                hb('Next clicked → advancing')
+                await asyncio.sleep(8)
+                await shot(ctx, wiz, '3-after-use-case-next')
+            except Exception as e:
+                hb(f'Next err: {e}')
+                await shot(ctx, wiz, '3a-NEXT-FAILED-likely-no-use-case-selected')
+                return
+            body = await wiz.evaluate("() => document.body.innerText")
 
-        # ─── STEP 4: Click Next (Business) ───
-        try:
-            await click_btn(page, 'Next')
-            hb('Business Next clicked')
-        except Exception as e:
-            hb(f'Business Next err: {e}')
-        await asyncio.sleep(8)
-        shot(await safe_screenshot(page), '[F-5-after-business-next]')
+        # STEP 2: Business page — "I don't want to connect"
+        if 'Business' in body and ('business portfolio' in body.lower() or "don't want to connect" in body.lower()):
+            hb('on Business page → selecting "I dont want"')
+            try:
+                loc = wiz.locator('text=/I don.t want to connect a business portfolio/').last
+                if await loc.count() > 0: await loc.click(timeout=5000)
+                else:
+                    await wiz.get_by_role('radio', name=lambda n: 'don' in n.lower() and 'want' in n.lower()).click(timeout=5000)
+            except Exception as e: hb(f'business choice err: {e}')
+            await asyncio.sleep(3)
+            await shot(ctx, wiz, '4-after-business-choice')
+            try:
+                await wiz.get_by_role('button', name='Next').click(timeout=8000)
+                hb('Business Next clicked'); await asyncio.sleep(8)
+            except Exception as e: hb(f'business next err: {e}'); return
+            await shot(ctx, wiz, '5-after-business-next')
+            body = await wiz.evaluate("() => document.body.innerText")
 
-        # ─── STEP 5: Requirements → Next ───
-        hb('on Requirements page → Next')
-        try:
-            await click_btn(page, 'Next')
-        except Exception as e:
-            hb(f'Requirements Next err: {e}')
-        await asyncio.sleep(8)
-        shot(await safe_screenshot(page), '[F-6-after-requirements]')
+        # STEP 3: Requirements → Next
+        if 'Requirements' in body and 'Next' in body:
+            hb('on Requirements page → Next')
+            try:
+                await wiz.get_by_role('button', name='Next').click(timeout=8000)
+                await asyncio.sleep(8)
+            except Exception as e: hb(f'req next err: {e}'); return
+            await shot(ctx, wiz, '6-after-requirements')
+            body = await wiz.evaluate("() => document.body.innerText")
 
-        # ─── STEP 6: Overview → Create app ───
-        hb('on Overview → Create app')
-        try:
-            await click_btn(page, 'Create app')
-        except Exception as e:
-            hb(f'Create app err: {e}')
+        # STEP 4: Overview → Create app
+        if 'Overview' in body or 'Create app' in body:
+            hb('on Overview → Create app')
+            try:
+                await wiz.get_by_role('button', name='Create app').click(timeout=8000)
+                await asyncio.sleep(6)
+            except Exception as e: hb(f'create app err: {e}'); return
+            await shot(ctx, wiz, '7-after-create-app')
+
+        # STEP 5: Password popup — F34 uses 15 iter × 3s = 45s
+        hb('waiting for password popup')
+        for i in range(15):
+            await asyncio.sleep(3)
+            try:
+                pwin = await wiz.query_selector('input[type="password"]')
+                if pwin and await pwin.is_visible():
+                    hb(f'password input visible at attempt {i+1} → filling')
+                    await pwin.click(); await asyncio.sleep(1)
+                    await pwin.fill('')
+                    await pwin.type(FB_PW, delay=120)
+                    await asyncio.sleep(3)
+                    await shot(ctx, wiz, '8-password-filled')
+                    try: await wiz.get_by_role('button', name='Submit').click(timeout=8000); hb('Submit clicked')
+                    except Exception as e: hb(f'submit err: {e}')
+                    await asyncio.sleep(15)
+                    break
+            except: pass
+        await shot(ctx, wiz, '9-final-state')
+
+        # STEP 6: Verify via /apps
         await asyncio.sleep(6)
-        shot(await safe_screenshot(page), '[F-7-after-create-app]')
-
-        # ─── STEP 7: Password popup (tolerant 20-iter loop) ───
-        for i in range(20):
-            await asyncio.sleep(2)
-            for f in page.frames:
-                try:
-                    el = await f.query_selector('input[type="password"]')
-                    if el and await el.is_visible():
-                        hb(f'[pw-popup iter {i+1}] password input found — filling')
-                        await el.click(); await asyncio.sleep(1)
-                        await el.fill('')
-                        await el.type(acc['fb_pw'], delay=140)
-                        await asyncio.sleep(3)
-                        try: await click_btn(page, 'Submit')
-                        except: pass
-                        await asyncio.sleep(15)
-                        shot(await safe_screenshot(page), '[F-8-after-password-submit]')
-                        break
-                except: pass
-            else: continue
-            break
-
-        # ─── STEP 8: Verify via /apps ───
-        await asyncio.sleep(5)
-        try:
-            await page.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
-        except: pass
-        await asyncio.sleep(8)
-        shot(await safe_screenshot(page), '[F-9-final-state]')
-        body = await page.evaluate("() => document.body.innerText")
-        import re
-        # Look for app name + 15-19 digit App ID
+        await wiz.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=45000)
+        await asyncio.sleep(6)
+        await shot(ctx, wiz, '10-apps-list')
+        body = await wiz.evaluate("() => document.body.innerText")
         if APP_NAME in body:
-            ids = re.findall(r'\b(\d{15,19})\b', body)
-            hb(f'🎉 FB app {APP_NAME} visible in apps list — possible IDs found: {ids[:5]}')
-            shot(await safe_screenshot(page), f'[F-10-apps-list] {APP_NAME} present')
-            # Vision for precise app_id
-            png = await safe_screenshot(page)
-            v = vision(png, f'In the apps list, find "{APP_NAME}". Reply ONLY JSON: {{"app_id":"<the App ID number visible next to it, or null>"}}')
-            d = pj(v)
-            app_id = d.get('app_id')
-            hb(f'app_id (via vision): {app_id}')
+            hb(f'🎉 FB app {APP_NAME} visible in apps list')
+            # Extract App ID
+            apps = await wiz.evaluate("""() => Array.from(document.querySelectorAll('a[href*="/apps/"]')).map(a => ({href: a.href, txt: (a.innerText||'').slice(0,100)}))""")
+            import re
+            app_id = None
+            for a in apps:
+                if APP_NAME in a['txt']:
+                    m = re.search(r'/apps/(\d{10,})', a['href'])
+                    if m: app_id = m.group(1); break
+            hb(f'app_id: {app_id}')
             print(f'\nAPP_ID={app_id}')
         else:
-            hb(f'❌ {APP_NAME} NOT visible in /apps — wizard did not actually create the app')
-            shot(await safe_screenshot(page), f'[F-10-apps-list] {APP_NAME} MISSING')
+            hb(f'⚠️ {APP_NAME} not visible. body sample: {body[:300]}')
             print(f'\nAPP_ID=None')
-
-        await br.close()
 
 
 if __name__ == '__main__':
