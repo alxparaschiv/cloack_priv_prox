@@ -670,15 +670,198 @@ def _walk_apply_privacy_anti_fingerprint(nodes, R):
     return nodes
 
 
+# ─── CLUSTERING DEFENSE LAYER (added 2026-06-03) ──────────────────────
+#
+# 12 distinct writing personas + LLM-generated text + 50/50 telegraph/rentry
+# + alternate URL titles to break the "Privacy-Policy--" slug fingerprint
+# + sparse realistic typos so the prose doesn't look perfectly polished.
+# ──────────────────────────────────────────────────────────────────────
+
+_WRITING_PERSONAS = [
+    {'id': 'gen_z', 'voice': "Gen Z, very casual, lowercase mostly, uses 'rn' 'ngl' 'fr' 'tbh' 'like' 'literally' SPARINGLY (not every sentence). Short paragraphs. Conversational. Drops articles sometimes. Almost talks to the reader. Uses emoji maybe 2-3 times TOTAL across the whole doc."},
+    {'id': 'academic', 'voice': "Formal academic prose. Third-person throughout. 'the data subject' 'the user' not 'you'. Semicolons. Latinate vocabulary (utilize, hereinafter, pursuant to, notwithstanding). Long compound sentences with subordinate clauses. Reads like a research paper appendix."},
+    {'id': 'millennial', 'voice': "Friendly-casual millennial. Conversational. Uses 'Hey!' or 'OK, so...' to open. Parenthetical asides. 'kinda' 'yeah' 'honestly'. Reasonable but not stiff. Mid-length sentences. Occasional self-aware joke."},
+    {'id': 'lonely_mother', 'voice': "Warm, anecdotal tone. Mentions being a mom (1-2 times only, naturally). 'As a mom of two...' or 'I built this little tool because I wanted...'. Slight worry/care undertone about your kids' data. Personal, vulnerable, real-sounding."},
+    {'id': 'corporate_lawyer', 'voice': "Dense legalese. 'WHEREAS' 'hereinafter referred to as' 'without limitation' 'pursuant to applicable law'. Some ALL CAPS for emphasis on defined terms. Heavy commas. Numbered clauses occasionally. Cold and formal."},
+    {'id': 'tech_founder', 'voice': "Tech startup pitch-deck voice. 'We believe' 'transformative' 'stakeholders' 'data-driven' 'best-in-class' 'mission-critical'. Vague but confident. Buzzword-heavy. Optimistic. 'Our mission is to...'"},
+    {'id': 'british_formal', 'voice': "British formal English. 'whilst' 'amongst' 'Therefore,' sentence-initial. Understated dry tone. Slight self-deprecation. 'Should you have any concerns, kindly...' 'We are most grateful for...' Reserved."},
+    {'id': 'indian_english_business', 'voice': "Indian English business writing. 'do the needful' 'kindly note' 'as per our policy' 'the same shall be communicated'. Formal but slightly indirect. Polite. 'Please be advised that...' 'Revert at your earliest convenience.'"},
+    {'id': 'translated_from_german', 'voice': "Reads like translated from German into English. Occasional unusual word choice (e.g. 'actuality' for 'currently'). Article issues (sometimes drops or adds 'the'). Verb-near-end-of-clause structures. Slightly stiff but earnest. 'It is so that we collect...'"},
+    {'id': 'plain_enthusiast', 'voice': "Plain language enthusiast. Lots of bullet points. Exclamation marks sparingly used. Bold for emphasis. Short paragraphs. 'Here is what we do:' Friendly but a bit excited. Uses simple hyphens not em-dashes."},
+    {'id': 'no_formal_education', 'voice': "Plain spoken, simple vocabulary, short sentences. Occasionally awkward grammar (still readable). 'We dont collect your stuff that we dont need' 'Your data is safe with us, we promise'. No fancy words. Some apostrophe issues (dont, wont)."},
+    {'id': 'old_school_dev', 'voice': "Terse no-nonsense developer voice. Short declarative sentences. Technical: 'We log: IP, user-agent, timestamp.' No fluff. ALL CAPS for section headers (PRIVACY POLICY, DATA WE COLLECT). 'use' not 'utilize'. Bullet-heavy. Like a README."},
+]
+
+# Alternate titles to break Telegraph "Privacy-Policy--" slug pattern
+_ALTERNATE_TITLES = [
+    'Privacy Policy', 'Privacy Notice', 'Privacy Statement', 'Privacy & Data',
+    'Data Practices', 'How We Handle Your Data', 'User Privacy', 'Information We Collect',
+    'Privacy Information', 'Data Privacy Notice', 'Privacy Terms', 'Privacy & Cookies',
+    'About Your Data', 'Data Use Policy', 'Privacy Overview',
+]
+
+# Realistic typo substitutions (subtle ones a real person might make)
+_TYPO_SUBS = [
+    ('the', 'teh'), ('and', 'adn'), ('that', 'taht'), ('with', 'wiht'),
+    ('your', 'yoru'), ('have', 'ahve'), ('this', 'tihs'),
+    ('receive', 'recieve'), ('necessary', 'neccessary'), ('definitely', 'definately'),
+    ('separate', 'seperate'), ('committed', 'commited'), ('information', 'informatoin'),
+    ('protect', 'protct'), ('our', 'oru'), ('accommodate', 'acommodate'),
+    ('occurred', 'occured'), ('beginning', 'begining'), ('successful', 'succesful'),
+]
+
+
+def _inject_realistic_typos(text, rate_per_1000_words=2):
+    """Sparsely inject realistic typos into prose (case-preserved).
+    Doesn't touch headings, tags, links, numbers. ~rate per 1000 words."""
+    if not text or not isinstance(text, str):
+        return text
+    word_count = len(text.split())
+    n_typos = max(0, int(round(word_count * rate_per_1000_words / 1000)))
+    if n_typos == 0:
+        return text
+    R = _random.Random()
+    for _ in range(n_typos):
+        orig, typo = R.choice(_TYPO_SUBS)
+        pattern = re.compile(rf'\b{re.escape(orig)}\b', re.IGNORECASE)
+        matches = list(pattern.finditer(text))
+        if not matches:
+            continue
+        m = R.choice(matches)
+        repl = typo[0].upper() + typo[1:] if m.group(0)[0].isupper() else typo
+        text = text[:m.start()] + repl + text[m.end():]
+    return text
+
+
+def _llm_generate_privacy_html(app_name, persona, use_case=None):
+    """Call OpenAI gpt-4o-mini to generate a Meta-compliant privacy policy in the
+    given persona's voice. Returns (html_body, None) or (None, error_str).
+    """
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        return None, 'OPENAI_API_KEY not set'
+    voice_desc = persona.get('voice', 'neutral professional')
+    use_case_str = use_case or 'a general productivity app'
+    system_prompt = (
+        "You write privacy policies for Facebook/Meta app developers. Output HTML ONLY. "
+        "MUST cover these eight topics (in any order/structure): (1) what data is collected, "
+        "(2) how it is used, (3) third-party sharing INCLUDING Meta APIs, (4) data retention, "
+        "(5) user rights/controls, (6) security measures, (7) children under 13, (8) contact info. "
+        "Allowed tags: <h3>, <h4>, <p>, <ul>, <li>, <strong>, <em>, <br>. NO links, NO <html>/<body>/<head>/<style>/<script>. "
+        "Length 400-1100 words. Vary structure naturally (bullets vs prose) based on the persona. "
+        "DO NOT mention you are an AI. DO NOT use placeholder text like [your email] or [insert]. "
+        "Write in the persona's voice consistently throughout — voice is the highest priority."
+    )
+    contact_email = f"privacy@{re.sub(r'[^a-z0-9]', '', app_name.lower())[:20] or 'app'}.example"
+    user_prompt = (
+        f"App name: {app_name}\n"
+        f"Use case: {use_case_str}\n"
+        f"Persona voice (write the WHOLE policy in this voice, this is the most important constraint):\n"
+        f"  {voice_desc}\n\n"
+        f"Contact section should mention this email: {contact_email}\n\n"
+        f"Generate the privacy policy now. HTML only. 400-1100 words. IN PERSONA VOICE:"
+    )
+    try:
+        r = requests.post('https://api.openai.com/v1/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}'},
+            json={
+                'model': 'gpt-4o-mini',
+                'temperature': 0.95,  # high variance for distinct outputs
+                'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt},
+                ],
+                'max_tokens': 2000,
+            },
+            timeout=60)
+        if r.status_code != 200:
+            return None, f'LLM HTTP {r.status_code}: {r.text[:200]}'
+        html = r.json()['choices'][0]['message']['content'].strip()
+        # Strip code-fence markers if model wrapped output
+        if html.startswith('```'):
+            html = html.split('\n', 1)[1] if '\n' in html else html
+            if html.endswith('```'):
+                html = html.rsplit('```', 1)[0]
+            html = html.strip()
+        return html, None
+    except Exception as e:
+        return None, f'LLM error: {e}'
+
+
+def _html_to_telegraph_nodes(html):
+    """Convert simple HTML (h3/h4/p/ul/li/strong/em/br) → Telegraph node format.
+    Anything outside the whitelist is flattened to text. Empty containers dropped."""
+    from html.parser import HTMLParser
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.nodes = []
+            self.stack = []
+        def _append(self, node):
+            if self.stack:
+                self.stack[-1].setdefault('children', []).append(node)
+            else:
+                self.nodes.append(node)
+        def handle_starttag(self, tag, attrs):
+            tag = tag.lower()
+            if tag in ('h3','h4','p','ul','li','strong','em','b','i','br'):
+                # Normalize bold/italic
+                if tag == 'b': tag = 'strong'
+                if tag == 'i': tag = 'em'
+                node = {'tag': tag, 'children': []}
+                self._append(node)
+                if tag != 'br':
+                    self.stack.append(node)
+        def handle_endtag(self, tag):
+            tag = tag.lower()
+            if tag == 'b': tag = 'strong'
+            if tag == 'i': tag = 'em'
+            if self.stack and self.stack[-1].get('tag') == tag:
+                self.stack.pop()
+        def handle_data(self, data):
+            s = data
+            if s.strip():
+                self._append(s)
+    p = _P()
+    try: p.feed(html)
+    except Exception: pass
+    def _clean(node):
+        if isinstance(node, str):
+            return node if node.strip() else None
+        if not isinstance(node, dict):
+            return None
+        children = node.get('children', [])
+        cleaned = []
+        for c in children:
+            x = _clean(c)
+            if x is not None:
+                cleaned.append(x)
+        if not cleaned and node.get('tag') not in ('br','hr'):
+            return None
+        node['children'] = cleaned
+        return node
+    out = []
+    for n in p.nodes:
+        x = _clean(n)
+        if x is not None:
+            out.append(x)
+    return out
+
+
 # ─── Telegra.ph host ──────────────────────────────────────────────────
 
-def _create_telegraph_privacy_policy(app_name):
+def _create_telegraph_privacy_policy(app_name, title=None, nodes_override=None):
+    """POST policy to telegra.ph. If nodes_override given, use it as-is.
+    If title given, use it (avoids the 'Privacy-Policy--' slug fingerprint)."""
     safe = (app_name or '').strip()
     if not safe:
         return None, "App name is empty."
     if len(safe) > 64:
         return None, "App name too long (max 64 chars)."
     short = safe[:32] or 'app'
+    # If no title passed, use the LEGACY default (backward compat for callers
+    # that don't go through the dispatch). The dispatch always passes a random title.
+    final_title = title if title else f"Privacy Policy — {safe}"
     try:
         r = requests.post('https://api.telegra.ph/createAccount',
             data={'short_name': short, 'author_name': safe}, timeout=15)
@@ -688,11 +871,11 @@ def _create_telegraph_privacy_policy(app_name):
         token = j['result']['access_token']
     except Exception as e:
         return None, f"createAccount HTTP error: {e}"
-    content = _telegraph_privacy_policy_content(safe)
+    content = nodes_override if nodes_override else _telegraph_privacy_policy_content(safe)
     try:
         r = requests.post('https://api.telegra.ph/createPage',
             data={'access_token': token,
-                  'title': f"Privacy Policy — {safe}",
+                  'title': final_title,
                   'author_name': safe,
                   'content': json.dumps(content),
                   'return_content': 'false'}, timeout=15)
@@ -736,15 +919,20 @@ def _telegraph_nodes_to_markdown(nodes):
     return inner
 
 
-def _create_rentry_privacy_policy(app_name):
+def _create_rentry_privacy_policy(app_name, title=None, md_override=None):
+    """POST policy to rentry.co. If md_override given, use it as the body."""
     safe = (app_name or '').strip()
     if not safe:
         return None, "App name is empty."
     if len(safe) > 64:
         return None, "App name too long (max 64 chars)."
-    nodes = _telegraph_privacy_policy_content(safe)
-    md_body = _telegraph_nodes_to_markdown(nodes)
-    md = f"# Privacy Policy — {safe}\n\n{md_body}"
+    final_title = title if title else f"Privacy Policy — {safe}"
+    if md_override is not None:
+        md = f"# {final_title}\n\n{md_override}"
+    else:
+        nodes = _telegraph_privacy_policy_content(safe)
+        md_body = _telegraph_nodes_to_markdown(nodes)
+        md = f"# {final_title}\n\n{md_body}"
     try:
         s = requests.Session()
         ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
@@ -767,10 +955,67 @@ def _create_rentry_privacy_policy(app_name):
         return None, f"rentry.co HTTP error: {e}"
 
 
-def _create_privacy_policy_dispatch(provider, app_name):
+def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
+                                     use_llm=None, persona_id=None, inject_typos=True):
+    """Maximally-randomized privacy policy generator.
+
+    Each call rolls:
+      • provider: 'telegraph' | 'rentry' (50/50 if None)
+      • generator: LLM (60%) or template (40%) — gated by OPENAI_API_KEY presence
+      • persona: one of 12 distinct writing voices (random unless persona_id given)
+      • title: one of 15 alternate titles (breaks 'Privacy-Policy--' slug)
+      • typos: sparse realistic typos (~2 per 1000 words) — disable with inject_typos=False
+
+    Returns: (url, err_or_None)
+
+    Logs the chosen parameters so we can audit which combos appear in the wild.
+    """
+    safe = (app_name or '').strip()
+    if not safe:
+        return None, 'App name is empty'
+    if len(safe) > 64:
+        return None, 'App name too long (max 64 chars)'
+
+    R = _random.Random()
+    if provider is None:
+        provider = R.choice(['telegraph', 'rentry'])
+    if use_llm is None:
+        # 60% LLM if key is set, 0% otherwise
+        use_llm = bool(os.environ.get('OPENAI_API_KEY')) and R.random() < 0.60
+    persona = next((p for p in _WRITING_PERSONAS if p['id'] == persona_id), None)
+    if persona is None:
+        persona = R.choice(_WRITING_PERSONAS)
+    title = R.choice(_ALTERNATE_TITLES)
+
+    logger.info(f'privacy dispatch: provider={provider} llm={use_llm} '
+                f'persona={persona["id"]} title={title!r} typos={inject_typos}')
+
+    # ── Generate content ──
+    nodes = None
+    md_body = None
+    if use_llm:
+        html, err = _llm_generate_privacy_html(safe, persona, use_case)
+        if html:
+            if inject_typos:
+                html = _inject_realistic_typos(html, rate_per_1000_words=2)
+            nodes = _html_to_telegraph_nodes(html)
+            md_body = _telegraph_nodes_to_markdown(nodes)
+            if not nodes:
+                logger.warning(f'LLM HTML parsed to 0 nodes, falling back to template')
+                use_llm = False
+        else:
+            logger.warning(f'LLM failed ({err}), falling back to template')
+            use_llm = False
+    if not use_llm:
+        nodes = _telegraph_privacy_policy_content(safe)
+        md_body = _telegraph_nodes_to_markdown(nodes)
+        if inject_typos:
+            md_body = _inject_realistic_typos(md_body, rate_per_1000_words=2)
+
+    # ── POST to chosen host ──
     if provider == 'rentry':
-        return _create_rentry_privacy_policy(app_name)
-    return _create_telegraph_privacy_policy(app_name)
+        return _create_rentry_privacy_policy(safe, title=title, md_override=md_body)
+    return _create_telegraph_privacy_policy(safe, title=title, nodes_override=nodes)
 
 
 # ─── Telegram handlers ────────────────────────────────────────────────
@@ -779,14 +1024,16 @@ async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/privacy — start the provider-choice flow."""
     await update.message.reply_text(
         "📜 <b>Privacy Policy Generator</b>\n\n"
-        "Pick a hosting provider:\n\n"
+        "Pick a generation mode:\n\n"
+        "🎲 <b>Random (Recommended)</b> — picks 1 of 2 hosts × 12 writing personas × LLM-or-template at random. Maximum clustering defense.\n\n"
         "🪶 <b>Telegra.ph</b> — Telegram's publishing platform. URL: <code>telegra.ph/...</code>\n"
         "📄 <b>Rentry.co</b> — anonymous markdown paste host. URL: <code>rentry.co/...</code>\n\n"
-        "<i>Both produce randomized policies (length, structure, wording "
-        "all vary). Alternating providers prevents Meta from "
-        "fingerprinting accounts via shared privacy-URL domain.</i>",
+        "<i>For Meta app verification: use 🎲 Random so no two accounts share a "
+        "fingerprint (same domain, same slug pattern, same prose style).</i>",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎲 Random (Recommended)",
+                                  callback_data="privacy_provider_random")],
             [InlineKeyboardButton("🪶 Telegra.ph",
                                   callback_data="privacy_provider_telegraph")],
             [InlineKeyboardButton("📄 Rentry.co",
@@ -799,8 +1046,8 @@ async def privacy_provider_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
     provider = (query.data or '').replace('privacy_provider_', '')
-    if provider not in ('telegraph', 'rentry'):
-        provider = 'telegraph'
+    if provider not in ('telegraph', 'rentry', 'random'):
+        provider = 'random'
     context.user_data['privacy_provider'] = provider
     context.user_data['expecting_privacy_app_name'] = True
     provider_label = '🪶 Telegra.ph' if provider == 'telegraph' else '📄 Rentry.co'
@@ -823,15 +1070,22 @@ async def privacy_text_received(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Privacy generation cancelled.")
         return
     context.user_data.pop('expecting_privacy_app_name', None)
-    provider = context.user_data.pop('privacy_provider', 'telegraph')
-    provider_label = '🪶 Telegra.ph' if provider == 'telegraph' else '📄 Rentry.co'
+    provider = context.user_data.pop('privacy_provider', 'random')
+    provider_label = {
+        'telegraph': '🪶 Telegra.ph',
+        'rentry': '📄 Rentry.co',
+        'random': '🎲 Random',
+    }.get(provider, '🎲 Random')
     import asyncio
     await update.message.reply_text(
         f"📜 Generating privacy policy for <b>{_h.escape(text)}</b> via {provider_label}…",
         parse_mode='HTML')
     try:
+        # 'random' → pass provider=None so dispatch picks. Else respect user pick.
+        dispatch_provider = None if provider == 'random' else provider
         url, err = await asyncio.to_thread(
-            _create_privacy_policy_dispatch, provider, text)
+            _create_privacy_policy_dispatch,
+            dispatch_provider, text, None, None, None, True)
     except Exception as e:
         url, err = None, f"crashed: {e}"
     if err or not url:
@@ -839,9 +1093,12 @@ async def privacy_text_received(update: Update, context: ContextTypes.DEFAULT_TY
             f"❌ {provider_label} create failed: <code>{_h.escape(str(err)[:300])}</code>",
             parse_mode='HTML')
         return
+    # Detect which host was actually used (random mode could have picked either)
+    actual_host = '🪶 telegra.ph' if 'telegra.ph' in url else '📄 rentry.co' if 'rentry.co' in url else '🔗 unknown'
     await update.message.reply_text(
-        f"✅ <b>Privacy Policy created</b> ({provider_label})\n\n"
+        f"✅ <b>Privacy Policy created</b>\n\n"
         f"<b>App:</b> <code>{_h.escape(text)}</code>\n"
+        f"<b>Mode:</b> {provider_label}  →  served by {actual_host}\n"
         f"<b>URL:</b> {url}\n\n"
         f"Paste this URL into the Meta App dashboard's "
         f"<i>Privacy Policy URL</i> field.",
