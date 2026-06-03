@@ -83,17 +83,43 @@ async def main(profile_name):
         await shot(ctx, wiz, '1-start')
         body = await wiz.evaluate("() => document.body.innerText")
 
-        # PRE-STEP A: If we're at /apps (My Apps page), click Create App
-        if 'No apps yet' in body or ('My Apps' in body and 'Create App' in body and 'Create an app' not in body):
+        # ─── DOM-based step detection (sidebar text is unreliable — every step
+        # shows "App details / Use cases / Business / Requirements / Overview" in the sidebar) ───
+        async def what_step():
+            """Return current wizard step by inspecting DOM, not body keywords."""
+            info = await wiz.evaluate("""() => {
+                const body = (document.body && document.body.innerText) || '';
+                // Are we still on the My Apps page?
+                if (body.includes('No apps yet') || (body.includes('My Apps') && !body.includes('Create an app'))) return 'my-apps';
+                // App name input visible AND empty?
+                const inputs = Array.from(document.querySelectorAll('input[type=text], input:not([type])'));
+                for (const inp of inputs) {
+                    if (!inp.offsetParent) continue;
+                    const r = inp.getBoundingClientRect();
+                    if (r.y < 200 || r.y > 600) continue;
+                    // App-name input is typically right below "App name" label
+                    if ((inp.value || '').trim() === '') return 'app-name';
+                }
+                if (body.includes('All (19)') || body.includes('See all')) return 'use-cases';
+                if (body.includes('Which business portfolio')) return 'business';
+                if (body.includes('Publishing requirements')) return 'requirements';
+                if (body.includes('Overview') && body.match(/Create app/)) return 'overview';
+                return 'unknown';
+            }""")
+            return info
+
+        step = await what_step()
+        hb(f'detected step: {step}')
+
+        # PRE-STEP A: If we're at /apps, click Create App
+        if step == 'my-apps':
             hb('on My Apps page → clicking Create App')
             try:
                 await wiz.get_by_role('button', name='Create App').click(timeout=8000)
             except Exception as e:
-                try:
-                    await wiz.locator('text="Create App"').first.click(timeout=8000)
+                try: await wiz.locator('text="Create App"').first.click(timeout=8000)
                 except Exception as e2: hb(f'Create App click err: {e2}')
             await asyncio.sleep(8)
-            # Dismiss "new way" modal if present
             try: await wiz.keyboard.press('Escape')
             except: pass
             await asyncio.sleep(3)
@@ -101,24 +127,23 @@ async def main(profile_name):
             except: pass
             await asyncio.sleep(2)
             await shot(ctx, wiz, '1a-after-create-app-modal')
-            body = await wiz.evaluate("() => document.body.innerText")
+            step = await what_step()
+            hb(f'after Create App click, step: {step}')
 
-        # PRE-STEP B: If we're on the App Name form, type name + Next
-        if 'App name' in body and 'Use cases' not in body and APP_NAME not in body:
+        # PRE-STEP B: App name form — type name + Next
+        if step == 'app-name':
             hb(f'on App name form → typing "{APP_NAME}"')
             try:
-                # Find the visible app name input (NOT the search bar)
                 target = None
                 for f in wiz.frames:
-                    for inp in await f.query_selector_all('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'):
+                    for inp in await f.query_selector_all('input[type=text], input:not([type])'):
                         try:
                             if not await inp.is_visible(): continue
                             box = await inp.bounding_box()
-                            if not box or box['y'] < 200 or box['y'] > 500: continue
+                            if not box or box['y'] < 200 or box['y'] > 600: continue
                             val = await inp.input_value()
                             if val: continue
-                            target = inp
-                            break
+                            target = inp; break
                         except: pass
                     if target: break
                 if target:
@@ -137,7 +162,6 @@ async def main(profile_name):
             except Exception as e: hb(f'app-name Next err: {e}')
             await asyncio.sleep(8)
             await shot(ctx, wiz, '1c-after-app-name-next')
-            body = await wiz.evaluate("() => document.body.innerText")
 
         # STEP 1: select use case via x+800 offset (F34's exact approach)
         if USE_CASE_TEXT in body and 'Use cases' in body:
