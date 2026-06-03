@@ -76,6 +76,62 @@ async def main(profile_name):
         await shot(ctx, wiz, '1-start')
         body = await wiz.evaluate("() => document.body.innerText")
 
+        # PRE-STEP A: If we're at /apps (My Apps page), click Create App
+        if 'No apps yet' in body or ('My Apps' in body and 'Create App' in body and 'Create an app' not in body):
+            hb('on My Apps page → clicking Create App')
+            try:
+                await wiz.get_by_role('button', name='Create App').click(timeout=8000)
+            except Exception as e:
+                try:
+                    await wiz.locator('text="Create App"').first.click(timeout=8000)
+                except Exception as e2: hb(f'Create App click err: {e2}')
+            await asyncio.sleep(8)
+            # Dismiss "new way" modal if present
+            try: await wiz.keyboard.press('Escape')
+            except: pass
+            await asyncio.sleep(3)
+            try: await wiz.get_by_role('button', name='Close').first.click(timeout=3000)
+            except: pass
+            await asyncio.sleep(2)
+            await shot(ctx, wiz, '1a-after-create-app-modal')
+            body = await wiz.evaluate("() => document.body.innerText")
+
+        # PRE-STEP B: If we're on the App Name form, type name + Next
+        if 'App name' in body and 'Use cases' not in body and APP_NAME not in body:
+            hb(f'on App name form → typing "{APP_NAME}"')
+            try:
+                # Find the visible app name input (NOT the search bar)
+                target = None
+                for f in wiz.frames:
+                    for inp in await f.query_selector_all('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'):
+                        try:
+                            if not await inp.is_visible(): continue
+                            box = await inp.bounding_box()
+                            if not box or box['y'] < 200 or box['y'] > 500: continue
+                            val = await inp.input_value()
+                            if val: continue
+                            target = inp
+                            break
+                        except: pass
+                    if target: break
+                if target:
+                    await target.click(); await asyncio.sleep(1)
+                    await target.press('Control+a'); await target.press('Delete'); await asyncio.sleep(0.5)
+                    await target.type(APP_NAME, delay=140)
+                    hb(f'name typed')
+                    await asyncio.sleep(3)
+                    await shot(ctx, wiz, '1b-name-typed')
+                else:
+                    hb('⚠️ could not find app name input')
+            except Exception as e: hb(f'name type err: {e}')
+            try:
+                await wiz.get_by_role('button', name='Next').click(timeout=8000)
+                hb('app-name Next clicked')
+            except Exception as e: hb(f'app-name Next err: {e}')
+            await asyncio.sleep(8)
+            await shot(ctx, wiz, '1c-after-app-name-next')
+            body = await wiz.evaluate("() => document.body.innerText")
+
         # STEP 1: select use case via x+800 offset (F34's exact approach)
         if USE_CASE_TEXT in body and 'Use cases' in body:
             hb(f'on Use Cases page → selecting "{USE_CASE_TEXT}"')
