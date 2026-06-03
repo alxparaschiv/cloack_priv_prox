@@ -963,18 +963,25 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
       • provider: 'telegraph' | 'rentry' (50/50 if None)
       • generator: LLM (60%) or template (40%) — gated by OPENAI_API_KEY presence
       • persona: one of 12 distinct writing voices (random unless persona_id given)
+        — uniform random.choice, so each persona has 1/12 = 8.3% probability
       • title: one of 15 alternate titles (breaks 'Privacy-Policy--' slug)
       • typos: sparse realistic typos (~2 per 1000 words) — disable with inject_typos=False
 
-    Returns: (url, err_or_None)
-
-    Logs the chosen parameters so we can audit which combos appear in the wild.
+    Returns: (url, err_or_None, meta_dict)
+      meta = {
+        'provider': 'telegraph'|'rentry',
+        'persona': persona_id,
+        'persona_voice': voice description (first 80 chars),
+        'use_llm': bool (post-fallback — reflects what was ACTUALLY used),
+        'title': chosen title string,
+        'inject_typos': bool,
+      }
     """
     safe = (app_name or '').strip()
     if not safe:
-        return None, 'App name is empty'
+        return None, 'App name is empty', None
     if len(safe) > 64:
-        return None, 'App name too long (max 64 chars)'
+        return None, 'App name too long (max 64 chars)', None
 
     R = _random.Random()
     if provider is None:
@@ -984,8 +991,17 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
         use_llm = bool(os.environ.get('OPENAI_API_KEY')) and R.random() < 0.60
     persona = next((p for p in _WRITING_PERSONAS if p['id'] == persona_id), None)
     if persona is None:
-        persona = R.choice(_WRITING_PERSONAS)
+        persona = R.choice(_WRITING_PERSONAS)  # uniform across 12 → 8.33% each
     title = R.choice(_ALTERNATE_TITLES)
+
+    meta = {
+        'provider': provider,
+        'persona': persona['id'],
+        'persona_voice': persona.get('voice', '')[:80],
+        'use_llm': use_llm,
+        'title': title,
+        'inject_typos': inject_typos,
+    }
 
     logger.info(f'privacy dispatch: provider={provider} llm={use_llm} '
                 f'persona={persona["id"]} title={title!r} typos={inject_typos}')
@@ -1011,38 +1027,41 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
         md_body = _telegraph_nodes_to_markdown(nodes)
         if inject_typos:
             md_body = _inject_realistic_typos(md_body, rate_per_1000_words=2)
+    meta['use_llm'] = use_llm  # reflect post-fallback truth
 
     # ── POST to chosen host ──
     if provider == 'rentry':
-        return _create_rentry_privacy_policy(safe, title=title, md_override=md_body)
-    return _create_telegraph_privacy_policy(safe, title=title, nodes_override=nodes)
+        url, err = _create_rentry_privacy_policy(safe, title=title, md_override=md_body)
+    else:
+        url, err = _create_telegraph_privacy_policy(safe, title=title, nodes_override=nodes)
+    return url, err, meta
 
 
 # ─── Telegram handlers ────────────────────────────────────────────────
 
 async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/privacy — start the provider-choice flow."""
+    """/privacy — single-step: prompt for app name, then generate with random dispatch.
+
+    No more provider-choice menu. Each call rolls 50/50 telegra.ph/rentry.co
+    + 1-of-12 writing personas + LLM-or-template + alternate title + typos.
+    The persona used is reported in the response as proof of randomization.
+    """
+    context.user_data['expecting_privacy_app_name'] = True
+    context.user_data['privacy_provider'] = 'random'  # always random
     await update.message.reply_text(
         "📜 <b>Privacy Policy Generator</b>\n\n"
-        "Pick a generation mode:\n\n"
-        "🎲 <b>Random (Recommended)</b> — picks 1 of 2 hosts × 12 writing personas × LLM-or-template at random. Maximum clustering defense.\n\n"
-        "🪶 <b>Telegra.ph</b> — Telegram's publishing platform. URL: <code>telegra.ph/...</code>\n"
-        "📄 <b>Rentry.co</b> — anonymous markdown paste host. URL: <code>rentry.co/...</code>\n\n"
-        "<i>For Meta app verification: use 🎲 Random so no two accounts share a "
-        "fingerprint (same domain, same slug pattern, same prose style).</i>",
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎲 Random (Recommended)",
-                                  callback_data="privacy_provider_random")],
-            [InlineKeyboardButton("🪶 Telegra.ph",
-                                  callback_data="privacy_provider_telegraph")],
-            [InlineKeyboardButton("📄 Rentry.co",
-                                  callback_data="privacy_provider_rentry")],
-        ]))
+        "Send the <b>name of your app</b> as your next message "
+        "(e.g. <code>Atlas Studio</code>).\n\n"
+        "<i>I'll auto-pick a host (50/50 telegra.ph vs rentry.co), a writing "
+        "persona (1 of 12), and either LLM-generated or template content. "
+        "Maximum clustering defense — no two policies will look alike.</i>\n\n"
+        "<i>Send /cancel to abort.</i>",
+        parse_mode='HTML')
 
 
 async def privacy_provider_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User picked a provider — prompt for app name."""
+    """Legacy callback handler — kept for backward compatibility if anyone
+    has an old menu message open. Falls through to random."""
     query = update.callback_query
     await query.answer()
     provider = (query.data or '').replace('privacy_provider_', '')
@@ -1060,7 +1079,10 @@ async def privacy_provider_callback(update: Update, context: ContextTypes.DEFAUL
 
 
 async def privacy_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Called by the bot's main text router when expecting_privacy_app_name."""
+    """Called by the bot's main text router when expecting_privacy_app_name.
+
+    Generates via the randomized dispatch (50/50 provider × 12 personas × LLM/template)
+    and reports the chosen combo in the response so the user can audit randomness."""
     if not context.user_data.get('expecting_privacy_app_name'):
         return
     text = (update.message.text or '').strip()
@@ -1070,36 +1092,41 @@ async def privacy_text_received(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Privacy generation cancelled.")
         return
     context.user_data.pop('expecting_privacy_app_name', None)
-    provider = context.user_data.pop('privacy_provider', 'random')
-    provider_label = {
-        'telegraph': '🪶 Telegra.ph',
-        'rentry': '📄 Rentry.co',
-        'random': '🎲 Random',
-    }.get(provider, '🎲 Random')
+    context.user_data.pop('privacy_provider', None)
     import asyncio
     await update.message.reply_text(
-        f"📜 Generating privacy policy for <b>{_h.escape(text)}</b> via {provider_label}…",
+        f"📜 Generating randomized privacy policy for <b>{_h.escape(text)}</b>…",
         parse_mode='HTML')
     try:
-        # 'random' → pass provider=None so dispatch picks. Else respect user pick.
-        dispatch_provider = None if provider == 'random' else provider
-        url, err = await asyncio.to_thread(
+        url, err, meta = await asyncio.to_thread(
             _create_privacy_policy_dispatch,
-            dispatch_provider, text, None, None, None, True)
+            None, text, None, None, None, True)
     except Exception as e:
-        url, err = None, f"crashed: {e}"
+        url, err, meta = None, f"crashed: {e}", None
     if err or not url:
         await update.message.reply_text(
-            f"❌ {provider_label} create failed: <code>{_h.escape(str(err)[:300])}</code>",
+            f"❌ create failed: <code>{_h.escape(str(err)[:300])}</code>",
             parse_mode='HTML')
         return
-    # Detect which host was actually used (random mode could have picked either)
-    actual_host = '🪶 telegra.ph' if 'telegra.ph' in url else '📄 rentry.co' if 'rentry.co' in url else '🔗 unknown'
+    # Pretty-print the persona + provider + generator
+    provider_label = {'telegraph': '🪶 telegra.ph', 'rentry': '📄 rentry.co'}.get(
+        (meta or {}).get('provider', ''), '🔗 ?')
+    persona_id = (meta or {}).get('persona', '?')
+    persona_voice = (meta or {}).get('persona_voice', '')
+    gen_label = '🤖 LLM (gpt-4o-mini)' if (meta or {}).get('use_llm') else '📋 template'
+    title = (meta or {}).get('title', '?')
+    typos = '✍️ yes' if (meta or {}).get('inject_typos') else '—'
     await update.message.reply_text(
         f"✅ <b>Privacy Policy created</b>\n\n"
         f"<b>App:</b> <code>{_h.escape(text)}</code>\n"
-        f"<b>Mode:</b> {provider_label}  →  served by {actual_host}\n"
         f"<b>URL:</b> {url}\n\n"
-        f"Paste this URL into the Meta App dashboard's "
+        f"<b>━━ Randomization proof ━━</b>\n"
+        f"<b>Host:</b> {provider_label}\n"
+        f"<b>Persona:</b> <code>{_h.escape(persona_id)}</code>\n"
+        f"<b>Voice:</b> <i>{_h.escape(persona_voice)}…</i>\n"
+        f"<b>Generator:</b> {gen_label}\n"
+        f"<b>Title:</b> <code>{_h.escape(title)}</code>\n"
+        f"<b>Typos:</b> {typos}\n\n"
+        f"Paste the URL into the Meta App dashboard's "
         f"<i>Privacy Policy URL</i> field.",
         parse_mode='HTML', disable_web_page_preview=False)

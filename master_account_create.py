@@ -1049,11 +1049,24 @@ async def run_account(profile_id, acc):
         ig_status = f'{ig_app_name}={ig_id}' if ig_id else f'❌ {ig_app_name} FAILED'
         shot(await safe_screenshot(page), f'7️⃣ final state — FB: {fb_status} | IG: {ig_status}')
 
-        # Phase J: privacy URL (telegra.ph) for FB app — pure HTTP, but keep inside async with
+        # Phase J: privacy URL — RANDOMIZED dispatch (provider+persona+LLM+typos all roll)
+        # Clustering-defense per 2026-06-03 upgrade. The dispatch returns metadata
+        # so we can log + Telegram-post which persona/provider was picked for proof.
         try:
-            url, err = privacy._create_telegraph_privacy_policy(fb_app_name)
+            url, err, meta = privacy._create_privacy_policy_dispatch(
+                provider=None, app_name=fb_app_name,
+                use_case='Manage everything on your Page',
+                use_llm=None, persona_id=None, inject_typos=True,
+            )
             result['privacy_url'] = url
-            hb(f'privacy URL for FB app: {url}')
+            result['privacy_meta'] = meta
+            if meta:
+                gen = 'LLM (gpt-4o-mini)' if meta.get('use_llm') else 'template'
+                hb(f"📜 privacy URL: {url}\n   provider={meta.get('provider')}  "
+                   f"persona={meta.get('persona')}  generator={gen}  title={meta.get('title')!r}  "
+                   f"typos={meta.get('inject_typos')}")
+            else:
+                hb(f'privacy URL: {url} (no meta)')
         except Exception as e:
             hb(f'privacy err: {e}')
             result['privacy_url'] = None
