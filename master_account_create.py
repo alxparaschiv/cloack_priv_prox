@@ -791,15 +791,25 @@ async def run_account(profile_id, acc):
                 result['existing_phones'] = other_phones
                 hb(f'❌ HALT: account already touched (existing phones in AC). Use a fresh account or manually clean up + retry with AUTO_SKIP_IF_BOUND=0.')
                 return result
-            # Better check: find the phone in body, then look at next 60 chars for "Pending"
+            # CORRECT check [2026-06-03, surfaced on VP2]: the phone appears TWICE on the page:
+            # (1) "Contact info" summary line ("email, +1...") — always shows the phone, NEVER
+            #     adjacent to "Pending confirmation" even when pending. WRONG anchor.
+            # (2) "Contact information" section — the authoritative one with status text below.
+            # We must check section (2). Search for the phone AFTER the "Contact information"
+            # heading (the section header), then look at the window after for "Pending".
             already_bound = False
-            idx = body_pre.find('+1' + phone10)
-            if idx >= 0:
-                window_after = body_pre[idx:idx+80]
-                if 'Pending confirmation' not in window_after:
-                    already_bound = True
+            ci_header_idx = body_pre.find('Contact information')
+            if ci_header_idx >= 0:
+                section = body_pre[ci_header_idx:ci_header_idx+2000]
+                phone_in_section = section.find('+1' + phone10)
+                if phone_in_section >= 0:
+                    window_after = section[phone_in_section:phone_in_section+200]
+                    if 'Pending confirmation' not in window_after:
+                        already_bound = True
+                    else:
+                        hb(f'⚠️ phone +1{phone10} present in Contact information but PENDING CONFIRMATION — binding still required')
             if already_bound:
-                hb(f'✅ phone +1{phone10} already bound in AC — skipping AC binding')
+                hb(f'✅ phone +1{phone10} already bound in AC (confirmed in Contact information section) — skipping AC binding')
             else:
                 hb(f'📞 AC-FIRST: binding phone +1{phone10} before wizard')
                 ac_ok = await ac_bind_flow(page, phone10, acc['email'], acc['email_pw'], v.get('profile_name_visible',''))
