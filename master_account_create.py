@@ -1463,9 +1463,20 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
     # (sent to the rental phone). The EMAIL step comes after SMS — sometimes it
     # auto-passes invisibly (FB binds the phone on SMS submit alone) and sometimes
     # it presents an explicit email-code modal. We handle both.
-    # Snapshot Rambler inbox BEFORE the click so we can detect a new FB email later
+    # Snapshot Rambler inbox + rental SMS BEFORE the click so we can detect a NEW arrival.
+    # CRITICAL: the SMS snapshot MUST be taken before gated_click — if we snapshot after
+    # the click+sleep, FB may have already sent the SMS and we'd capture it as "already
+    # seen", causing the poll loop to skip the real new code. Burned VP2 run 2026-06-03.
     seen_email = email_snap(email, email_pw)
-    seen_sms = set(str(it.get('id','')) for it in (list_sms.__wrapped__ if hasattr(list_sms,'__wrapped__') else list_sms)('lr_placeholder')) if False else set()
+    rental_id_for_sms = os.environ.get('REUSE_RENTAL_ID') or os.environ.get('AC_RENTAL_ID') or ''
+    if rental_id_for_sms:
+        try:
+            seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id_for_sms))
+        except Exception as e:
+            hb(f'pre-click list_sms err: {e}'); seen_sms = set()
+    else:
+        seen_sms = set()
+    click_started_at = time.time()
     await asyncio.sleep(3)
     await gated_click(page, 'Next',
         f'Is this the AC Add mobile number modal with phone {phone10} typed and the account-profile checkbox toggled? Is Next enabled?',
@@ -1488,24 +1499,33 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
         return False
 
     # STEP 6 — SMS code (sent to rental phone via TextVerified)
-    # rental_id is not in scope here; pull from the env if needed. Better: derive
-    # the rental_id by checking module-level state — for now, we accept the caller
-    # passed rental_id via env REUSE_RENTAL_ID (used in this codepath when re-running)
-    # or by being in the same process. ac_bind_flow signature would need updating;
-    # for backward compat we read os.environ.
-    rental_id_for_sms = os.environ.get('REUSE_RENTAL_ID') or os.environ.get('AC_RENTAL_ID') or ''
+    # seen_sms + click_started_at were captured BEFORE the click (above).
+    # Dual-filter: accept SMS that is EITHER not-in-seen_sms OR has createdAt > click time.
     sms_code = None
     if rental_id_for_sms:
-        seen_sms = set(str(it.get('id','')) for it in list_sms(rental_id_for_sms))
-        hb(f'📨 polling for AC SMS code on rental {rental_id_for_sms} (3min)…')
+        hb(f'📨 polling for AC SMS code on rental {rental_id_for_sms} (3min, click@{int(click_started_at)})…')
         deadline = time.time() + 180
         while time.time() < deadline:
             try:
                 for it in list_sms(rental_id_for_sms):
-                    if str(it.get('id','')) in seen_sms: continue
+                    sid = str(it.get('id',''))
                     t = it.get('smsContent') or ''
+                    # parse createdAt → epoch; tolerate format errors
+                    created_epoch = 0
+                    try:
+                        from datetime import datetime, timezone as _tz
+                        ca = it.get('createdAt','')
+                        if ca:
+                            ca2 = ca.replace('Z','+00:00')
+                            created_epoch = datetime.fromisoformat(ca2).timestamp()
+                    except Exception: pass
+                    is_new = (sid not in seen_sms) or (created_epoch > click_started_at - 5)
+                    if not is_new: continue
                     cm = re.search(r'\b(\d{4,8})\b', t)
-                    if cm: sms_code = cm.group(1); break
+                    if cm:
+                        sms_code = cm.group(1)
+                        hb(f'  matched SMS id={sid} createdAt={it.get("createdAt","")} new={is_new}')
+                        break
             except Exception as e: hb(f'list_sms err: {e}')
             if sms_code: break
             await hbeh.sleep(7.0, 15.0)
