@@ -739,11 +739,34 @@ async def run_account(profile_id, acc):
 
         # Phase B.5: warm-up browse on fb.com — human-cadence signal
         # See project-self-critique-and-warmup-hypotheses.md
-        hb('🛋️ warm-up browse 90s (scroll/hover fb.com)')
+        # ONE-TIME-PER-ACCOUNT: skip if this c_user has already been warmed up
+        # in the last 24h (debug re-runs of the same account shouldn't warm again
+        # — adds zero anti-bot value, costs 90s per re-run, and a repeating
+        # identical warmup pattern is itself a fingerprint).
+        # Override via env: SKIP_WARMUP=1 forces skip, FORCE_WARMUP=1 forces run.
+        _cuser = (acc.get('fb_url') or '').split('id=')[-1].split('&')[0] or 'unknown'
+        _warm_marker = f'/tmp/.fb-warm-{_cuser}.ts'
+        _skip = os.environ.get('SKIP_WARMUP') == '1'
+        _force = os.environ.get('FORCE_WARMUP') == '1'
+        _recently_warmed = False
         try:
-            await hbeh.fb_warmup_browse(page, ctx, seconds=90, state=_hb_state)
-        except Exception as e:
-            hb(f'warmup err (swallowed): {e}')
+            if os.path.exists(_warm_marker):
+                _age = time.time() - os.path.getmtime(_warm_marker)
+                if _age < 86400:
+                    _recently_warmed = True
+                    hb(f'⏭ warmup: c_user {_cuser} warmed {int(_age/60)}min ago — skipping (use FORCE_WARMUP=1 to override)')
+        except: pass
+        if (_skip or _recently_warmed) and not _force:
+            pass  # skip warmup
+        else:
+            hb('🛋️ warm-up browse 90s (scroll/hover fb.com)')
+            try:
+                await hbeh.fb_warmup_browse(page, ctx, seconds=90, state=_hb_state)
+                try:
+                    with open(_warm_marker,'w') as _f: _f.write(str(int(time.time())))
+                except: pass
+            except Exception as e:
+                hb(f'warmup err (swallowed): {e}')
 
         # ════════════════════════════════════════════════════════════════
         # Phase C-NEW [feedback-ac-bind-before-wizard]: AC BINDING FIRST
