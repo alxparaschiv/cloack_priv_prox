@@ -72,6 +72,13 @@ async def main(profile_name):
         ctx = br.contexts[0]
         wiz = next((pg for pg in ctx.pages if 'developers.facebook.com' in pg.url), None) or ctx.pages[-1]
         await wiz.bring_to_front()
+        # If we're not on the dev portal at all, navigate to /apps
+        if 'developers.facebook.com' not in wiz.url:
+            hb(f'not on dev portal (was at {wiz.url[:60]}) — navigating to /apps')
+            try:
+                await wiz.goto('https://developers.facebook.com/apps', wait_until='domcontentloaded', timeout=60000)
+            except Exception as e: hb(f'goto /apps err: {e}')
+            await asyncio.sleep(8)
         state = {}
         await shot(ctx, wiz, '1-start')
         body = await wiz.evaluate("() => document.body.innerText")
