@@ -1449,43 +1449,111 @@ async def phase_l_perms_and_token(page, ctx, app_id, app_secret, fb_pw, result):
 
 
 async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
-    """Bind phone to FB account via Accounts Center first, then return."""
+    """Bind phone to FB account via Accounts Center first, then return.
+
+    Two entry points:
+      A) Fresh add — phone not yet in AC. Click "Add new contact" → "Add mobile number" → fill form.
+      B) Resume pending — phone IS in AC marked "Pending confirmation" (from a prior interrupted
+         run). Click pending entry → "Confirm number" link → SAME mobile-number form opens with
+         the phone PREFILLED. Need to JUST check the account checkbox + Next + SMS code.
+
+    Both paths converge at the same "Add a mobile number" form. We detect which path applies
+    by reading the AC page DOM before deciding.
+    """
     hb('🔁 entering AC binding flow')
     await page.goto('https://accountscenter.facebook.com/personal_info/contact_points/', wait_until='domcontentloaded', timeout=60000)
     await hbeh.sleep(4.9, 10.5)
     await asyncio.sleep(3)
-    # Gated clicks: vision-validate each screen before firing
-    await gated_click(page, 'Add new contact',
-        'Is this the Accounts Center Contact information page with an Add new contact button visible?',
-        label='ac-add-new-contact')
-    await hbeh.sleep(3.5, 7.5)
-    await gated_click(page, 'Add mobile number',
-        'Is there a choice modal asking what type of contact to add (Add mobile number / Add email options)?',
-        label='ac-add-mobile')
-    await hbeh.sleep(4.2, 9.0)
-    # Find AC phone input — retry loop with wait, since modal may still be animating.
-    # Empty-placeholder type=tel inputs are common on FB's current AC UI.
-    pin = None
-    for attempt in range(8):  # up to 8 × 3s = 24s extra wait
-        for f in page.frames:
-            for sel in ['input[type="tel"]', 'input[placeholder*="mobile" i]',
-                        'input[placeholder*="phone" i]']:
+
+    body_entry = await page.evaluate("() => document.body.innerText")
+    phone_str = '+1' + phone10
+    ci_idx = body_entry.find('Contact information')
+    in_pending_state = False
+    if ci_idx >= 0:
+        section = body_entry[ci_idx:ci_idx+2000]
+        if phone_str in section and 'Pending confirmation' in section:
+            in_pending_state = True
+
+    if in_pending_state:
+        # PATH B: resume from Pending confirmation
+        hb(f'📞 phone {phone_str} already in AC as Pending confirmation — resuming via Confirm number link')
+        shot(await safe_screenshot(page), '[ac-resume-pending] phone is pending, will click entry → Confirm number')
+        # Click the pending entry — same strategy that worked in probe_confirm_pending.py
+        clicked_entry = False
+        try:
+            loc = page.locator(f'div:has-text("{phone_str}"):has-text("Pending")').first
+            if await loc.count() > 0:
+                await loc.click(timeout=8000)
+                clicked_entry = True
+                hb(f'  → clicked pending entry')
+        except Exception as e:
+            hb(f'  pending entry click err: {e}')
+        if not clicked_entry:
+            hb('❌ could not click the pending phone entry — falling back to fresh-add path')
+            in_pending_state = False
+        else:
+            await asyncio.sleep(4)
+            shot(await safe_screenshot(page), '[ac-resume-pending] after clicking phone entry — should see Confirm number link')
+            # Click the "Confirm number" link (text-link, not a button)
+            clicked_confirm = False
+            for sel in ['text="Confirm number"', 'a:has-text("Confirm number")', '[role="link"]:has-text("Confirm number")', 'span:has-text("Confirm number")']:
                 try:
-                    el = await f.query_selector(sel)
-                    if el and await el.is_visible():
-                        pin = (f, el); break
-                except: pass
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0:
+                        await loc.click(timeout=5000)
+                        clicked_confirm = True
+                        hb(f'  → clicked "Confirm number" via {sel}')
+                        break
+                except Exception as e: hb(f'  {sel} err: {e}')
+            if not clicked_confirm:
+                hb('❌ could not click Confirm number link — falling back to fresh-add path')
+                in_pending_state = False
+            else:
+                # The "Add a mobile number" form is now open with phone PREFILLED.
+                # Skip the "Add new contact" + "Add mobile number" + phone-fill steps;
+                # jump directly to the checkbox + Next + SMS-code logic below.
+                await asyncio.sleep(6)
+                shot(await safe_screenshot(page), '[ac-resume-pending] form opened with phone prefilled — proceeding to checkbox+Next')
+
+    if not in_pending_state:
+        # PATH A: fresh add (original flow)
+        # Gated clicks: vision-validate each screen before firing
+        await gated_click(page, 'Add new contact',
+            'Is this the Accounts Center Contact information page with an Add new contact button visible?',
+            label='ac-add-new-contact')
+        await hbeh.sleep(3.5, 7.5)
+        await gated_click(page, 'Add mobile number',
+            'Is there a choice modal asking what type of contact to add (Add mobile number / Add email options)?',
+            label='ac-add-mobile')
+        await hbeh.sleep(4.2, 9.0)
+    # PATH A only: type the phone into the input. PATH B has it prefilled — skip typing.
+    if not in_pending_state:
+        # Find AC phone input — retry loop with wait, since modal may still be animating.
+        # Empty-placeholder type=tel inputs are common on FB's current AC UI.
+        pin = None
+        for attempt in range(8):  # up to 8 × 3s = 24s extra wait
+            for f in page.frames:
+                for sel in ['input[type="tel"]', 'input[placeholder*="mobile" i]',
+                            'input[placeholder*="phone" i]']:
+                    try:
+                        el = await f.query_selector(sel)
+                        if el and await el.is_visible():
+                            pin = (f, el); break
+                    except: pass
+                if pin: break
             if pin: break
-        if pin: break
-        await asyncio.sleep(3)
-    if not pin:
-        hb('❌ no AC phone input after 24s extra wait — modal not rendering')
-        return False
-    shot(await safe_screenshot(page), f'[ac-phone-pre] about to type {phone10} into AC phone field')
-    await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
-    await pin[1].type(phone10, delay=140)
-    await hbeh.sleep(2.8, 6.0)
-    shot(await safe_screenshot(page), f'[ac-phone-post] typed {phone10} — AC modal should show the number')
+            await asyncio.sleep(3)
+        if not pin:
+            hb('❌ no AC phone input after 24s extra wait — modal not rendering')
+            return False
+        shot(await safe_screenshot(page), f'[ac-phone-pre] about to type {phone10} into AC phone field')
+        await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
+        await pin[1].type(phone10, delay=140)
+        await hbeh.sleep(2.8, 6.0)
+        shot(await safe_screenshot(page), f'[ac-phone-post] typed {phone10} — AC modal should show the number')
+    else:
+        hb(f'[ac-resume-pending] phone {phone10} is prefilled — skipping phone-type step')
+        shot(await safe_screenshot(page), f'[ac-phone-prefilled] phone {phone10} already in field')
     # Click profile name row (toggle checkbox)
     if profile_name:
         for f in page.frames:
