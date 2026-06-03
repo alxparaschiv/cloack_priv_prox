@@ -1536,43 +1536,77 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
 
 
 async def create_app_wizard(page, app_name, use_case_text, fb_pw):
-    """Walk Create App wizard for one app. Returns app ID from /apps list, or None.
-
-    RESTORED 2026-06-03 from commit 100f577 (June 1) per user request:
-    "revert back to the version of the app creation workflow which did not have
-    the feedback loop because that was working. Then we leave the feedback loop
-    for essentially the meta account set up". This is the LAST commit before
-    7e18597 added vision_gated_click globally. Only deltas from 100f577:
-      - _hb_state = {} added at top (100f577 used a global; safer to scope it)
-      - safe_screenshot() for the /apps verification (direct-CDP regression fix)
-    """
-    _hb_state = {}
+    """Walk Create App wizard for one app. Returns app ID from /apps list, or None."""
+    _hb_state = {}  # local human-behavior cursor state (empty dict — move() picks random initial pos)
     hb(f'creating app: {app_name} ({use_case_text})')
-    await click_btn(page, 'Create App') or await click_btn(page, 'Create app')
+    ok = await gated_click(page, 'Create App',
+        'Is this the developer dashboard (My Apps page) with a Create App button visible?',
+        label='create-app-entry')
+    if not ok:
+        await gated_click(page, 'Create app',
+            'Is this the developer dashboard with a Create app button (lowercase "app")?',
+            label='create-app-lowercase')
     await hbeh.sleep(5.6, 12.0)
-    # Dismiss "new way" guidance modal
-    await page.keyboard.press('Escape')
-    await asyncio.sleep(3)
-    # Clear search bar (sometimes typed-into garbage)
-    for f in page.frames:
-        try:
-            for el in await f.query_selector_all('input[placeholder*="Search" i]'):
-                if await el.is_visible():
-                    await el.click(); await asyncio.sleep(0.3)
-                    await el.press('Control+a'); await el.press('Delete')
-                    break
-        except: pass
-    await hbeh.click(page, 100, 100, _hb_state)
-    await asyncio.sleep(2)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # POST-CLICK FEEDBACK LOOP [feedback-click-verify-retry, 2026-06-03]:
+    # After Create App click, the page transitions through:
+    #   (1) blank/loading → (2) "new way to create apps" modal → (3) Create App form with name input
+    # Without waiting for (3), we hit "❌ no name input" on slow loads. User caught this:
+    # "on a blank unloaded screen the bot should just wait for the screen to load".
+    # Poll vision up to 60s for the name input to be rendered, dismissing intermediate
+    # modals (Escape + Close) as they appear.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    name_input_ready = False
+    for poll in range(8):  # up to 8 × 8s = 64s
+        body = await page.evaluate("() => document.body.innerText.substring(0, 2000)")
+        # If "new way" modal is shown, dismiss it
+        if 'new way to create apps' in body.lower() or 'There\'s a new way to create apps' in body:
+            hb(f'[create-app poll {poll+1}] dismissing "new way" modal')
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(2)
+            # also try Close button
+            try:
+                await page.get_by_role('button', name='Close').first.click(timeout=3000)
+                await asyncio.sleep(2)
+            except: pass
+            # also Clear any garbage in search bar
+            for f in page.frames:
+                try:
+                    for el in await f.query_selector_all('input[placeholder*="Search" i]'):
+                        if await el.is_visible():
+                            await el.click(); await asyncio.sleep(0.3)
+                            await el.press('Control+a'); await el.press('Delete'); break
+                except: pass
+            await hbeh.click(page, 100, 100, _hb_state)
+            await asyncio.sleep(2)
+            continue
+        # Vision gate: is the name input rendered?
+        yes, summary = await vision_gate(page, f'create-app-form-{poll+1}',
+            'Is the "Create app" form visible with an App name text input field that I can type into? Reply YES only if a name input is clearly rendered and ready (not loading skeleton).')
+        if yes:
+            hb(f'✅ Create app form rendered after {poll+1} poll(s)')
+            name_input_ready = True
+            break
+        hb(f'[create-app poll {poll+1}] form not ready yet — waiting')
+        await asyncio.sleep(6)
+    if not name_input_ready:
+        hb('❌ Create app form never rendered after 60s — HALT')
+        shot(await safe_screenshot(page), '[create-app-FAILED] form never rendered')
+        return None
 
     # Type App name in the y=200..350 input (avoid search bar at y=17)
     nin = await find_visible_input(page, exclude_with_value=False, y_range=(200, 400))
-    if not nin: hb('❌ no name input'); return None
+    if not nin: hb('❌ no name input (after form-ready check passed — selector mismatch)'); return None
+    shot(await safe_screenshot(page), f'[app-name-pre] about to type app name "{app_name}" into the input')
     await nin[1].click(); await asyncio.sleep(1)
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
     hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    shot(await safe_screenshot(page), f'[app-name-post] typed "{app_name}" — input should show the name')
+    await gated_click(page, 'Next',
+        f'Is the app name "{app_name}" typed in the input, with Next enabled?',
+        label='app-name-next')
     await hbeh.sleep(7.0, 15.0)
 
     # Use cases → All (19) → click the target use case card
@@ -1583,20 +1617,100 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await asyncio.sleep(3)
-    # Scroll target into view + click its checkbox (use mouse click far right)
+    shot(await safe_screenshot(page), f'[use-case-all19] clicked All (19) tab — should now show all 19 use cases including "{use_case_text}"')
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # CLICK-VERIFY-RETRY [feedback-click-verify-retry, 2026-06-03]:
+    # try multiple click strategies and vision-verify after EACH that the
+    # checkbox is actually checked. Hardcoded +800px offset broke when FB
+    # changed card width — caught by post-click vision rather than failing
+    # downstream gates. User's design: feedback loop as a validation GATE,
+    # not just a logger.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Scroll target into view first
     for f in page.frames:
         try:
             loc = f.locator(f'text="{use_case_text}"').last
             if await loc.count()>0:
                 await loc.scroll_into_view_if_needed(timeout=8000)
-                await asyncio.sleep(2)
-                box = await loc.bounding_box()
-                if box:
-                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
+    await asyncio.sleep(2)
+
+    verify_q = (f'Look ONLY at the row containing the EXACT text "{use_case_text}". '
+                f'Is that row\'s checkbox/circle/radio CHECKED (filled, dotted, or with a visible checkmark)? '
+                f'Reply YES only if the SAME row\'s indicator is clearly selected.')
+    checkbox_checked = False
+    for attempt_idx, strategy in enumerate([
+        'checkbox-input-in-row',  # direct input[type=checkbox] inside the card row
+        'role-checkbox',           # ARIA role="checkbox"
+        'card-right-edge',         # mouse click 30px from card's right edge
+        'card-center',             # mouse click at card center
+        'text-element-direct',     # click the text element directly
+    ]):
+        if checkbox_checked: break
+        try:
+            click_info = await page.evaluate("""(args) => {
+                const text = args.text;
+                const strategy = args.strategy;
+                let textEl = null;
+                for (const el of document.querySelectorAll('*')) {
+                    if ((el.innerText || '').trim() === text && el.children.length < 3) { textEl = el; break; }
+                }
+                if (!textEl) return {ok:false, err:'text not found'};
+                let row = textEl;
+                for (let d=0; d<8; d++) {
+                    row = row.parentElement; if (!row) return {ok:false, err:'no row ancestor'};
+                    const rr = row.getBoundingClientRect();
+                    if (rr.width > 400 && rr.height > 50 && rr.height < 200) break;
+                }
+                const rb = row.getBoundingClientRect();
+                if (strategy === 'checkbox-input-in-row') {
+                    const cb = row.querySelector('input[type="checkbox"]');
+                    if (!cb) return {ok:false, err:'no input[type=checkbox] in row'};
+                    cb.click(); return {ok:true, method:'js-click', el:'input[checkbox]'};
+                }
+                if (strategy === 'role-checkbox') {
+                    const cb = row.querySelector('[role="checkbox"]');
+                    if (!cb) return {ok:false, err:'no role=checkbox in row'};
+                    cb.click(); return {ok:true, method:'js-click', el:'[role=checkbox]'};
+                }
+                if (strategy === 'card-right-edge')
+                    return {ok:true, method:'mouse', x: rb.right - 30, y: rb.y + rb.height/2};
+                if (strategy === 'card-center')
+                    return {ok:true, method:'mouse', x: rb.x + rb.width/2, y: rb.y + rb.height/2};
+                if (strategy === 'text-element-direct') {
+                    textEl.click(); return {ok:true, method:'js-click', el:'text'};
+                }
+                return {ok:false, err:'unknown strategy'};
+            }""", {'text': use_case_text, 'strategy': strategy})
+            if not click_info or not click_info.get('ok'):
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): {click_info}')
+                continue
+            if click_info.get('method') == 'mouse':
+                await hbeh.click(page, click_info['x'], click_info['y'], _hb_state)
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): mouse-clicked ({click_info["x"]:.0f},{click_info["y"]:.0f})')
+            else:
+                hb(f'use-case attempt {attempt_idx+1} ({strategy}): JS-clicked {click_info.get("el","?")}')
+            await asyncio.sleep(2.5)
+            # POST-CLICK VERIFY via vision — the feedback loop AS A GATE
+            yes, summary = await vision_gate(page, f'use-case-verify-{attempt_idx+1}', verify_q)
+            if yes:
+                hb(f'✅ use-case checkbox VERIFIED checked via {strategy}')
+                checkbox_checked = True
+                shot(await safe_screenshot(page), f'[use-case-verified] {use_case_text} CHECKED via {strategy}')
+                break
+            hb(f'⚠️ {strategy} click did not check the box (vision NO) — next strategy')
+        except Exception as e:
+            hb(f'use-case attempt {attempt_idx+1} ({strategy}) err: {str(e)[:120]}')
+
+    if not checkbox_checked:
+        hb(f'❌ HALT: could not verify use-case "{use_case_text}" checkbox checked after 5 strategies')
+        shot(await safe_screenshot(page), f'[use-case-FAILED] all 5 click strategies failed to check {use_case_text}')
+        return None
     await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
+        label='use-case-next')
     await hbeh.sleep(7.0, 15.0)
 
     # Business: I don't want
@@ -1607,13 +1721,20 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    await click_btn(page, 'Next')
+    shot(await safe_screenshot(page), '[business-no-clicked] selected "I don\'t want to connect a business portfolio" — radio should be filled')
+    await gated_click(page, 'Next',
+        'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
+        label='business-no-next')
     await hbeh.sleep(7.0, 15.0)
     # Requirements: just Next
-    await click_btn(page, 'Next')
+    await gated_click(page, 'Next',
+        'Is this the app Requirements step with a Next button enabled?',
+        label='requirements-next')
     await hbeh.sleep(7.0, 15.0)
     # Overview: Create app
-    await click_btn(page, 'Create app')
+    await gated_click(page, 'Create app',
+        'Is this the Overview/Confirmation step with a Create app button enabled?',
+        label='overview-create-app')
     await hbeh.sleep(4.2, 9.0)
     # Password popup
     for i in range(20):
@@ -1625,7 +1746,9 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.click(); await asyncio.sleep(1); await el.fill('')
                     await el.type(fb_pw, delay=140)
                     await asyncio.sleep(3)
-                    await click_btn(page, 'Submit')
+                    await gated_click(page, 'Submit',
+                        'Is a password confirmation popup visible with the password field filled and a Submit button?',
+                        label='password-popup-submit')
                     await hbeh.sleep(10.5, 22.5)
                     break
             except: pass
