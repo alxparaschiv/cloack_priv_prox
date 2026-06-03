@@ -840,11 +840,24 @@ async def run_account(profile_id, acc):
             'Is a cookies consent banner visible (with an "Allow all cookies" or similar button)?',
             label='cookies-banner')
         await asyncio.sleep(3)
-        # RULE #1 GATE: confirm we're on dev portal homepage with Get Started before clicking
+        # RULE #1 GATE: confirm a Get Started button is visible (don't require specific heading text —
+        # Meta renames the home hero copy frequently; "Social technologies" / "Build the next era" etc).
         yes, _ = await vision_gate(page, 'dev-home-pre-get-started',
-            'Is this the Meta for Developers homepage with a Get Started button visible (typically top-right header)?')
+            'Is there a clickable "Get Started" button visible on this page (commonly in the top-right header of the Meta for Developers site)? Ignore the main heading text — answer YES if the button exists.')
         if not yes:
-            hb('❌ HALT: not on expected dev portal homepage'); result['status']='dev_portal_unexpected'; return result
+            # Fallback: body-keyword check. If the literal string "Get Started" is in the DOM
+            # and we're on developers.facebook.com, proceed anyway — vision sometimes false-NOs
+            # when the page hero copy has changed but the button is still there.
+            try:
+                body_kw = await page.evaluate("() => document.body.innerText")
+                cur_url = page.url
+                if 'Get Started' in body_kw and 'developers.facebook.com' in cur_url:
+                    hb('⚠️ vision said NO but body has "Get Started" + URL is dev portal — proceeding via body-keyword fallback')
+                    yes = True
+            except Exception as e:
+                hb(f'body-kw fallback err: {e}')
+        if not yes:
+            hb('❌ HALT: not on expected dev portal homepage (no Get Started button found)'); result['status']='dev_portal_unexpected'; return result
         # Click Get Started in top header
         clicked = False
         for sel in ['header a:has-text("Get Started")','nav a:has-text("Get Started")','[role="banner"] a:has-text("Get Started")']:
