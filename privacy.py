@@ -677,6 +677,24 @@ def _walk_apply_privacy_anti_fingerprint(nodes, R):
 # + sparse realistic typos so the prose doesn't look perfectly polished.
 # ──────────────────────────────────────────────────────────────────────
 
+# Module-level provider alternator state. Guarantees STRICT 50/50 alternation
+# across consecutive calls — no streaks of N-rentry or N-telegraph in a row.
+# Initial offset randomized so a fresh process doesn't always start with the
+# same host. (Pure random.choice gives a 3% chance of 5-in-a-row streaks
+# which look like clustering signal to Meta even though the math is fair.)
+_PROVIDER_ALTERNATOR = {'next': None}  # 'telegraph' or 'rentry'
+
+
+def _next_provider_alternating():
+    """Strict 50/50 alternator: telegraph → rentry → telegraph → ...
+    First call after process start: randomly pick which one to start with."""
+    if _PROVIDER_ALTERNATOR['next'] is None:
+        _PROVIDER_ALTERNATOR['next'] = _random.choice(['telegraph', 'rentry'])
+    picked = _PROVIDER_ALTERNATOR['next']
+    _PROVIDER_ALTERNATOR['next'] = 'rentry' if picked == 'telegraph' else 'telegraph'
+    return picked
+
+
 _WRITING_PERSONAS = [
     {'id': 'gen_z', 'voice': "Gen Z, very casual, lowercase mostly, uses 'rn' 'ngl' 'fr' 'tbh' 'like' 'literally' SPARINGLY (not every sentence). Short paragraphs. Conversational. Drops articles sometimes. Almost talks to the reader. Uses emoji maybe 2-3 times TOTAL across the whole doc."},
     {'id': 'academic', 'voice': "Formal academic prose. Third-person throughout. 'the data subject' 'the user' not 'you'. Semicolons. Latinate vocabulary (utilize, hereinafter, pursuant to, notwithstanding). Long compound sentences with subordinate clauses. Reads like a research paper appendix."},
@@ -1004,7 +1022,10 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
 
     R = _random.Random()
     if provider is None:
-        provider = R.choice(['telegraph', 'rentry'])
+        # Strict alternator — guarantees exact 50/50 over any 2 consecutive calls.
+        # Pure random.choice produced 3% chance of 5-in-a-row streaks which look
+        # like a clustering signal to Meta even though the math is fair.
+        provider = _next_provider_alternating()
     persona = next((p for p in _WRITING_PERSONAS if p['id'] == persona_id), None)
     if persona is None:
         persona = R.choice(_WRITING_PERSONAS)  # uniform across 12 → 8.33% each
