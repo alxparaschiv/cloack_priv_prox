@@ -1417,15 +1417,24 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
         'Is there a choice modal asking what type of contact to add (Add mobile number / Add email options)?',
         label='ac-add-mobile')
     await hbeh.sleep(4.2, 9.0)
+    # Find AC phone input — retry loop with wait, since modal may still be animating.
+    # Empty-placeholder type=tel inputs are common on FB's current AC UI.
     pin = None
-    for f in page.frames:
-        for sel in ['input[placeholder*="mobile" i]','input[placeholder*="phone" i]','input[type="tel"]']:
-            try:
-                el = await f.query_selector(sel)
-                if el and await el.is_visible(): pin=(f,el); break
-            except: pass
+    for attempt in range(8):  # up to 8 × 3s = 24s extra wait
+        for f in page.frames:
+            for sel in ['input[type="tel"]', 'input[placeholder*="mobile" i]',
+                        'input[placeholder*="phone" i]']:
+                try:
+                    el = await f.query_selector(sel)
+                    if el and await el.is_visible():
+                        pin = (f, el); break
+                except: pass
+            if pin: break
         if pin: break
-    if not pin: hb('❌ no AC phone input'); return False
+        await asyncio.sleep(3)
+    if not pin:
+        hb('❌ no AC phone input after 24s extra wait — modal not rendering')
+        return False
     shot(await safe_screenshot(page), f'[ac-phone-pre] about to type {phone10} into AC phone field')
     await pin[1].click(); await asyncio.sleep(1); await pin[1].fill('')
     await pin[1].type(phone10, delay=140)
