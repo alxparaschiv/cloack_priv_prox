@@ -733,10 +733,14 @@ def _inject_realistic_typos(text, rate_per_1000_words=2):
     return text
 
 
-def _llm_generate_privacy_html(app_name, persona, use_case=None):
+def _llm_generate_privacy_html(app_name, persona, use_case=None, retries=4):
     """Call OpenAI gpt-4o-mini to generate a Meta-compliant privacy policy in the
     given persona's voice. Returns (html_body, None) or (None, error_str).
-    """
+
+    Retries up to `retries` times on HTTP errors / timeouts / empty output with
+    exponential backoff (3s, 6s, 12s, 24s). NO TEMPLATE FALLBACK — if all
+    attempts fail, caller HALTS. The template generator is not used for content
+    anymore (per user 2026-06-03: 100% LLM, no pre-written prose)."""
     api_key = os.environ.get('OPENAI_API_KEY')
     if not api_key:
         return None, 'OPENAI_API_KEY not set'
@@ -761,31 +765,45 @@ def _llm_generate_privacy_html(app_name, persona, use_case=None):
         f"Contact section should mention this email: {contact_email}\n\n"
         f"Generate the privacy policy now. HTML only. 400-1100 words. IN PERSONA VOICE:"
     )
-    try:
-        r = requests.post('https://api.openai.com/v1/chat/completions',
-            headers={'Authorization': f'Bearer {api_key}'},
-            json={
-                'model': 'gpt-4o-mini',
-                'temperature': 0.95,  # high variance for distinct outputs
-                'messages': [
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt},
-                ],
-                'max_tokens': 2000,
-            },
-            timeout=60)
-        if r.status_code != 200:
-            return None, f'LLM HTTP {r.status_code}: {r.text[:200]}'
-        html = r.json()['choices'][0]['message']['content'].strip()
-        # Strip code-fence markers if model wrapped output
-        if html.startswith('```'):
-            html = html.split('\n', 1)[1] if '\n' in html else html
-            if html.endswith('```'):
-                html = html.rsplit('```', 1)[0]
-            html = html.strip()
-        return html, None
-    except Exception as e:
-        return None, f'LLM error: {e}'
+    payload = {
+        'model': 'gpt-4o-mini',
+        'temperature': 0.95,  # high variance for distinct outputs
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        'max_tokens': 2000,
+    }
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.post('https://api.openai.com/v1/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}'},
+                json=payload, timeout=60)
+            if r.status_code != 200:
+                last_err = f'HTTP {r.status_code}: {r.text[:200]}'
+                logger.warning(f'LLM attempt {attempt+1}/{retries}: {last_err}')
+                time.sleep(3 * (2 ** attempt))
+                continue
+            data = r.json()
+            html = (data.get('choices') or [{}])[0].get('message', {}).get('content', '').strip()
+            if not html:
+                last_err = f'empty content: {str(data)[:200]}'
+                logger.warning(f'LLM attempt {attempt+1}/{retries}: {last_err}')
+                time.sleep(3 * (2 ** attempt))
+                continue
+            # Strip code-fence markers if model wrapped output
+            if html.startswith('```'):
+                html = html.split('\n', 1)[1] if '\n' in html else html
+                if html.endswith('```'):
+                    html = html.rsplit('```', 1)[0]
+                html = html.strip()
+            return html, None
+        except Exception as e:
+            last_err = f'{type(e).__name__}: {e}'
+            logger.warning(f'LLM attempt {attempt+1}/{retries}: {last_err}')
+            time.sleep(3 * (2 ** attempt))
+    return None, f'LLM failed all {retries} attempts: {last_err}'
 
 
 def _html_to_telegraph_nodes(html):
@@ -956,26 +974,27 @@ def _create_rentry_privacy_policy(app_name, title=None, md_override=None):
 
 
 def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
-                                     use_llm=None, persona_id=None, inject_typos=True):
-    """Maximally-randomized privacy policy generator.
+                                     use_llm=True, persona_id=None, inject_typos=True):
+    """Privacy policy generator — 100% LLM (per user 2026-06-03 "I wouldn't use
+    a pre-written template"). Each call rolls:
 
-    Each call rolls:
       • provider: 'telegraph' | 'rentry' (50/50 if None)
-      • generator: LLM (60%) or template (40%) — gated by OPENAI_API_KEY presence
       • persona: one of 12 distinct writing voices (random unless persona_id given)
-        — uniform random.choice, so each persona has 1/12 = 8.3% probability
+        — uniform random.choice, so each persona has 1/12 = 8.33% probability
       • title: one of 15 alternate titles (breaks 'Privacy-Policy--' slug)
       • typos: sparse realistic typos (~2 per 1000 words) — disable with inject_typos=False
 
-    Returns: (url, err_or_None, meta_dict)
-      meta = {
-        'provider': 'telegraph'|'rentry',
-        'persona': persona_id,
-        'persona_voice': voice description (first 80 chars),
-        'use_llm': bool (post-fallback — reflects what was ACTUALLY used),
-        'title': chosen title string,
-        'inject_typos': bool,
-      }
+    use_llm is kept as a kwarg for backward compat but defaults to True. If you
+    pass False (debugging only), the template generator is used as a hard fallback.
+
+    Returns: (url, err_or_None, meta_dict). Errors propagate — no silent
+    template fallback if LLM fails. Set OPENAI_API_KEY before calling.
+
+    meta = {
+      'provider': 'telegraph'|'rentry',
+      'persona': persona_id, 'persona_voice': voice[:80],
+      'use_llm': bool, 'title': str, 'inject_typos': bool,
+    }
     """
     safe = (app_name or '').strip()
     if not safe:
@@ -986,9 +1005,6 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
     R = _random.Random()
     if provider is None:
         provider = R.choice(['telegraph', 'rentry'])
-    if use_llm is None:
-        # 60% LLM if key is set, 0% otherwise
-        use_llm = bool(os.environ.get('OPENAI_API_KEY')) and R.random() < 0.60
     persona = next((p for p in _WRITING_PERSONAS if p['id'] == persona_id), None)
     if persona is None:
         persona = R.choice(_WRITING_PERSONAS)  # uniform across 12 → 8.33% each
@@ -1006,28 +1022,26 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
     logger.info(f'privacy dispatch: provider={provider} llm={use_llm} '
                 f'persona={persona["id"]} title={title!r} typos={inject_typos}')
 
-    # ── Generate content ──
+    # ── Generate content (LLM always; template only if explicitly disabled) ──
     nodes = None
     md_body = None
     if use_llm:
         html, err = _llm_generate_privacy_html(safe, persona, use_case)
-        if html:
-            if inject_typos:
-                html = _inject_realistic_typos(html, rate_per_1000_words=2)
-            nodes = _html_to_telegraph_nodes(html)
-            md_body = _telegraph_nodes_to_markdown(nodes)
-            if not nodes:
-                logger.warning(f'LLM HTML parsed to 0 nodes, falling back to template')
-                use_llm = False
-        else:
-            logger.warning(f'LLM failed ({err}), falling back to template')
-            use_llm = False
-    if not use_llm:
+        if not html:
+            # NO silent template fallback — surface the error so caller can decide.
+            return None, f'LLM generation failed: {err}', meta
+        if inject_typos:
+            html = _inject_realistic_typos(html, rate_per_1000_words=2)
+        nodes = _html_to_telegraph_nodes(html)
+        if not nodes:
+            return None, 'LLM HTML parsed to 0 valid nodes', meta
+        md_body = _telegraph_nodes_to_markdown(nodes)
+    else:
+        # Explicit opt-out → template (debug/testing path only)
         nodes = _telegraph_privacy_policy_content(safe)
         md_body = _telegraph_nodes_to_markdown(nodes)
         if inject_typos:
             md_body = _inject_realistic_typos(md_body, rate_per_1000_words=2)
-    meta['use_llm'] = use_llm  # reflect post-fallback truth
 
     # ── POST to chosen host ──
     if provider == 'rentry':
