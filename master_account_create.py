@@ -1472,6 +1472,21 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
         label='ac-add-mobile-next')
     await hbeh.sleep(7.0, 15.0)
 
+    # RULE #1 — vision-gate the post-Next state BEFORE we start burning SMS rental quota.
+    # If FB threw a throttle/error or the page is still loading, we must NOT type the
+    # incoming code into the wrong field. wait_for_rendered handles spinner state.
+    shot(await safe_screenshot(page), '[ac-sms-prepoll] after ac-add-mobile-next — should be SMS code input page')
+    await wait_for_rendered(page, max_wait=45, label='ac-sms-page')
+    _vsms = vision(
+        await safe_screenshot(page),
+        'Is this the Accounts Center SMS / "enter confirmation code" page? Look for a 4-8 digit code input field and text like "We sent a code", "Enter code", or "confirmation code". Answer with a single YES or NO plus a one-sentence reason.'
+    )
+    hb(f'[ac-sms-gate] {_vsms}')
+    if 'YES' not in (_vsms or '').upper():
+        shot(await safe_screenshot(page), '❌ AC SMS code page NOT rendered after Next click — halting before burning SMS')
+        hb('❌ AC SMS code page not rendered — halting to avoid wasting a rental SMS')
+        return False
+
     # STEP 6 — SMS code (sent to rental phone via TextVerified)
     # rental_id is not in scope here; pull from the env if needed. Better: derive
     # the rental_id by checking module-level state — for now, we accept the caller
