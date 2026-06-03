@@ -1538,22 +1538,17 @@ async def ac_bind_flow(page, phone10, email, email_pw, profile_name):
 async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     """Walk Create App wizard for one app. Returns app ID from /apps list, or None.
 
-    RESTORED 2026-06-03 from ed299d8 (the MERGE commit dated 2026-06-02) per user:
-    "go back to the day when the script is working like three days ago and then
-    take that chart implement back here". META APP 12 was created with this exact
-    code on June 2. My subsequent fixes (5f7fbee click-verify-retry, 6aa80b8
-    post-Create-App feedback loop) broke it. Only deltas from ed299d8:
+    RESTORED 2026-06-03 from commit 100f577 (June 1) per user request:
+    "revert back to the version of the app creation workflow which did not have
+    the feedback loop because that was working. Then we leave the feedback loop
+    for essentially the meta account set up". This is the LAST commit before
+    7e18597 added vision_gated_click globally. Only deltas from 100f577:
+      - _hb_state = {} added at top (100f577 used a global; safer to scope it)
       - safe_screenshot() for the /apps verification (direct-CDP regression fix)
     """
-    _hb_state = {}  # local human-behavior cursor state (empty dict — move() picks random initial pos)
+    _hb_state = {}
     hb(f'creating app: {app_name} ({use_case_text})')
-    ok = await gated_click(page, 'Create App',
-        'Is this the developer dashboard (My Apps page) with a Create App button visible?',
-        label='create-app-entry')
-    if not ok:
-        await gated_click(page, 'Create app',
-            'Is this the developer dashboard with a Create app button (lowercase "app")?',
-            label='create-app-lowercase')
+    await click_btn(page, 'Create App') or await click_btn(page, 'Create app')
     await hbeh.sleep(5.6, 12.0)
     # Dismiss "new way" guidance modal
     await page.keyboard.press('Escape')
@@ -1577,9 +1572,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
     await nin[1].press('Control+a'); await nin[1].press('Delete'); await asyncio.sleep(0.5)
     await nin[1].type(app_name, delay=140)
     hb(f'name typed'); await hbeh.sleep(2.8, 6.0)
-    await gated_click(page, 'Next',
-        f'Is the app name "{app_name}" typed in the input, with Next enabled?',
-        label='app-name-next')
+    await click_btn(page, 'Next')
     await hbeh.sleep(7.0, 15.0)
 
     # Use cases → All (19) → click the target use case card
@@ -1590,96 +1583,20 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await asyncio.sleep(3)
-    # Scroll target into view first
+    # Scroll target into view + click its checkbox (use mouse click far right)
     for f in page.frames:
         try:
             loc = f.locator(f'text="{use_case_text}"').last
             if await loc.count()>0:
                 await loc.scroll_into_view_if_needed(timeout=8000)
+                await asyncio.sleep(2)
+                box = await loc.bounding_box()
+                if box:
+                    await hbeh.click(page, box['x']+800, box['y']+box['height']/2, _hb_state)
                 break
         except: pass
-    await asyncio.sleep(2)
-
-    # CHECKBOX CLICK — multi-strategy with post-click vision verification.
-    # FB UI shifted between June 2 and June 3: the hardcoded +800px offset that
-    # worked for META APP 12 no longer hits the checkbox on current card width.
-    # Strategy 1 (right-edge from box) recovers the original behavior with a
-    # DYNAMIC offset based on actual card geometry. Strategy 2 is the legacy +800
-    # offset (in case FB rolls back). Strategy 3 is card-center, 4 is text-direct.
-    verify_q = (f'Look ONLY at the row containing the EXACT text "{use_case_text}". '
-                f'Is that row\'s checkbox CHECKED (filled circle, checkmark, or selected indicator)? '
-                f'Reply YES only if the SAME row\'s checkbox is clearly selected.')
-    checkbox_checked = False
-    for attempt, strategy in enumerate(['dynamic-right-edge', 'legacy-plus-800', 'card-center', 'text-direct']):
-        if checkbox_checked: break
-        clicked_at = None
-        try:
-            for f in page.frames:
-                try:
-                    loc = f.locator(f'text="{use_case_text}"').last
-                    if await loc.count() == 0: continue
-                    box = await loc.bounding_box()
-                    if not box: continue
-                    if strategy == 'dynamic-right-edge':
-                        # Find the actual CARD container (parent with reasonable width), click 30px from its right
-                        card_box = await page.evaluate("""(t) => {
-                            for (const el of document.querySelectorAll('*')) {
-                                if ((el.innerText || '').trim() === t && el.children.length < 3) {
-                                    let row = el;
-                                    for (let d=0; d<8; d++) {
-                                        row = row.parentElement; if (!row) return null;
-                                        const r = row.getBoundingClientRect();
-                                        if (r.width > 400 && r.height > 50 && r.height < 200) return {x:r.right - 30, y:r.y + r.height/2};
-                                    }
-                                }
-                            }
-                            return null;
-                        }""", use_case_text)
-                        if card_box: clicked_at = (card_box['x'], card_box['y'])
-                    elif strategy == 'legacy-plus-800':
-                        clicked_at = (box['x']+800, box['y']+box['height']/2)
-                    elif strategy == 'card-center':
-                        # Find card width and click center
-                        card_box = await page.evaluate("""(t) => {
-                            for (const el of document.querySelectorAll('*')) {
-                                if ((el.innerText || '').trim() === t && el.children.length < 3) {
-                                    let row = el;
-                                    for (let d=0; d<8; d++) {
-                                        row = row.parentElement; if (!row) return null;
-                                        const r = row.getBoundingClientRect();
-                                        if (r.width > 400 && r.height > 50 && r.height < 200) return {x:r.x + r.width/2, y:r.y + r.height/2};
-                                    }
-                                }
-                            }
-                            return null;
-                        }""", use_case_text)
-                        if card_box: clicked_at = (card_box['x'], card_box['y'])
-                    elif strategy == 'text-direct':
-                        clicked_at = (box['x']+box['width']/2, box['y']+box['height']/2)
-                    break
-                except: pass
-            if not clicked_at:
-                hb(f'use-case attempt {attempt+1} ({strategy}): could not compute coordinates')
-                continue
-            await hbeh.click(page, clicked_at[0], clicked_at[1], _hb_state)
-            hb(f'use-case attempt {attempt+1} ({strategy}): clicked ({clicked_at[0]:.0f},{clicked_at[1]:.0f})')
-            await asyncio.sleep(2.5)
-            # POST-CLICK VERIFY — the feedback loop as a gate
-            yes, _ = await vision_gate(page, f'use-case-verify-{attempt+1}', verify_q)
-            if yes:
-                hb(f'✅ use-case checkbox VERIFIED via {strategy}')
-                checkbox_checked = True
-                break
-            hb(f'⚠️ {strategy} did not check the box (vision NO) — next strategy')
-        except Exception as e:
-            hb(f'use-case strategy {strategy} err: {str(e)[:120]}')
-    if not checkbox_checked:
-        hb(f'❌ HALT: use-case "{use_case_text}" checkbox could not be checked')
-        return None
     await hbeh.sleep(2.8, 6.0)
-    await gated_click(page, 'Next',
-        f'Is the use case "{use_case_text}" selected (checkbox checked) with Next enabled?',
-        label='use-case-next')
+    await click_btn(page, 'Next')
     await hbeh.sleep(7.0, 15.0)
 
     # Business: I don't want
@@ -1690,19 +1607,13 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                 await loc.click(); break
         except: pass
     await hbeh.sleep(2.8, 6.0)
-    await gated_click(page, 'Next',
-        'Is "I don\'t want to connect a business portfolio" selected with Next enabled?',
-        label='business-no-next')
+    await click_btn(page, 'Next')
     await hbeh.sleep(7.0, 15.0)
     # Requirements: just Next
-    await gated_click(page, 'Next',
-        'Is this the app Requirements step with a Next button enabled?',
-        label='requirements-next')
+    await click_btn(page, 'Next')
     await hbeh.sleep(7.0, 15.0)
     # Overview: Create app
-    await gated_click(page, 'Create app',
-        'Is this the Overview/Confirmation step with a Create app button enabled?',
-        label='overview-create-app')
+    await click_btn(page, 'Create app')
     await hbeh.sleep(4.2, 9.0)
     # Password popup
     for i in range(20):
@@ -1714,9 +1625,7 @@ async def create_app_wizard(page, app_name, use_case_text, fb_pw):
                     await el.click(); await asyncio.sleep(1); await el.fill('')
                     await el.type(fb_pw, delay=140)
                     await asyncio.sleep(3)
-                    await gated_click(page, 'Submit',
-                        'Is a password confirmation popup visible with the password field filled and a Submit button?',
-                        label='password-popup-submit')
+                    await click_btn(page, 'Submit')
                     await hbeh.sleep(10.5, 22.5)
                     break
             except: pass
