@@ -47,6 +47,7 @@ import rambler
 import sms_verified
 import setup_pipeline
 import geelark_open
+import ig_setup
 
 
 logging.basicConfig(
@@ -129,6 +130,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_geelark_stop_name'):
         await geelark_open.geelark_stop_text_received(update, context)
         return
+    if context.user_data.get('ig_setup_state'):
+        await ig_setup.ig_setup_text_received(update, context)
+        return
 
     # /meta_dev_setup wizard: chat-scoped state (not user_data — see setup_pipeline._state)
     if await setup_pipeline.setup_full_text_received(update, context):
@@ -142,6 +146,12 @@ async def _document_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # /meta_dev_setup step 1 also accepts a .txt document upload
     if await setup_pipeline.setup_full_document_received(update, context):
+        return
+
+
+async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Photo dispatcher — routes to whichever wizard is awaiting one."""
+    if await ig_setup.ig_setup_photo_received(update, context):
         return
 
 
@@ -161,7 +171,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
         "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n"
-        "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n",
+        "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n"
+        "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n",
         parse_mode='HTML')
 
 
@@ -180,6 +191,7 @@ async def post_init(application):
         BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
         BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
         BotCommand("geelark_stop_phone", "Batch-stop GeeLark phones when IG setup is done"),
+        BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -281,6 +293,7 @@ def main():
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
     application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
+    application.add_handler(CommandHandler("ig_setup_private", ig_setup.ig_setup_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
@@ -300,6 +313,8 @@ def main():
         filters.TEXT & ~filters.COMMAND, _text_router))
     application.add_handler(MessageHandler(
         filters.Document.ALL, _document_router))
+    application.add_handler(MessageHandler(
+        filters.PHOTO, _photo_router))
 
     logger.info("Starting bot polling…")
     application.run_polling(allowed_updates=Update.ALL_TYPES,
