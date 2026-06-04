@@ -1,13 +1,17 @@
-"""/rambler — Fetch the latest Facebook verification code from a Rambler inbox.
+"""/rambler — Fetch the latest Meta (Facebook OR Instagram) verification code from a Rambler inbox.
 
 Conversation flow:
   /rambler              → prompt for "<email>:<password>"
   user replies          → IMAP fetch, extract code, reply
 
 Why this exists: during Meta Dev account creation / unlock flows, the user
-sometimes needs to grab a fresh FB confirmation code from a Rambler inbox.
+sometimes needs to grab a fresh FB or IG confirmation code from a Rambler inbox.
 Manual login to Rambler in the GoLogin browser is annoying — easier to
 just paste creds here and get the code back instantly.
+
+The fetcher walks the most-recent N messages and returns the FIRST one whose
+sender is Facebook OR Instagram (Meta family). Reply tags the service so the
+user knows which platform the code is for.
 
 Note: cred are NOT persisted. They're held in context.user_data only for
 the single fetch + then popped.
@@ -30,20 +34,23 @@ IMAP_TIMEOUT = 15
 RECENT_N = 30
 
 
-def _fetch_latest_fb_code(email_addr: str, password: str):
-    """Connect to Rambler IMAP, return (code, subject, sender, error).
-    code = the 4-8 digit number from the latest Facebook email's subject.
+def _fetch_latest_meta_code(email_addr: str, password: str):
+    """Connect to Rambler IMAP, return (code, subject, sender, service, error).
+
+    Walks the last RECENT_N messages newest-first; returns the FIRST one whose
+    sender is Facebook OR Instagram with a 4-8 digit code in the subject.
+    service = 'Facebook' | 'Instagram' (derived from sender header).
     """
     try:
         m = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT)
     except Exception as e:
-        return None, None, None, f"connect failed: {type(e).__name__}: {e}"
+        return None, None, None, None, f"connect failed: {type(e).__name__}: {e}"
     try:
         m.login(email_addr, password)
     except Exception as e:
         try: m.logout()
         except: pass
-        return None, None, None, f"login failed (check email/password): {type(e).__name__}: {e}"
+        return None, None, None, None, f"login failed (check email/password): {type(e).__name__}: {e}"
     try:
         m.select('INBOX')
         _, ids = m.search(None, 'ALL')
@@ -53,18 +60,26 @@ def _fetch_latest_fb_code(email_addr: str, password: str):
             msg = _em.message_from_bytes(data[0][1])
             subj = msg.get('Subject', '') or ''
             frm = msg.get('From', '') or ''
-            if 'facebook' not in frm.lower():
+            frm_lower = frm.lower()
+            if 'instagram' in frm_lower:
+                service = 'Instagram'
+            elif 'facebook' in frm_lower:
+                service = 'Facebook'
+            else:
                 continue
             cm = re.search(r'\b(\d{4,8})\b', subj)
             if cm:
                 m.logout()
-                return cm.group(1), subj, frm, None
+                return cm.group(1), subj, frm, service, None
         m.logout()
-        return None, None, None, f"no Facebook email with a code found in last {RECENT_N} messages"
+        return None, None, None, None, f"no Facebook or Instagram email with a code found in last {RECENT_N} messages"
     except Exception as e:
         try: m.logout()
         except: pass
-        return None, None, None, f"fetch failed: {type(e).__name__}: {e}"
+        return None, None, None, None, f"fetch failed: {type(e).__name__}: {e}"
+
+# back-compat alias — some callers may import the old name
+_fetch_latest_fb_code = _fetch_latest_meta_code
 
 
 async def rambler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,7 +89,8 @@ async def rambler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📬 *Rambler code fetcher*\n\n"
         "Send your Rambler credentials in the format:\n"
         "`email@rambler.ru:password`\n\n"
-        "I'll fetch the most recent *Facebook* email and reply with the code from its subject. "
+        "I'll fetch the most recent *Facebook OR Instagram* email and reply with the code "
+        "from its subject. The reply will tag which service the code is for.\n"
         "Credentials are NOT stored — used for one fetch then dropped.",
         parse_mode='Markdown')
 
@@ -99,17 +115,18 @@ async def rambler_text_received(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     await update.message.reply_text(f"🔍 Connecting to Rambler IMAP for `{email_addr}`…", parse_mode='Markdown')
-    code, subject, sender, err = _fetch_latest_fb_code(email_addr, password)
+    code, subject, sender, service, err = _fetch_latest_meta_code(email_addr, password)
     if err:
         await update.message.reply_text(f"❌ {err}")
         return
     if not code:
         await update.message.reply_text(
-            f"⚠️ No Facebook code found.\nSubject of last FB email: `{subject or '(none)'}`",
+            f"⚠️ No Facebook or Instagram code found in last {RECENT_N} messages.",
             parse_mode='Markdown')
         return
+    icon = '📘' if service == 'Facebook' else '📷'
     await update.message.reply_text(
-        f"✅ *Code: `{code}`*\n\n"
+        f"{icon} *{service} code: `{code}`*\n\n"
         f"From: `{sender}`\n"
         f"Subject: `{subject}`",
         parse_mode='Markdown')
