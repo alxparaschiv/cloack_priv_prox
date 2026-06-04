@@ -353,15 +353,24 @@ async def _run_geelark_batch(update, context, batch):
             f"   ✅ booted. Installing Instagram (~2-4 min)…",
             parse_mode='Markdown')
         ok, msg = _geelark_install_instagram(phone_id)
+        # RULE: stop the phone after install regardless of outcome.
+        # User explicitly requested this so the GeeLark UI shows the phone
+        # as stopped — they'll start it manually when they're ready to log
+        # into IG. Leaving phones running idle burns minutes + adds detection
+        # signal. /phone/stop is idempotent and safe even if start never
+        # actually transitioned the phone to running.
+        _, stop_err = _geelark_post('/phone/stop', {'ids': [phone_id]})
+        if stop_err:
+            logger.warning(f"[geelark_open] post-install stop failed for {phone_id}: {stop_err}")
         results.append({
             'name': name, 'phone_id': phone_id,
             'ok': ok, 'stage': 'install_ig' if not ok else 'done',
             'err': None if ok else msg,
         })
         if ok:
-            await update.message.reply_text(f"   ✅ `{name}`: Instagram installed.", parse_mode='Markdown')
+            await update.message.reply_text(f"   ✅ `{name}`: Instagram installed + phone stopped.", parse_mode='Markdown')
         else:
-            await update.message.reply_text(f"   ⚠️ `{name}`: phone exists but IG install failed — {msg}", parse_mode='Markdown')
+            await update.message.reply_text(f"   ⚠️ `{name}`: phone exists but IG install failed — {msg} (phone stopped)", parse_mode='Markdown')
 
     # ── Final green-light summary ──────────────────────────────────────────
     # User asked explicitly for a clear "all done — go ahead and log in" signal
@@ -373,10 +382,9 @@ async def _run_geelark_batch(update, context, batch):
 
     if okay == len(results):
         header = (f"🟢 *ALL DONE — {okay}/{len(results)} GeeLark phones ready.*\n"
-                  f"Every phone has Instagram installed. You can now open them "
-                  f"in the GeeLark app and sign into IG yourself.\n"
-                  f"\n_When you're done setting up the IG account on a phone, "
-                  f"run /geelark_stop_phone to stop the phone(s)._")
+                  f"Every phone has Instagram installed and has been *stopped* — "
+                  f"start each one from the GeeLark app when you're ready to "
+                  f"sign into IG.")
     elif okay > 0:
         header = (f"🟡 *Batch finished — {okay}/{len(results)} ready, {fail} failed.*\n"
                   f"The successful ones are ready for you to sign into IG; "
