@@ -33,8 +33,9 @@ import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from geelark_open import _geelark_post, _gologin_find_profile_by_name
+from geelark_open import _geelark_post, _gologin_find_profile_by_name, _geelark_boot_wait
 import drive_image_picker
+import ig_automation
 
 logger = logging.getLogger(__name__)
 
@@ -249,17 +250,8 @@ async def ig_setup_text_received(update: Update, context: ContextTypes.DEFAULT_T
     # ── STEP 6 awaiting: confirm + run (or cancel)
     if step == STEP_CONFIRM:
         if text.lower() in ('yes', 'y', 'go', 'run'):
-            await update.message.reply_text(
-                "🚀 *would run setup now*, but the Appium IG flow lands in *Shard D* "
-                "and isn't implemented yet.\n\nState collected:\n"
-                f"  username: `@{data['username']}`\n"
-                f"  phone_id: `{data['phone_id']}`\n"
-                f"  bio: `{data['bio'][:60]}{'…' if len(data['bio'])>60 else ''}`\n"
-                f"  link: `{data.get('link') or '(none)'}`\n"
-                f"  pic: `{data.get('pic_source','?')}`\n\n"
-                f"Next shard will boot the phone, connect Appium, and execute. Cancelled for now.",
-                parse_mode='Markdown')
-            context.user_data.pop('ig_setup_state', None)
+            context.user_data.pop('ig_setup_state', None)  # clear before running
+            await _run_ig_setup(update, context, data)
             return
         if text.lower() in ('no', 'n', 'cancel'):
             context.user_data.pop('ig_setup_state', None)
@@ -267,6 +259,91 @@ async def ig_setup_text_received(update: Update, context: ContextTypes.DEFAULT_T
             return
         await update.message.reply_text("reply `yes` to run or `no` to cancel.")
         return
+
+
+async def _run_ig_setup(update, context, data):
+    """Boot the phone, enable ADB, fetch endpoint, run the Appium IG flow,
+    stop the phone. Streams progress to Telegram."""
+    import asyncio
+    phone_id = data['phone_id']
+    msg = update.message
+
+    async def progress(text):
+        try:
+            await msg.reply_text(text, parse_mode='Markdown')
+        except Exception as e:
+            logger.warning(f"[ig_setup] tg send err: {e}")
+
+    await progress(f"🚀 starting setup for @{data['username']} on phone `{phone_id}`")
+
+    # 1) Start the phone + wait 60s for boot (same pattern /geelark_profile_open uses)
+    await progress("⚡ starting GeeLark phone + waiting ~60s for boot…")
+    _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+    if start_err:
+        await progress(f"❌ /phone/start failed: `{start_err}`"); return
+    await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
+
+    # 2) Enable ADB on the phone + fetch endpoint
+    await progress("🔌 enabling ADB + fetching endpoint…")
+    _, adb_err = _geelark_post('/adb/setStatus', {'ids': [phone_id], 'open': True})
+    if adb_err:
+        await progress(f"❌ /adb/setStatus failed: `{adb_err}` (stopping phone)")
+        _geelark_post('/phone/stop', {'ids': [phone_id]})
+        return
+
+    # Poll for ADB connection details — first call after enable can be empty
+    ip = port = pwd = None
+    for attempt in range(8):
+        await asyncio.sleep(8 if attempt else 3)
+        adb_data, _ = _geelark_post('/adb/getData', {'ids': [phone_id]})
+        if adb_data:
+            items = adb_data.get('items') or []
+            if items:
+                it = items[0]
+                ip = it.get('ip'); port = it.get('port'); pwd = it.get('pwd') or it.get('password')
+                if ip: break
+    if not ip:
+        await progress("❌ ADB getData never returned an endpoint (phone may not be fully booted). Stopping phone.")
+        _geelark_post('/phone/stop', {'ids': [phone_id]})
+        return
+    await progress(f"✅ ADB endpoint: `{ip}:{port}`")
+
+    # 3) Run the Appium IG flow in a thread (Appium client is sync)
+    await progress("🤖 connecting Appium + running IG setup (this can take 3-5 min)…")
+    def _bridge_progress(text, screenshot_bytes=None):
+        # Called from the worker thread — schedule the TG send on the main loop
+        try:
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(progress(text), loop)
+        except Exception: pass
+
+    try:
+        ok, result_msg = await asyncio.to_thread(
+            ig_automation.setup_ig_account,
+            ip, port, pwd,
+            data['username'], data['password'], data.get('totp'),
+            data.get('bio'), data.get('link'),
+            data.get('pic_local_path'),
+            _bridge_progress,
+        )
+    except Exception as e:
+        await progress(f"❌ setup_ig_account threw: `{type(e).__name__}: {e}`")
+        ok, result_msg = False, str(e)
+
+    # 4) Always stop the phone afterward (per the autostop rule)
+    await progress("🛑 stopping GeeLark phone…")
+    _, stop_err = _geelark_post('/phone/stop', {'ids': [phone_id]})
+    if stop_err:
+        await progress(f"⚠️ /phone/stop returned: `{stop_err}` (stop manually if needed)")
+
+    if ok:
+        await progress(
+            f"🟢 *ALL DONE — @{data['username']} configured on `{data['phone_name']}`.*\n"
+            f"Account is now private. Phone is stopped — start it from the GeeLark "
+            f"app when you want to use the account.",
+            )
+    else:
+        await progress(f"🔴 *setup failed — {result_msg}*\nPhone has been stopped. Investigate manually.")
 
 
 async def _drive_pick_chosen(update, context, local_path):
