@@ -12,3 +12,10 @@ google-auth==2.23.4
 google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
 google-api-python-client==2.108.0
+# ig_setup.py + drive_image_picker.py — IG private-account configuration via
+# Appium on GeeLark cloud phones (Shard A/D). mediapipe = face-safe filter
+# for the Drive image picker. pyotp = 2FA TOTP codes during IG login.
+Appium-Python-Client==4.1.0
+opencv-python-headless==4.10.0.84
+mediapipe==0.10.18
+pyotp==2.9.0
