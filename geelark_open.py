@@ -325,12 +325,35 @@ async def _run_geelark_batch(update, context, batch):
         else:
             await update.message.reply_text(f"   ⚠️ `{name}`: phone exists but IG install failed — {msg}", parse_mode='Markdown')
 
-    # Final summary
+    # ── Final green-light summary ──────────────────────────────────────────
+    # User asked explicitly for a clear "all done — go ahead and log in" signal
+    # at the end of the batch (not just a quiet per-row trickle).
     okay = sum(1 for r in results if r['ok'])
-    lines = [f"📋 *Batch done* — {okay}/{len(results)} succeeded:"]
-    for r in results:
-        if r['ok']:
-            lines.append(f"  ✅ `{r['name']}` → phone `{r['phone_id']}`")
-        else:
-            lines.append(f"  ❌ `{r['name']}` — stage={r['stage']} err={r['err']}")
+    fail = len(results) - okay
+    ready = [r for r in results if r['ok']]
+    failed = [r for r in results if not r['ok']]
+
+    if okay == len(results):
+        header = (f"🟢 *ALL DONE — {okay}/{len(results)} GeeLark phones ready.*\n"
+                  f"Every phone has Instagram installed. You can now open them "
+                  f"in the GeeLark app and sign into IG yourself.")
+    elif okay > 0:
+        header = (f"🟡 *Batch finished — {okay}/{len(results)} ready, {fail} failed.*\n"
+                  f"The successful ones are ready for you to sign into IG; "
+                  f"the failures are listed below.")
+    else:
+        header = (f"🔴 *Batch finished — 0/{len(results)} ready.*\n"
+                  f"All entries failed — see the errors below.")
+
+    lines = [header, ""]
+    if ready:
+        lines.append("*✅ Ready to use:*")
+        for r in ready:
+            lines.append(f"  • `{r['name']}` → phone id `{r['phone_id']}`")
+    if failed:
+        if ready: lines.append("")
+        lines.append("*❌ Failed:*")
+        for r in failed:
+            lines.append(f"  • `{r['name']}` — stage `{r['stage']}` — {r['err']}")
+
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
