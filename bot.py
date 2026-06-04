@@ -46,6 +46,7 @@ import proxy
 import rambler
 import sms_verified
 import setup_pipeline
+import geelark_open
 
 
 logging.basicConfig(
@@ -122,6 +123,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("expecting_sms_phone"):
         await sms_verified.sms_text_received(update, context)
         return
+    if context.user_data.get('expecting_geelark_name'):
+        await geelark_open.geelark_text_received(update, context)
+        return
 
     # /meta_dev_setup wizard: chat-scoped state (not user_data — see setup_pipeline._state)
     if await setup_pipeline.setup_full_text_received(update, context):
@@ -152,7 +156,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📬 /rambler — Fetch latest FB code from a Rambler inbox\n"
         "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
-        "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n",
+        "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
+        "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n",
         parse_mode='HTML')
 
 
@@ -169,6 +174,7 @@ async def post_init(application):
         BotCommand("rambler",       "Fetch latest FB code from a Rambler inbox"),
         BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
         BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
+        BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -192,6 +198,7 @@ async def post_init(application):
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
+        ("📲 /geelark_profile_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
@@ -267,6 +274,7 @@ def main():
     application.add_handler(CommandHandler("meta_dev_setup", setup_pipeline.setup_full_command))
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
+    application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
