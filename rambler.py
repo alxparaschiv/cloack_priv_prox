@@ -34,11 +34,49 @@ IMAP_TIMEOUT = 15
 RECENT_N = 30
 
 
+def _extract_code_from_body(msg):
+    """Extract a 4-8 digit code from the email body (HTML or plain).
+    Strips HTML tags before regex so we don't match digits inside CSS/attributes.
+    Returns the FIRST matching code, with a preference for digits adjacent to
+    'code', 'confirmation', 'verification' keywords.
+    """
+    raw_parts = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct in ('text/plain', 'text/html'):
+                try:
+                    raw_parts.append(part.get_payload(decode=True).decode('utf-8','replace'))
+                except Exception:
+                    pass
+    else:
+        try:
+            raw_parts.append((msg.get_payload(decode=True) or b'').decode('utf-8','replace'))
+        except Exception:
+            pass
+    body = '\n'.join(raw_parts)
+    # Strip HTML tags + collapse whitespace so we look at human-visible text only
+    text = re.sub(r'<[^>]+>', ' ', body)
+    text = re.sub(r'\s+', ' ', text)
+    # Prefer code-keyword-adjacent digits: 6-digit number near "code"/"confirmation"
+    for m in re.finditer(r'\b(\d{4,8})\b', text):
+        code = m.group(1)
+        start = max(0, m.start()-60)
+        ctx = text[start:m.end()+60].lower()
+        if any(kw in ctx for kw in ('code', 'confirm', 'verif')):
+            return code
+    # Fallback: first 5-8 digit run anywhere in the visible body
+    fm = re.search(r'\b(\d{5,8})\b', text)
+    return fm.group(1) if fm else None
+
+
 def _fetch_latest_meta_code(email_addr: str, password: str):
     """Connect to Rambler IMAP, return (code, subject, sender, service, error).
 
-    Walks the last RECENT_N messages newest-first; returns the FIRST one whose
-    sender is Facebook OR Instagram with a 4-8 digit code in the subject.
+    Walks the last RECENT_N messages newest-first; returns the FIRST email
+    from Facebook OR Instagram. Tries to extract the code from the subject
+    first (works for FB which puts digits in subject), then falls back to
+    the BODY (necessary for Instagram whose subject is just text).
     service = 'Facebook' | 'Instagram' (derived from sender header).
     """
     try:
@@ -56,10 +94,11 @@ def _fetch_latest_meta_code(email_addr: str, password: str):
         _, ids = m.search(None, 'ALL')
         all_ids = ids[0].split() if ids and ids[0] else []
         for eid in all_ids[::-1][:RECENT_N]:
-            _, data = m.fetch(eid, '(RFC822.HEADER)')
-            msg = _em.message_from_bytes(data[0][1])
-            subj = msg.get('Subject', '') or ''
-            frm = msg.get('From', '') or ''
+            # Cheap header pre-check first (avoid fetching full body for non-Meta mail)
+            _, hdr_data = m.fetch(eid, '(RFC822.HEADER)')
+            hdr_msg = _em.message_from_bytes(hdr_data[0][1])
+            frm = hdr_msg.get('From', '') or ''
+            subj = hdr_msg.get('Subject', '') or ''
             frm_lower = frm.lower()
             if 'instagram' in frm_lower:
                 service = 'Instagram'
@@ -67,10 +106,19 @@ def _fetch_latest_meta_code(email_addr: str, password: str):
                 service = 'Facebook'
             else:
                 continue
-            cm = re.search(r'\b(\d{4,8})\b', subj)
-            if cm:
+            # 1) try subject (FB convention: "648099 is your code…")
+            code = None
+            sm = re.search(r'\b(\d{4,8})\b', subj)
+            if sm: code = sm.group(1)
+            # 2) fall back to body (IG convention: subject has no digits, code is in body)
+            if not code:
+                _, full_data = m.fetch(eid, '(RFC822)')
+                full_msg = _em.message_from_bytes(full_data[0][1])
+                code = _extract_code_from_body(full_msg)
+            if code:
                 m.logout()
-                return cm.group(1), subj, frm, service, None
+                return code, subj, frm, service, None
+            # Email matched service but no code parseable — keep walking
         m.logout()
         return None, None, None, None, f"no Facebook or Instagram email with a code found in last {RECENT_N} messages"
     except Exception as e:

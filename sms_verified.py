@@ -39,8 +39,16 @@ def _normalize_phone(text):
 
 
 def _find_rental_by_phone(phone10):
-    """Search the accounts CSV for a rental matching this phone number.
+    """Find a TextVerified rental matching this phone number.
+
+    Two-step lookup:
+      1) Accounts CSV — preferred (gives us profile + status context).
+      2) TextVerified API directly — fallback for rentals that were never
+         written to the CSV (e.g. ad-hoc Instagram rentals, rentals from
+         today that haven't been bound to an FB account yet).
+
     Returns (rental_id, profile_name, status, notes) or (None, None, None, err)."""
+    # ── step 1: accounts CSV
     try:
         import accounts_sheet as asm
         rows = asm._read_all_rows()
@@ -49,29 +57,49 @@ def _find_rental_by_phone(phone10):
         ri_idx = header.index('Rental ID') if 'Rental ID' in header else None
         gp_idx = header.index('GoLogin Profile') if 'GoLogin Profile' in header else None
         st_idx = header.index('Status') if 'Status' in header else None
-        if rp_idx is None or ri_idx is None:
-            return None, None, None, "accounts sheet missing Rental Phone / Rental ID columns"
+        if rp_idx is not None and ri_idx is not None:
+            matches = []
+            for r in rows:
+                rp = r[rp_idx] if rp_idx < len(r) else ''
+                ri = r[ri_idx] if ri_idx < len(r) else ''
+                if not (rp and ri):
+                    continue
+                rp_digits = re.sub(r'\D', '', rp)
+                if rp_digits.endswith(phone10) and ri.startswith('lr_'):
+                    matches.append({
+                        'rental_id': ri,
+                        'profile': r[gp_idx] if gp_idx is not None and gp_idx < len(r) else '?',
+                        'status': r[st_idx] if st_idx is not None and st_idx < len(r) else '?',
+                    })
+            if matches:
+                latest = matches[-1]  # append-only sheet — freshest is last
+                return latest['rental_id'], latest['profile'], latest['status'], None
+    except Exception as e:
+        logger.warning(f"accounts CSV lookup failed (will try TextVerified direct): {e}")
+
+    # ── step 2: TextVerified API direct lookup
+    try:
+        from textverified_client import _client
+        body = _client()._request('GET', '/api/pub/v2/reservations/rental/nonrenewable')
+        items = body if isinstance(body, list) else (body.get('data') or [])
         matches = []
-        for r in rows:
-            rp = r[rp_idx] if rp_idx < len(r) else ''
-            ri = r[ri_idx] if ri_idx < len(r) else ''
-            if not (rp and ri):
-                continue
-            rp_digits = re.sub(r'\D', '', rp)
-            if rp_digits.endswith(phone10) and ri.startswith('lr_'):
+        for r in items:
+            num = re.sub(r'\D', '', r.get('number','') or '')
+            if num.endswith(phone10):
                 matches.append({
-                    'rental_id': ri,
-                    'profile': r[gp_idx] if gp_idx is not None and gp_idx < len(r) else '?',
-                    'status': r[st_idx] if st_idx is not None and st_idx < len(r) else '?',
-                    'phone_full': rp,
+                    'rental_id': r.get('id',''),
+                    'state': r.get('state',''),
+                    'service': r.get('serviceName',''),
+                    'createdAt': r.get('createdAt',''),
                 })
         if not matches:
-            return None, None, None, f"no rental in accounts CSV with phone ending {phone10}"
-        # If multiple, prefer the freshest (last in the sheet) — accounts CSV is append-only
-        latest = matches[-1]
-        return latest['rental_id'], latest['profile'], latest['status'], None
+            return None, None, None, f"no rental found for phone ending {phone10} (checked accounts CSV + TextVerified directly)"
+        # Newest first
+        matches.sort(key=lambda x: x['createdAt'], reverse=True)
+        m = matches[0]
+        return m['rental_id'], f"(not-in-CSV, service={m['service']})", m['state'], None
     except Exception as e:
-        return None, None, None, f"accounts lookup failed: {type(e).__name__}: {e}"
+        return None, None, None, f"TextVerified rental lookup failed: {type(e).__name__}: {e}"
 
 
 def _fetch_latest_sms(rental_id):
