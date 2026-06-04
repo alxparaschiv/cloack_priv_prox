@@ -34,6 +34,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from geelark_open import _geelark_post, _gologin_find_profile_by_name
+import drive_image_picker
 
 logger = logging.getLogger(__name__)
 
@@ -237,16 +238,12 @@ async def ig_setup_text_received(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
         return
 
-    # ── STEP 5b: Drive folder name → kick off image scan (Shard C will handle)
+    # ── STEP 5b: Drive folder name → kick off image scan
     if step == STEP_PIC_DRIVE:
         data['drive_folder_query'] = text
-        await update.message.reply_text(
-            f"📁 will scan Drive folder matching `{text}` for candidates.\n"
-            f"⚠️ Drive image-picker (GPT-4o vision filter) lands in *Shard C* — "
-            f"not implemented yet. For now reply `upload` to send a photo via TG.",
-            parse_mode='Markdown')
-        # For now bounce back to the upload path so the wizard can be tested end-to-end
-        state['step'] = STEP_PIC_SOURCE
+        state['step'] = STEP_PIC_CHOOSE  # waiting for user's inline-button pick
+        await drive_image_picker.pick_from_drive_folder(
+            update, context, text, on_pick=_drive_pick_chosen)
         return
 
     # ── STEP 6 awaiting: confirm + run (or cancel)
@@ -270,6 +267,39 @@ async def ig_setup_text_received(update: Update, context: ContextTypes.DEFAULT_T
             return
         await update.message.reply_text("reply `yes` to run or `no` to cancel.")
         return
+
+
+async def _drive_pick_chosen(update, context, local_path):
+    """Callback invoked by drive_image_picker after the user clicks their pick.
+    Advances the wizard state to STEP_CONFIRM."""
+    state = context.user_data.get('ig_setup_state')
+    if not state:
+        return  # wizard timed out between scan and pick — silently ignore
+    state['data']['pic_source'] = 'drive'
+    state['data']['pic_local_path'] = local_path
+    state['step'] = STEP_CONFIRM
+    # update.message may be None on a callback_query — use callback_query.message
+    msg = update.message or update.callback_query.message
+    await _send_confirmation_from_msg(msg, state['data'])
+
+
+async def _send_confirmation_from_msg(msg, data):
+    """Send the final confirmation summary via a Message object directly
+    (works for both message and callback_query flows)."""
+    lines = [
+        "*Step 6/6 — Confirm and run*",
+        "",
+        f"  IG account: `@{data['username']}`",
+        f"  2FA: `{'enabled' if data.get('totp') else 'no'}`",
+        f"  GeeLark phone: `{data['phone_name']}` ({data['phone_id']})",
+        f"  GoLogin profile: `{data['gologin_profile_id'] or '(missing)'}`",
+        f"  Bio: `{data['bio']}`",
+        f"  Link: `{data.get('link') or '(none)'}`",
+        f"  Profile pic: `{data.get('pic_source','?')}` — `{data.get('pic_local_path','?')}`",
+        "",
+        "Reply `yes` to run the setup, or `no` to cancel.",
+    ]
+    await msg.reply_text('\n'.join(lines), parse_mode='Markdown')
 
 
 async def ig_setup_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):

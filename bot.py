@@ -48,6 +48,7 @@ import sms_verified
 import setup_pipeline
 import geelark_open
 import ig_setup
+import drive_image_picker
 
 
 logging.basicConfig(
@@ -307,6 +308,8 @@ def main():
         bg.bg_callback, pattern=r'^bg_gen:'))
     application.add_handler(CallbackQueryHandler(
         proxy.proxy_callback, pattern=r'^proxy:'))
+    application.add_handler(CallbackQueryHandler(
+        drive_image_picker.drive_pick_callback, pattern=r'^drive_pick:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
