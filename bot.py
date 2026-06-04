@@ -126,6 +126,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_geelark_name'):
         await geelark_open.geelark_text_received(update, context)
         return
+    if context.user_data.get('expecting_geelark_stop_name'):
+        await geelark_open.geelark_stop_text_received(update, context)
+        return
 
     # /meta_dev_setup wizard: chat-scoped state (not user_data — see setup_pipeline._state)
     if await setup_pipeline.setup_full_text_received(update, context):
@@ -157,7 +160,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
-        "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n",
+        "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n"
+        "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n",
         parse_mode='HTML')
 
 
@@ -175,6 +179,7 @@ async def post_init(application):
         BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
         BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
         BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
+        BotCommand("geelark_stop_phone", "Batch-stop GeeLark phones when IG setup is done"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -275,6 +280,7 @@ def main():
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
+    application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based

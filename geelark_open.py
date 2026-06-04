@@ -187,17 +187,51 @@ def _geelark_create_phone(profile_name, proxy):
     return None, "all language candidates rejected"
 
 
-def _geelark_install_instagram(phone_id, max_attempts=24, sleep_between=10):
-    """Look up the Instagram app version on the freshly-booted phone and install it.
-    Same logic as reel_bot.geelark_install_app — installable list only populates
-    after the phone has fully booted, so we poll for up to 4 min by default.
+def _geelark_wait_for_running(phone_id, max_wait_s=180, poll_every=8):
+    """Poll /phone/list until the phone reports a running state, or timeout.
+    GeeLark's /phone/start returns immediately — the phone takes 30-90s to
+    actually boot. Calling /app/install too early hits code=42002 "env not
+    running". This step closes that gap.
+    Returns (running, last_status, err).
+    """
+    deadline = time.time() + max_wait_s
+    last_status = None
+    while time.time() < deadline:
+        data, err = _geelark_post('/phone/list', {'ids': [phone_id], 'page': 1, 'pageSize': 1})
+        if data:
+            items = data.get('items') or data.get('list') or []
+            if items:
+                item = items[0]
+                # GeeLark uses various status fields across docs versions:
+                # status: 0=stopped, 1=starting, 2=running, 3=expired
+                # Some payloads also expose statusName: "Started" / "Starting" / "Stopped".
+                status = item.get('status')
+                status_name = (item.get('statusName') or '').lower()
+                last_status = f"status={status} name={status_name!r}"
+                if status == 2 or 'start' in status_name and 'starting' not in status_name:
+                    return True, last_status, None
+        time.sleep(poll_every)
+    return False, last_status, f"phone never reached running state within {max_wait_s}s"
+
+
+def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
+                                install_max_attempts=6, install_sleep=10):
+    """Look up the Instagram app version on the running phone and install it.
+
+    Two retry loops:
+      - installable/list — phone may take a while to populate the catalog
+      - /app/install — even on a "running" phone, the first install POST can
+        hit 42002 transiently; retry a few times before giving up.
+
     Returns (ok, msg).
     """
     package = 'com.instagram.android'
     search_name = 'Instagram'
+
+    # ── Step 1: find the package in the installable catalog
     target = None
     last = None
-    for attempt in range(max_attempts):
+    for attempt in range(list_max_attempts):
         data, err = _geelark_post('/app/installable/list', {
             'envId': phone_id, 'name': search_name,
             'getUploadApp': False, 'page': 1, 'pageSize': 50,
@@ -207,22 +241,29 @@ def _geelark_install_instagram(phone_id, max_attempts=24, sleep_between=10):
             target = next((a for a in items if a.get('packageName') == package), None)
             if target:
                 break
-            last = f"package {package} not in installable list (attempt {attempt+1}/{max_attempts}, {len(items)} apps)"
+            last = f"package {package} not in installable list (attempt {attempt+1}/{list_max_attempts}, {len(items)} apps)"
         else:
-            last = f"installable list error (attempt {attempt+1}/{max_attempts}): {err}"
-        time.sleep(sleep_between)
+            last = f"installable/list err (attempt {attempt+1}/{list_max_attempts}): {err}"
+        time.sleep(list_sleep)
     if not target:
-        return False, last or f"installable list empty after {max_attempts} attempts"
+        return False, last or f"installable list empty after {list_max_attempts} attempts"
     versions = target.get('appVersionInfoList') or []
     if not versions:
         return False, f"no versions for {package}"
     version_id = versions[0].get('id')
-    _, err = _geelark_post('/app/install', {
-        'envId': phone_id, 'appVersionId': version_id,
-    })
-    if err:
-        return False, err
-    return True, "OK"
+
+    # ── Step 2: actually install (with retry for the 42002 transient)
+    last_err = None
+    for attempt in range(install_max_attempts):
+        _, err = _geelark_post('/app/install', {
+            'envId': phone_id, 'appVersionId': version_id,
+        })
+        if not err:
+            return True, "OK"
+        last_err = f"install err (attempt {attempt+1}/{install_max_attempts}): {err}"
+        # 42002 = env not running — phone state may flap right after boot. Sleep and retry.
+        time.sleep(install_sleep)
+    return False, last_err or "install failed after all retries"
 
 
 # ─── Telegram handlers ──────────────────────────────────────────────────────
@@ -310,10 +351,24 @@ async def _run_geelark_batch(update, context, batch):
             await update.message.reply_text(f"❌ `{name}`: phone create failed — {err}", parse_mode='Markdown')
             continue
         await update.message.reply_text(
-            f"   ✅ phone created ({phone_id}). Installing Instagram (this can take ~2-4 min)…",
+            f"   ✅ phone created ({phone_id}). Starting phone + waiting for boot…",
             parse_mode='Markdown')
-        # Start the phone before install (installable list only populates after boot)
-        _geelark_post('/phone/start', {'ids': [phone_id]})
+        # Start the phone, then poll until it reaches a running state (~30-90s)
+        # before calling install endpoints. Skipping this trips code=42002.
+        _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+        if start_err:
+            results.append({'name': name, 'ok': False, 'stage': 'phone_start', 'err': start_err, 'phone_id': phone_id})
+            await update.message.reply_text(f"❌ `{name}`: /phone/start failed — {start_err}", parse_mode='Markdown')
+            continue
+        running, last_status, wait_err = _geelark_wait_for_running(phone_id)
+        if not running:
+            results.append({'name': name, 'ok': False, 'stage': 'phone_boot', 'err': wait_err, 'phone_id': phone_id})
+            await update.message.reply_text(
+                f"❌ `{name}`: phone didn't boot — {wait_err}", parse_mode='Markdown')
+            continue
+        await update.message.reply_text(
+            f"   ✅ phone running ({last_status}). Installing Instagram (~2-4 min)…",
+            parse_mode='Markdown')
         ok, msg = _geelark_install_instagram(phone_id)
         results.append({
             'name': name, 'phone_id': phone_id,
@@ -336,7 +391,9 @@ async def _run_geelark_batch(update, context, batch):
     if okay == len(results):
         header = (f"🟢 *ALL DONE — {okay}/{len(results)} GeeLark phones ready.*\n"
                   f"Every phone has Instagram installed. You can now open them "
-                  f"in the GeeLark app and sign into IG yourself.")
+                  f"in the GeeLark app and sign into IG yourself.\n"
+                  f"\n_When you're done setting up the IG account on a phone, "
+                  f"run /geelark_stop_phone to stop the phone(s)._")
     elif okay > 0:
         header = (f"🟡 *Batch finished — {okay}/{len(results)} ready, {fail} failed.*\n"
                   f"The successful ones are ready for you to sign into IG; "
@@ -357,3 +414,105 @@ async def _run_geelark_batch(update, context, batch):
             lines.append(f"  • `{r['name']}` — stage `{r['stage']}` — {r['err']}")
 
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+
+
+# ─── /geelark_stop_phone — batch stop phones once IG setup is done ──────────
+# User rule: after the manual IG account setup on a GeeLark phone is done,
+# the phone must be STOPPED (logs the device session out, frees GeeLark
+# billing minutes, reduces the risk of leaving a phone running idle). Same
+# batch-conversation pattern as the open command.
+
+async def geelark_stop_phone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['geelark_stop_batch'] = []
+    context.user_data['expecting_geelark_stop_name'] = True
+    await update.message.reply_text(
+        "🛑 *GeeLark phone stopper*\n\n"
+        "Send the *GoLogin profile name* of the GeeLark phone to stop "
+        "(e.g. `Caroline Goni 5`). I'll look up the corresponding GeeLark "
+        "phone by profile-name match and queue it for stop.\n\n"
+        "After each one you can add more — or type `done` to stop them all.",
+        parse_mode='Markdown')
+
+
+def _geelark_find_phone_by_name(profile_name):
+    """Search the GeeLark phone list for a phone whose profileName matches.
+    Returns (phone_id, err)."""
+    target = profile_name.strip().lower()
+    page = 1
+    while True:
+        data, err = _geelark_post('/phone/list', {'page': page, 'pageSize': 100})
+        if err:
+            return None, err
+        items = data.get('items') or data.get('list') or []
+        if not items:
+            break
+        for it in items:
+            name = (it.get('profileName') or it.get('name') or '').strip().lower()
+            if name == target:
+                return (it.get('id') or it.get('phoneId') or it.get('envId')), None
+        total = data.get('total', 0)
+        if total and len(items) < 100:
+            break
+        if total and (page * 100) >= int(total):
+            break
+        page += 1
+    return None, f"no GeeLark phone with profileName == '{profile_name}'"
+
+
+async def geelark_stop_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('expecting_geelark_stop_name'):
+        return
+    text = (update.message.text or '').strip()
+    text_lower = text.lower()
+
+    if text_lower in DONE_WORDS:
+        batch = context.user_data.get('geelark_stop_batch') or []
+        context.user_data.pop('expecting_geelark_stop_name', None)
+        if not batch:
+            await update.message.reply_text("⚠️ no phones queued — nothing to stop.")
+            return
+        await _run_geelark_stop_batch(update, context, batch)
+        context.user_data.pop('geelark_stop_batch', None)
+        return
+
+    await update.message.reply_text(f"🔍 Finding GeeLark phone for `{text}`…", parse_mode='Markdown')
+    phone_id, err = _geelark_find_phone_by_name(text)
+    if err or not phone_id:
+        await update.message.reply_text(
+            f"❌ {err or 'no match'}\n\nTry another name or type `done` to stop the queued ones.",
+            parse_mode='Markdown')
+        return
+    batch = context.user_data.setdefault('geelark_stop_batch', [])
+    if any(b['name'].lower() == text.lower() for b in batch):
+        await update.message.reply_text(
+            f"⚠️ `{text}` already queued — skipping.", parse_mode='Markdown')
+        return
+    batch.append({'name': text, 'phone_id': phone_id})
+    queue = '\n'.join(f"  {i+1}. `{b['name']}` ({b['phone_id']})" for i, b in enumerate(batch))
+    await update.message.reply_text(
+        f"✅ queued `{text}` ({phone_id}). Stop queue ({len(batch)}):\n{queue}\n\n"
+        f"Send another name to add, or `done` to stop them.",
+        parse_mode='Markdown')
+
+
+async def _run_geelark_stop_batch(update, context, batch):
+    await update.message.reply_text(
+        f"🛑 stopping {len(batch)} GeeLark phone(s)…", parse_mode='Markdown')
+    ok_count = 0
+    lines = []
+    for i, entry in enumerate(batch):
+        name = entry['name']
+        pid = entry['phone_id']
+        _, err = _geelark_post('/phone/stop', {'ids': [pid]})
+        if err:
+            lines.append(f"  ❌ `{name}` ({pid}) — {err}")
+        else:
+            lines.append(f"  ✅ `{name}` ({pid}) stopped")
+            ok_count += 1
+    if ok_count == len(batch):
+        header = f"🟢 *All {ok_count} phones stopped.* You're clear of GeeLark billing for these."
+    elif ok_count > 0:
+        header = f"🟡 *{ok_count}/{len(batch)} stopped.* See per-row results below."
+    else:
+        header = f"🔴 *0/{len(batch)} stopped.* All failed."
+    await update.message.reply_text(header + "\n" + '\n'.join(lines), parse_mode='Markdown')
