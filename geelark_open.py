@@ -50,40 +50,57 @@ DONE_WORDS = {'no', 'done', 'finish', 'finished', 'stop', 'end', 'cancel', 'that
 
 def _gologin_find_profile_by_name(name):
     """Return (profile_id, error). Case-insensitive name match against /browser/v2."""
+    # Resolve GoLogin profile by name. The user's previously-working flow was
+    # a single-shot GET /browser/v2?limit=500 — keep that as the dependable
+    # fallback. Layer on a server-side ?search= filter first so we don't
+    # have to walk a huge roster when the name is unique-ish.
     if not GOLOGIN_API_KEY:
         return None, "GOLOGIN_API_KEY not set"
     target = name.strip().lower()
-    # GoLogin's /browser/v2 silently caps each response at ~30 profiles
-    # regardless of the `limit` query param. We have to paginate.
-    # Walk pages until either the profile is found or a page returns 0 items.
-    # Hard cap at ~3000 profiles (100 pages) to bound runaway requests.
     headers = {'Authorization': f'Bearer {GOLOGIN_API_KEY}'}
-    total_seen = 0
-    try:
-        for page in range(1, 101):
+    debug_counts = []
+
+    # ── Strategy 1: server-side ?search=
+    # GoLogin's /browser/v2 supports ?search=substring against the profile name.
+    # If supported, it returns a tight result set without us walking the roster.
+    for kw in ('search', 'q', 'name'):
+        try:
             r = requests.get(
                 'https://api.gologin.com/browser/v2',
                 headers=headers,
-                params={'limit': 100, 'page': page}, timeout=30,
+                params={'limit': 100, kw: name.strip()},
+                timeout=30,
             )
-            if r.status_code != 200:
-                return None, f"GoLogin HTTP {r.status_code} (page {page})"
-            body = r.json()
-            profiles = body.get('profiles') or body.get('browser') or []
-            if not profiles:
-                break
-            for p in profiles:
-                total_seen += 1
-                if (p.get('name') or '').strip().lower() == target:
-                    return p.get('id'), None
-            # Use server-reported total to stop early when we've seen all
-            all_count = body.get('allProfilesCount') or body.get('total')
-            if all_count and total_seen >= int(all_count):
-                break
-            # Stop early if the page returned fewer than the page size — last page
-            if len(profiles) < 100:
-                break
-        return None, f"no GoLogin profile named '{name}' (searched {total_seen} across paginated pages)"
+            if r.status_code == 200:
+                body = r.json()
+                profiles = body.get('profiles') or body.get('browser') or []
+                debug_counts.append(f"{kw}={len(profiles)}")
+                for p in profiles:
+                    if (p.get('name') or '').strip().lower() == target:
+                        return p.get('id'), None
+        except Exception as e:
+            logger.warning(f"[gologin_find] {kw}-mode err: {e}")
+
+    # ── Strategy 2: dependable single-shot limit=500
+    # This was the originally-working code before my paginated-walk attempt
+    # regressed it. Keep it last so server-side search wins when supported.
+    try:
+        r = requests.get(
+            'https://api.gologin.com/browser/v2',
+            headers=headers,
+            params={'limit': 500}, timeout=30,
+        )
+        if r.status_code != 200:
+            return None, f"GoLogin HTTP {r.status_code} ({'/'.join(debug_counts) or 'no search hits'})"
+        body = r.json()
+        profiles = body.get('profiles') or body.get('browser') or []
+        debug_counts.append(f"bulk={len(profiles)}")
+        sample = [(p.get('name') or '').strip() for p in profiles[:3]]
+        for p in profiles:
+            if (p.get('name') or '').strip().lower() == target:
+                return p.get('id'), None
+        return None, (f"no GoLogin profile named '{name}'. Counts: {', '.join(debug_counts)}. "
+                      f"Sample names returned: {sample}")
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
