@@ -187,68 +187,18 @@ def _geelark_create_phone(profile_name, proxy):
     return None, "all language candidates rejected"
 
 
-def _geelark_count_running_phones():
-    """Return (running_count, total_count). Used to diagnose 'phone stuck at
-    status=0 after /phone/start' — almost always a concurrent-running-phones
-    cap on the user's GeeLark plan, NOT a code/timeout issue."""
-    page = 1
-    running = 0
-    total_phones = 0
-    while True:
-        data, err = _geelark_post('/phone/list', {'page': page, 'pageSize': 100})
-        if err:
-            return None, None
-        items = data.get('items') or data.get('list') or []
-        if not items:
-            break
-        for it in items:
-            total_phones += 1
-            if it.get('status') == 2:
-                running += 1
-        if len(items) < 100:
-            break
-        page += 1
-    return running, total_phones
+def _geelark_boot_wait(phone_id, sleep_s=60):
+    """Trust /phone/start's success + sleep for boot. Mirrors reel_bot.py which
+    has been running this exact pattern in production for months.
 
-
-def _geelark_wait_for_running(phone_id, max_wait_s=180, poll_every=8):
-    """Poll /phone/list until the phone reports a running state, or timeout.
-
-    GeeLark's /phone/start returns immediately — the phone takes 30-90s to
-    actually boot. Calling /app/install too early hits code=42002 "env not
-    running". This step closes that gap.
-
-    GOTCHA — concurrent-running cap: GeeLark plans have a cap on how many
-    phones can be `status=2 (running)` at once. If you're at the cap,
-    /phone/start returns code=0 "success" + a phone URL, BUT the phone
-    silently stays at status=0 forever. On timeout we count running phones
-    and surface the cap-hit hypothesis in the error message.
-
-    Returns (running, last_status, err).
+    We previously tried to poll /phone/list status field, but the field lags /
+    reports stale data for freshly-started phones (a phone visibly running in
+    the UI was still status=0 via API). Polling led to false-negative timeouts
+    on phones that had actually booted fine. Simple sleep + retry-on-install
+    is more reliable.
     """
-    deadline = time.time() + max_wait_s
-    last_status = None
-    while time.time() < deadline:
-        data, err = _geelark_post('/phone/list', {'ids': [phone_id], 'page': 1, 'pageSize': 1})
-        if data:
-            items = data.get('items') or data.get('list') or []
-            if items:
-                item = items[0]
-                # status: 0=stopped, 1=starting, 2=running, 3=expired
-                status = item.get('status')
-                last_status = f"status={status}"
-                if status == 2:
-                    return True, last_status, None
-                # If status is 1 (starting), reset deadline a little to give it more time
-        time.sleep(poll_every)
-    # Timeout. Diagnose: are we at the concurrent-running cap?
-    running, total = _geelark_count_running_phones()
-    diag = ""
-    if running is not None:
-        diag = (f" — {running}/{total} phones currently running across this GeeLark account; "
-                f"if that matches your plan's concurrent-running cap, /phone/start silently "
-                f"no-ops. Free a slot via /geelark_stop_phone and retry.")
-    return False, last_status, f"phone never reached running state within {max_wait_s}s{diag}"
+    time.sleep(sleep_s)
+    return True, f"slept {sleep_s}s for boot", None
 
 
 def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
@@ -388,23 +338,19 @@ async def _run_geelark_batch(update, context, batch):
             await update.message.reply_text(f"❌ `{name}`: phone create failed — {err}", parse_mode='Markdown')
             continue
         await update.message.reply_text(
-            f"   ✅ phone created ({phone_id}). Starting phone + waiting for boot…",
+            f"   ✅ phone created ({phone_id}). Starting phone + waiting ~60s for boot…",
             parse_mode='Markdown')
-        # Start the phone, then poll until it reaches a running state (~30-90s)
-        # before calling install endpoints. Skipping this trips code=42002.
+        # /phone/start kicks off boot. We trust the API response + sleep — the
+        # phone-status API field lags and isn't reliable on fresh starts.
+        # reel_bot.py uses this exact pattern in production.
         _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
         if start_err:
             results.append({'name': name, 'ok': False, 'stage': 'phone_start', 'err': start_err, 'phone_id': phone_id})
             await update.message.reply_text(f"❌ `{name}`: /phone/start failed — {start_err}", parse_mode='Markdown')
             continue
-        running, last_status, wait_err = _geelark_wait_for_running(phone_id)
-        if not running:
-            results.append({'name': name, 'ok': False, 'stage': 'phone_boot', 'err': wait_err, 'phone_id': phone_id})
-            await update.message.reply_text(
-                f"❌ `{name}`: phone didn't boot — {wait_err}", parse_mode='Markdown')
-            continue
+        _geelark_boot_wait(phone_id, sleep_s=60)
         await update.message.reply_text(
-            f"   ✅ phone running ({last_status}). Installing Instagram (~2-4 min)…",
+            f"   ✅ booted. Installing Instagram (~2-4 min)…",
             parse_mode='Markdown')
         ok, msg = _geelark_install_instagram(phone_id)
         results.append({
