@@ -15,8 +15,12 @@ Output is saved to a single root Drive folder:
    the standalone command saves directly into the root with a timestamped name.
 
 Env deps:
-  - WAVESPEED_API_KEY      — WaveSpeed AI bearer token
-  - GOOGLE_TOKEN_PICKLE    — Drive auth (already wired)
+  - WAVESPEED_API_KEY        — WaveSpeed AI bearer token
+  - REEL_GOOGLE_TOKEN_PICKLE — Drive auth for reel-bot-Carolina's Drive (where
+                               'Images bg goth artistic' + the output root live).
+                               This is a SEPARATE pickle from GOOGLE_TOKEN_PICKLE
+                               (which points at cloak's own Drive for Meta blobs
+                               etc.) — we don't want the two getting tangled.
 """
 import os
 import io
@@ -62,7 +66,18 @@ PROMPT = (
 # ─── Drive ─────────────────────────────────────────────────────────────────
 
 def _drive_service():
-    creds = pickle.loads(base64.b64decode(os.environ['GOOGLE_TOKEN_PICKLE']))
+    """Build a Drive client using reel-bot-Carolina's pickle.
+
+    REEL_GOOGLE_TOKEN_PICKLE is the SEPARATE pickle that authenticates against
+    the Drive holding 'Images bg goth artistic' + 'Images generated for account
+    setup in GeeLark'. We deliberately don't use cloak's own GOOGLE_TOKEN_PICKLE
+    here — those are different Drives.
+    """
+    raw = os.environ.get('REEL_GOOGLE_TOKEN_PICKLE') \
+          or os.environ.get('GOOGLE_TOKEN_PICKLE')   # fallback for local testing
+    if not raw:
+        raise RuntimeError("neither REEL_GOOGLE_TOKEN_PICKLE nor GOOGLE_TOKEN_PICKLE is set")
+    creds = pickle.loads(base64.b64decode(raw))
     return build('drive', 'v3', credentials=creds, cache_discovery=False)
 
 

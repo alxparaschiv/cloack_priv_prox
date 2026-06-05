@@ -229,7 +229,7 @@ async def post_init(application):
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
         ("📲 /geelark_profile_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
-        ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "GOOGLE_TOKEN_PICKLE"]),
+        ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
