@@ -1,23 +1,35 @@
-"""Image-push wizard for GeeLark phones.
+"""Per-profile image-add wizard for /geelark_profile_open.
 
-Entry from /geelark_profile_open's mode-select. Two paths today:
+Architecture (selection-first, execution-deferred):
 
-  • "Create + images"  — current /geelark_profile_open batch creation, with a
-                          per-profile image step at the end (lands in Commit 2)
-  • "Images only"      — pick existing GeeLark phones by name + push images
-                          to each one's gallery (this commit's focus)
+  SELECTION phase — interactive, one profile at a time:
+    For each profile in the batch:
+      1. Standard background generator — pick style → keep / regen / skip
+         (loops until keep-or-skip; each kept PNG is queued for the push step)
+      2. Artistic background — yes / no  (generated at execution time)
+      3. Drive folder — yes / no → if yes, navigate the Drive tree (any depth)
+         → user clicks "📌 Use this folder" → all images in it get queued
+      → "selection done for this profile", advance to next
 
-Image step per profile:
-  1. bg_generator inline — user picks style, image is generated, then
-     inline buttons offer  ✅ Keep  /  🔄 Regenerate (same style)  /  ⏭ Skip
-     Loop until keep-or-skip.
-  2. (Commit 2) Drive folder navigator — model → niche → image folder
-  3. Phone is started once, all kept images are pushed via `adb push`, phone
-     is stopped — same start/ADB-bring-up/stop pattern /ig_setup_private uses.
+  EXECUTION phase — runs only AFTER the last profile finishes selection:
+    For each profile (in order):
+      - If artistic was selected, generate it now via artistic_bg_gen
+        (saved to Drive under
+         "Images generated for account setup in GeeLark/<profile name>/")
+      - If a Drive folder was picked, download every image in it to /tmp
+      - Boot phone, ADB connect + glogin, push all queued images
+        (bg PNGs + artistic + Drive imgs) to /sdcard/Pictures, media-scan
+        broadcast, stop phone
+      - Per-profile result reported back to Telegram
 
-Everything new lives in this module + a tiny dispatcher tweak in bot.py and
-in geelark_open.geelark_profile_open_command. The original create-flow code
-in geelark_open is untouched — the mode-select just sits in front of it.
+  Mode select sits in front:
+    🆕 Create + add images  → existing /geelark_profile_open create flow
+                              (image step is appended after the create batch
+                              finishes — Commit 2 of the create-flow wire-up)
+    🖼 Add images to existing GeeLark profiles  → straight into the
+                                                  selection phase above
+
+This module replaces the earlier Commit-1 skeleton entirely.
 """
 import os
 import io
@@ -25,24 +37,36 @@ import time
 import logging
 import subprocess
 import asyncio
+import base64
+import pickle
 
+import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from geelark_open import _geelark_post, _geelark_boot_wait
+import artistic_bg_gen
 
 logger = logging.getLogger(__name__)
 
 
 # State lives in context.user_data['imgwiz']:
 # {
-#   'mode':         'create_plus_images' | 'images_only',
-#   'batch':        [{'name': str, 'phone_id': str}],   # profiles to work on
-#   'idx':          int,                                 # current profile index
-#   'images':       [local_path, ...],                   # images queued for current profile
-#   'last_bg_mode': str,                                 # so 'regenerate' uses the same style
-#   'sub_step':     'pick_phone' | 'bg_pick_style' | 'bg_review' | 'drive_*' | 'next_or_done'
+#   'mode': 'create_plus_images' | 'images_only',
+#   'batch': [{
+#     'name': str, 'phone_id': str,
+#     'bg_paths': [str],
+#     'artistic_yes': bool,
+#     'drive_folder_id': str | None,
+#     'drive_folder_name': str | None,
+#   }],
+#   'idx': int,                          # current profile being selected
+#   'sub_step': str,
+#   'last_bg_mode': str | None,
+#   'last_bg_path': str | None,
+#   'drive_nav_stack': [(id,name), ...], # breadcrumb for the Drive navigator
 # }
+
 
 # ─── Mode-select entry ──────────────────────────────────────────────────────
 
@@ -56,34 +80,18 @@ def mode_select_keyboard():
     ])
 
 
-async def show_mode_select(update_or_query):
-    """Reply (or edit) with the two-button mode-select. Called from
-    geelark_open.geelark_profile_open_command."""
+async def show_mode_select(update_or_msg):
     text = (
         "📲 *GeeLark profile opener*\n\n"
         "Pick what you want to do:\n\n"
         "🆕 *Create + add images* — make new GeeLark phones from existing "
-        "GoLogin profiles AND seed each with backgrounds (+ optional Drive images)\n\n"
-        "🖼 *Add images to existing profiles* — skip the create step and just push "
-        "background + Drive images to GeeLark phones you already have"
+        "GoLogin profiles AND seed each with images afterward\n\n"
+        "🖼 *Add images to existing profiles* — skip the create step and just "
+        "push images to phones you already have"
     )
-    msg = update_or_query.message if hasattr(update_or_query, 'message') else update_or_query
+    msg = update_or_msg.message if hasattr(update_or_msg, 'message') else update_or_msg
     await msg.reply_text(text, reply_markup=mode_select_keyboard(),
                          parse_mode='Markdown')
-
-
-# ─── Drive navigator (Commit 2 will fill this in) ───────────────────────────
-# Placeholder for now so the wizard can finish a no-Drive run end-to-end.
-
-async def _ask_drive_yes_no(msg, prefix='drive_branch'):
-    await msg.reply_text(
-        "📁 Also add images from a Drive folder for this profile?\n"
-        "_(Drive navigator lands in next commit — for now this will skip)_",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭ Skip Drive (continue)",
-                                 callback_data=f'imgwiz:{prefix}:skip'),
-        ]]),
-        parse_mode='Markdown')
 
 
 # ─── bg_generator integration ───────────────────────────────────────────────
@@ -102,48 +110,16 @@ BG_MODES = [
 
 
 def _bg_pick_style_kb():
-    rows = []
-    row = []
+    rows, row = [], []
     for code, label in BG_MODES:
         row.append(InlineKeyboardButton(label,
                                          callback_data=f'imgwiz:bg_style:{code}'))
         if len(row) == 3:
             rows.append(row); row = []
-    if row:
-        rows.append(row)
+    if row: rows.append(row)
     rows.append([InlineKeyboardButton("⏭ Skip BG entirely",
                                        callback_data='imgwiz:bg_style:skip')])
     return InlineKeyboardMarkup(rows)
-
-
-def _generate_bg_png(mode):
-    """Call bg.py's generator for the requested mode and return (png_bytes, label).
-    Mirrors bg._emit's switch statement but doesn't send anything to TG."""
-    import random
-    import bg
-    label, hex_color = random.choice(bg.PROFILE_COLOR_PALETTE)
-    if mode == 'gradient':
-        choices = [h for _, h in bg.PROFILE_COLOR_PALETTE if h != hex_color]
-        hex_b = random.choice(choices) if choices else hex_color
-        direction = random.choice(['vertical', 'horizontal', 'diagonal'])
-        png, _ = bg.gradient_png(hex_color, hex_b, direction=direction)
-        return png, f'gradient {hex_color}→{hex_b}'
-    if mode == 'radial':
-        png, _ = bg.radial_burst_png(hex_color); return png, f'radial ({label})'
-    if mode == 'impressionist':
-        png, _ = bg.impressionist_png(hex_color); return png, f'impressionist ({label})'
-    if mode == 'splatter':
-        png, _ = bg.splatter_png(hex_color); return png, f'splatter ({label})'
-    if mode == 'watercolor':
-        png, _ = bg.watercolor_png(hex_color); return png, f'watercolor ({label})'
-    if mode == 'geometric':
-        png, _ = bg.geometric_png(hex_color); return png, f'geometric ({label})'
-    if mode == 'voronoi':
-        png, _ = bg.voronoi_png(hex_color); return png, f'voronoi ({label})'
-    if mode == 'color_field':
-        png, _ = bg.color_field_png(hex_color); return png, f'color field ({label})'
-    png, _ = bg.solid_color_png(hex_color)
-    return png, f'solid ({label})'
 
 
 def _bg_review_kb():
@@ -154,8 +130,27 @@ def _bg_review_kb():
     ])
 
 
-async def _emit_bg(msg, mode, last_png_path_holder):
-    """Generate + send a bg preview; stash the PNG to /tmp + return its path."""
+def _generate_bg_png(mode):
+    import random, bg
+    label, hex_color = random.choice(bg.PROFILE_COLOR_PALETTE)
+    if mode == 'gradient':
+        choices = [h for _, h in bg.PROFILE_COLOR_PALETTE if h != hex_color]
+        hex_b = random.choice(choices) if choices else hex_color
+        direction = random.choice(['vertical', 'horizontal', 'diagonal'])
+        png, _ = bg.gradient_png(hex_color, hex_b, direction=direction)
+        return png, f'gradient {hex_color}→{hex_b}'
+    if mode == 'radial':       png, _ = bg.radial_burst_png(hex_color);   return png, f'radial ({label})'
+    if mode == 'impressionist':png, _ = bg.impressionist_png(hex_color);  return png, f'impressionist ({label})'
+    if mode == 'splatter':     png, _ = bg.splatter_png(hex_color);       return png, f'splatter ({label})'
+    if mode == 'watercolor':   png, _ = bg.watercolor_png(hex_color);     return png, f'watercolor ({label})'
+    if mode == 'geometric':    png, _ = bg.geometric_png(hex_color);      return png, f'geometric ({label})'
+    if mode == 'voronoi':      png, _ = bg.voronoi_png(hex_color);        return png, f'voronoi ({label})'
+    if mode == 'color_field':  png, _ = bg.color_field_png(hex_color);    return png, f'color field ({label})'
+    png, _ = bg.solid_color_png(hex_color)
+    return png, f'solid ({label})'
+
+
+async def _emit_bg(msg, mode, state):
     png, caption = _generate_bg_png(mode)
     local_path = f'/tmp/imgwiz_bg_{mode}_{int(time.time()*1000)}.png'
     with open(local_path, 'wb') as f: f.write(png)
@@ -164,10 +159,97 @@ async def _emit_bg(msg, mode, last_png_path_holder):
                           caption=f"🎨 *{caption}*\nKeep / regenerate (same style) / skip?",
                           parse_mode='Markdown',
                           reply_markup=_bg_review_kb())
-    last_png_path_holder[0] = local_path
+    state['last_bg_path'] = local_path
 
 
-# ─── ADB image push (independent of ig_automation so we don't entangle) ─────
+# ─── Artistic-bg step (just a yes/no in selection phase) ───────────────────
+
+def _artistic_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Yes, generate an artistic image",
+                              callback_data='imgwiz:artistic:yes'),
+         InlineKeyboardButton("⏭ No, skip",
+                              callback_data='imgwiz:artistic:no')],
+    ])
+
+
+# ─── Drive folder navigator ────────────────────────────────────────────────
+# Uses artistic_bg_gen._drive_service() so it auths against reel-bot's Drive
+# (REEL_GOOGLE_TOKEN_PICKLE). At each level we list subfolders + a "use this
+# folder" button. Navigation is generic — works for any Drive tree depth.
+
+DRIVE_FOLDERS_PAGE_SIZE = 25  # cap inline-keyboard rows per page
+
+
+def _drive_list_subfolders(parent_id):
+    svc = artistic_bg_gen._drive_service()
+    res = svc.files().list(
+        q=(f"'{parent_id}' in parents and trashed=false and "
+           f"mimeType='application/vnd.google-apps.folder'"),
+        fields='files(id,name)',
+        orderBy='name',
+        pageSize=200,
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
+    ).execute()
+    return res.get('files') or []
+
+
+def _drive_list_root_folders():
+    """List folders directly under the user's My Drive root.
+    We use 'root' as the parent id — Drive's documented alias for the user's root."""
+    return _drive_list_subfolders('root')
+
+
+def _drive_nav_kb(folders, can_pick_current):
+    """Build inline keyboard: one button per subfolder, plus 'Use this folder'
+    + '⬆ Up' (if not at root). Each subfolder button descends one level."""
+    rows = []
+    for f in folders[:DRIVE_FOLDERS_PAGE_SIZE]:
+        rows.append([InlineKeyboardButton(
+            f"📁 {f['name'][:40]}",
+            callback_data=f"imgwiz:drive_descend:{f['id']}",
+        )])
+    if can_pick_current:
+        rows.append([InlineKeyboardButton(
+            "📌 Use THIS folder for the picture upload",
+            callback_data='imgwiz:drive_pick_current')])
+        rows.append([InlineKeyboardButton(
+            "⬆ Up one level", callback_data='imgwiz:drive_up')])
+    rows.append([InlineKeyboardButton(
+        "⏭ Skip Drive (continue)", callback_data='imgwiz:drive_skip')])
+    return InlineKeyboardMarkup(rows)
+
+
+def _drive_breadcrumb(stack):
+    return ' › '.join((nm or 'Drive root') for _, nm in stack) if stack else 'Drive root'
+
+
+async def _send_drive_nav(msg, state, parent_id, parent_name):
+    """Send the folder list at `parent_id`. parent_name purely for breadcrumb."""
+    folders = await asyncio.to_thread(_drive_list_subfolders, parent_id)
+    # Track breadcrumb: if user descended, append; if regenerated at same level, don't
+    if not state.get('drive_nav_stack'):
+        state['drive_nav_stack'] = [(parent_id, parent_name)]
+    elif state['drive_nav_stack'][-1][0] != parent_id:
+        state['drive_nav_stack'].append((parent_id, parent_name))
+    crumb = _drive_breadcrumb(state['drive_nav_stack'])
+    can_pick = (state['drive_nav_stack'] and state['drive_nav_stack'][-1][0] != 'root')
+    if not folders and not can_pick:
+        await msg.reply_text(
+            f"📁 *{crumb}*\n\n_(empty)_ — pick a different folder or skip.",
+            parse_mode='Markdown',
+            reply_markup=_drive_nav_kb([], False))
+        return
+    await msg.reply_text(
+        f"📁 *{crumb}*\n\n"
+        f"Pick a subfolder to descend, '📌 Use THIS folder' to choose the "
+        f"current one (all its images get pushed), '⬆ Up' to go back, or "
+        f"⏭ Skip to skip Drive entirely.",
+        parse_mode='Markdown',
+        reply_markup=_drive_nav_kb(folders, can_pick))
+
+
+# ─── ADB helpers (independent of ig_automation) ─────────────────────────────
 
 def _adb(adb_addr, *args, timeout=15):
     return subprocess.run(['adb', '-s', adb_addr] + list(args),
@@ -175,14 +257,11 @@ def _adb(adb_addr, *args, timeout=15):
 
 
 def _start_and_get_adb(phone_id):
-    """Boot phone (60s), enable ADB, return (ip, port, pwd, err)."""
     _, err = _geelark_post('/phone/start', {'ids': [phone_id]})
-    if err:
-        return None, None, None, f'/phone/start: {err}'
+    if err: return None, None, None, f'/phone/start: {err}'
     _geelark_boot_wait(phone_id, sleep_s=60)
     _, err = _geelark_post('/adb/setStatus', {'ids': [phone_id], 'open': True})
-    if err:
-        return None, None, None, f'/adb/setStatus: {err}'
+    if err: return None, None, None, f'/adb/setStatus: {err}'
     for attempt in range(8):
         time.sleep(8 if attempt else 3)
         data, _ = _geelark_post('/adb/getData', {'ids': [phone_id]})
@@ -192,17 +271,12 @@ def _start_and_get_adb(phone_id):
                 it = items[0]
                 ip = it.get('ip'); port = it.get('port')
                 pwd = it.get('pwd') or it.get('password')
-                if ip:
-                    return ip, port, pwd, None
+                if ip: return ip, port, pwd, None
     return None, None, None, '/adb/getData never returned an endpoint'
 
 
 def _push_images_to_phone(adb_ip, adb_port, glogin_pwd, image_paths):
-    """Connect ADB → glogin → push each file → broadcast media scan → disconnect.
-    Returns (pushed_count, err_or_None).
-    """
-    if not image_paths:
-        return 0, 'no images to push'
+    if not image_paths: return 0, None
     adb_addr = f'{adb_ip}:{adb_port}'
     subprocess.run(['adb', 'disconnect', adb_addr], capture_output=True, timeout=10)
     time.sleep(1)
@@ -234,6 +308,35 @@ def _push_images_to_phone(adb_ip, adb_port, glogin_pwd, image_paths):
     return pushed, None
 
 
+# ─── Drive image downloader (for the picked Drive folder) ───────────────────
+
+def _download_drive_folder_images(folder_id, dest_dir='/tmp'):
+    """Download every image in a Drive folder to local files. Returns list of paths."""
+    svc = artistic_bg_gen._drive_service()
+    page_token = None
+    saved = []
+    while True:
+        q = (f"'{folder_id}' in parents and trashed=false and "
+             f"(mimeType contains 'image/' or "
+             f"name contains '.jpg' or name contains '.jpeg' or name contains '.png')")
+        res = svc.files().list(q=q, fields='nextPageToken, files(id,name,mimeType)',
+                               pageSize=100, pageToken=page_token,
+                               supportsAllDrives=True,
+                               includeItemsFromAllDrives=True).execute()
+        for f in res.get('files') or []:
+            try:
+                b = artistic_bg_gen._download_image_bytes(svc, f['id'])
+                local_name = f"imgwiz_drive_{f['id']}_{f['name'].replace(' ', '_')}"
+                local_path = os.path.join(dest_dir, local_name)
+                with open(local_path, 'wb') as fh: fh.write(b)
+                saved.append(local_path)
+            except Exception as e:
+                logger.warning(f"[imgwiz] Drive download {f['name']} err: {e}")
+        page_token = res.get('nextPageToken')
+        if not page_token: break
+    return saved
+
+
 # ─── Callback dispatcher ────────────────────────────────────────────────────
 
 async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,18 +347,17 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == 'imgwiz:cancel':
         context.user_data.pop('imgwiz', None)
+        context.user_data.pop('expecting_imgwiz_phone_name', None)
         await query.edit_message_text("❌ cancelled.")
         return
 
     if data.startswith('imgwiz:mode:'):
         mode = data.split(':', 2)[2]
         if mode == 'create_plus_images':
-            # Hand off to the original /geelark_profile_open create-flow.
-            # Commit 2 will wrap that flow with the per-profile image step.
             await query.edit_message_text(
-                "🆕 *Create + images* — using the existing create flow for now. "
-                "The per-profile image step lands in the next commit; today this "
-                "path just creates the phones as before.",
+                "🆕 *Create + images* — using existing create flow. "
+                "(The per-profile image step in the create flow lands "
+                "in a follow-up commit; today this path just creates the phones.)",
                 parse_mode='Markdown')
             from geelark_open import geelark_profile_open_command_legacy_entry
             await geelark_profile_open_command_legacy_entry(query.message, context)
@@ -265,16 +367,17 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'mode': 'images_only',
                 'batch': [],
                 'idx': 0,
-                'images': [],
-                'last_bg_mode': None,
                 'sub_step': 'pick_phone',
+                'last_bg_mode': None,
+                'last_bg_path': None,
+                'drive_nav_stack': [],
             }
             context.user_data['expecting_imgwiz_phone_name'] = True
             await query.edit_message_text(
                 "🖼 *Add images to existing GeeLark profiles*\n\n"
-                "Send the *GoLogin/GeeLark profile name* of the first phone "
+                "Send the GoLogin/GeeLark profile name of the first phone "
                 "(e.g. `caro motorcycle`). After each one you can add more, "
-                "or type `done` to start the image work on the batch.",
+                "or type `done` to start the selection wizard for each.",
                 parse_mode='Markdown')
             return
 
@@ -282,108 +385,272 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ wizard state expired — run /geelark_profile_open again.")
         return
 
-    # bg style picked → generate + show review
+    # ─── bg flow ────────────────────────────────────────────────────────────
     if data.startswith('imgwiz:bg_style:'):
         mode = data.split(':', 2)[2]
         if mode == 'skip':
-            # No bg, jump to Drive ask (Commit 2 fills in Drive)
-            await _ask_drive_yes_no(query.message)
+            await _ask_artistic(query.message, state)
             return
         state['last_bg_mode'] = mode
-        holder = [None]
-        await _emit_bg(query.message, mode, holder)
-        state['last_bg_path'] = holder[0]
+        await _emit_bg(query.message, mode, state)
         return
 
-    # bg review action: keep / regen / skip
     if data.startswith('imgwiz:bg_review:'):
         action = data.split(':', 2)[2]
         if action == 'keep':
+            entry = state['batch'][state['idx']]
             if state.get('last_bg_path'):
-                state['images'].append(state['last_bg_path'])
+                entry.setdefault('bg_paths', []).append(state['last_bg_path'])
             await query.edit_message_caption(
                 caption=f"✅ kept — {os.path.basename(state['last_bg_path'])}",
                 reply_markup=None)
-            # After keep, ask Drive question (Commit 2 wires it up)
-            await _ask_drive_yes_no(query.message)
+            await _ask_artistic(query.message, state)
             return
         if action == 'regen':
-            mode = state.get('last_bg_mode') or 'solid'
-            holder = [None]
-            await _emit_bg(query.message, mode, holder)
-            state['last_bg_path'] = holder[0]
+            await _emit_bg(query.message, state.get('last_bg_mode') or 'solid', state)
             return
         if action == 'skip':
-            await query.edit_message_caption(
-                caption="⏭ skipped this BG.", reply_markup=None)
-            await _ask_drive_yes_no(query.message)
+            await query.edit_message_caption(caption="⏭ skipped this BG.",
+                                              reply_markup=None)
+            await _ask_artistic(query.message, state)
             return
 
-    # Drive skip → push what we have, advance to next profile
-    if data.startswith('imgwiz:drive_branch:skip'):
-        await _push_and_advance(query.message, context)
+    # ─── artistic flow ──────────────────────────────────────────────────────
+    if data.startswith('imgwiz:artistic:'):
+        choice = data.split(':', 2)[2]
+        entry = state['batch'][state['idx']]
+        entry['artistic_yes'] = (choice == 'yes')
+        await query.edit_message_text(
+            f"{'🎨 will generate an artistic background at execution time' if entry['artistic_yes'] else '⏭ skipped artistic'} "
+            f"for `{entry['name']}`.",
+            parse_mode='Markdown')
+        await _ask_drive(query.message, state)
+        return
+
+    # ─── Drive navigator ────────────────────────────────────────────────────
+    if data == 'imgwiz:drive_skip':
+        entry = state['batch'][state['idx']]
+        entry['drive_folder_id'] = None
+        entry['drive_folder_name'] = None
+        state['drive_nav_stack'] = []
+        await query.edit_message_text(
+            f"⏭ skipped Drive picker for `{entry['name']}`.",
+            parse_mode='Markdown')
+        await _advance_or_execute(query.message, context)
+        return
+
+    if data == 'imgwiz:drive_start':
+        await _send_drive_nav(query.message, state, 'root', None)
+        return
+
+    if data == 'imgwiz:drive_up':
+        if state.get('drive_nav_stack') and len(state['drive_nav_stack']) > 1:
+            state['drive_nav_stack'].pop()
+            parent_id, parent_name = state['drive_nav_stack'][-1]
+        else:
+            state['drive_nav_stack'] = []
+            parent_id, parent_name = 'root', None
+        # Pop the destination too so _send_drive_nav re-appends it cleanly
+        if state.get('drive_nav_stack'):
+            state['drive_nav_stack'].pop()
+        await _send_drive_nav(query.message, state, parent_id, parent_name)
+        return
+
+    if data.startswith('imgwiz:drive_descend:'):
+        folder_id = data.split(':', 2)[2]
+        # Resolve folder name from the just-shown level for breadcrumb
+        await _send_drive_nav(query.message, state, folder_id, '…')
+        return
+
+    if data == 'imgwiz:drive_pick_current':
+        if not state.get('drive_nav_stack'):
+            await query.message.reply_text(
+                "⚠️ no folder selected — pick one or skip.")
+            return
+        folder_id, folder_name = state['drive_nav_stack'][-1]
+        entry = state['batch'][state['idx']]
+        entry['drive_folder_id'] = folder_id
+        entry['drive_folder_name'] = folder_name or '(root)'
+        state['drive_nav_stack'] = []
+        await query.message.reply_text(
+            f"📌 picked Drive folder `{entry['drive_folder_name']}` for "
+            f"`{entry['name']}` — every image in it will be pushed at "
+            f"execution time.",
+            parse_mode='Markdown')
+        await _advance_or_execute(query.message, context)
         return
 
 
-async def _push_and_advance(msg, context):
-    """Push the queued images for the current profile, stop the phone, advance
-    to the next profile (or finish the batch)."""
-    state = context.user_data.get('imgwiz')
-    if not state:
-        await msg.reply_text("⚠️ state lost"); return
-    entry = state['batch'][state['idx']]
-    images = state['images']
-    if images:
-        await msg.reply_text(
-            f"📲 booting `{entry['name']}` to push {len(images)} image(s)…",
-            parse_mode='Markdown')
-        ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb, entry['phone_id'])
-        if err:
-            await msg.reply_text(f"❌ `{entry['name']}`: ADB bring-up failed — {err}",
-                                  parse_mode='Markdown')
-        else:
-            pushed, perr = await asyncio.to_thread(_push_images_to_phone,
-                                                    ip, port, pwd, images)
-            if perr:
-                await msg.reply_text(f"⚠️ `{entry['name']}`: push err — {perr}",
-                                      parse_mode='Markdown')
-            else:
-                await msg.reply_text(
-                    f"✅ pushed {pushed}/{len(images)} image(s) to `{entry['name']}`.",
-                    parse_mode='Markdown')
-        # Always stop the phone
-        _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
-        await msg.reply_text(f"🛑 stopped `{entry['name']}`.", parse_mode='Markdown')
-    else:
-        await msg.reply_text(
-            f"⏭ no images queued for `{entry['name']}` — skipping push.",
-            parse_mode='Markdown')
+# ─── Wizard transitions ─────────────────────────────────────────────────────
 
-    # Advance
+async def _ask_artistic(msg, state):
+    state['sub_step'] = 'artistic_question'
+    entry = state['batch'][state['idx']]
+    await msg.reply_text(
+        f"*Step 2 — Artistic background for `{entry['name']}`*\n\n"
+        f"Generate one new image based on 6 random refs from "
+        f"`{artistic_bg_gen.REF_FOLDER_NAME}` (Gemini 3 Pro Image, ~$0.10)?\n\n"
+        f"_The image is generated silently at execution time — no preview._",
+        parse_mode='Markdown',
+        reply_markup=_artistic_kb())
+
+
+async def _ask_drive(msg, state):
+    state['sub_step'] = 'drive_question'
+    entry = state['batch'][state['idx']]
+    await msg.reply_text(
+        f"*Step 3 — Drive folder for `{entry['name']}`*\n\n"
+        f"Pick a Drive folder whose images should all get pushed to this phone?",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗂 Yes — browse Drive",
+                                  callback_data='imgwiz:drive_start')],
+            [InlineKeyboardButton("⏭ No, skip Drive",
+                                  callback_data='imgwiz:drive_skip')],
+        ]))
+
+
+async def _advance_or_execute(msg, context):
+    """End of selection for the current profile. Either advance to the next
+    profile (re-enter bg style pick), or kick off execution."""
+    state = context.user_data.get('imgwiz')
+    if not state: return
     state['idx'] += 1
-    state['images'] = []
     state['last_bg_mode'] = None
     state['last_bg_path'] = None
-    if state['idx'] >= len(state['batch']):
-        context.user_data.pop('imgwiz', None)
+    if state['idx'] < len(state['batch']):
+        next_entry = state['batch'][state['idx']]
         await msg.reply_text(
-            "🟢 *All done.* Image work complete on the batch.",
-            parse_mode='Markdown')
+            f"➡️ next profile: `{next_entry['name']}` "
+            f"({state['idx']+1}/{len(state['batch'])})\n\n"
+            f"*Step 1 — Standard background.* Pick a style:",
+            parse_mode='Markdown',
+            reply_markup=_bg_pick_style_kb())
         return
-    # Next profile — restart the image flow
-    next_entry = state['batch'][state['idx']]
+    # All selection done — execute
+    await _execute_batch(msg, context)
+
+
+# ─── EXECUTION phase ────────────────────────────────────────────────────────
+
+async def _execute_batch(msg, context):
+    state = context.user_data.get('imgwiz')
+    if not state:
+        await msg.reply_text("⚠️ state lost before execution.")
+        return
+    batch = state['batch']
     await msg.reply_text(
-        f"➡️ next profile: `{next_entry['name']}` "
-        f"({state['idx']+1}/{len(state['batch'])}).\nPick a background style:",
-        reply_markup=_bg_pick_style_kb(),
+        f"🚀 *Executing image work on {len(batch)} profile(s)…*\n"
+        f"For each profile I'll: generate artistic (if chosen), download Drive "
+        f"images (if chosen), boot phone, push all to /sdcard/Pictures, stop phone.",
         parse_mode='Markdown')
 
+    results = []
+    for i, entry in enumerate(batch):
+        await msg.reply_text(
+            f"⏳ [{i+1}/{len(batch)}] `{entry['name']}` — starting",
+            parse_mode='Markdown')
+        all_paths = list(entry.get('bg_paths') or [])
+        per_profile_err = None
 
-# ─── Text router entry: name-collection for images-only mode ────────────────
+        # 1. Artistic generation (if flagged)
+        if entry.get('artistic_yes'):
+            await msg.reply_text(
+                f"   🎨 generating artistic image for `{entry['name']}`…",
+                parse_mode='Markdown')
+            try:
+                drive_id, local_path, err = await asyncio.to_thread(
+                    artistic_bg_gen.generate_artistic_bg,
+                    entry['name'],   # save to Drive subfolder named after the profile
+                    None)
+                if err:
+                    await msg.reply_text(f"   ⚠️ artistic err: `{err}`",
+                                          parse_mode='Markdown')
+                elif local_path:
+                    all_paths.append(local_path)
+                    await msg.reply_text(
+                        f"   ✅ artistic generated + saved to Drive (id `{drive_id}`)",
+                        parse_mode='Markdown')
+            except Exception as e:
+                await msg.reply_text(f"   ⚠️ artistic crashed: `{type(e).__name__}: {e}`",
+                                      parse_mode='Markdown')
+
+        # 2. Drive folder images (if picked)
+        if entry.get('drive_folder_id'):
+            await msg.reply_text(
+                f"   📁 downloading images from `{entry.get('drive_folder_name')}`…",
+                parse_mode='Markdown')
+            try:
+                paths = await asyncio.to_thread(
+                    _download_drive_folder_images,
+                    entry['drive_folder_id'], '/tmp')
+                all_paths.extend(paths)
+                await msg.reply_text(
+                    f"   ✅ {len(paths)} image(s) downloaded from Drive",
+                    parse_mode='Markdown')
+            except Exception as e:
+                await msg.reply_text(
+                    f"   ⚠️ Drive download err: `{type(e).__name__}: {e}`",
+                    parse_mode='Markdown')
+
+        # 3. Boot phone + push everything
+        if all_paths:
+            await msg.reply_text(
+                f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
+                parse_mode='Markdown')
+            ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
+                                                          entry['phone_id'])
+            if err:
+                per_profile_err = f'ADB bring-up: {err}'
+                await msg.reply_text(f"   ❌ `{entry['name']}`: {per_profile_err}",
+                                      parse_mode='Markdown')
+            else:
+                pushed, perr = await asyncio.to_thread(_push_images_to_phone,
+                                                        ip, port, pwd, all_paths)
+                if perr:
+                    per_profile_err = perr
+                    await msg.reply_text(f"   ⚠️ push err: {perr}",
+                                          parse_mode='Markdown')
+                else:
+                    await msg.reply_text(
+                        f"   ✅ pushed {pushed}/{len(all_paths)} image(s) to `{entry['name']}`",
+                        parse_mode='Markdown')
+            _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
+            await msg.reply_text(f"   🛑 stopped `{entry['name']}`.",
+                                  parse_mode='Markdown')
+        else:
+            await msg.reply_text(
+                f"   ⏭ no images queued for `{entry['name']}` — nothing to push.",
+                parse_mode='Markdown')
+
+        results.append({
+            'name': entry['name'], 'phone_id': entry['phone_id'],
+            'images_pushed': len([p for p in all_paths if os.path.exists(p)]),
+            'err': per_profile_err,
+        })
+
+    # ─── Final summary
+    ok_count = sum(1 for r in results if not r['err'])
+    lines = []
+    if ok_count == len(results):
+        lines.append(f"🟢 *ALL DONE — {ok_count}/{len(results)} profile(s) processed.*")
+    elif ok_count > 0:
+        lines.append(f"🟡 *{ok_count}/{len(results)} processed, {len(results)-ok_count} had issues.*")
+    else:
+        lines.append(f"🔴 *0/{len(results)} succeeded.*")
+    lines.append("")
+    for r in results:
+        if r['err']:
+            lines.append(f"  ❌ `{r['name']}` — {r['err']}")
+        else:
+            lines.append(f"  ✅ `{r['name']}` — pushed {r['images_pushed']} image(s)")
+    await msg.reply_text('\n'.join(lines), parse_mode='Markdown')
+    context.user_data.pop('imgwiz', None)
+
+
+# ─── Text router entry: name-collection for the batch ──────────────────────
 
 async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the user typing GeeLark profile names while in images_only
-    name-collection mode. Returns True if handled."""
     if not context.user_data.get('expecting_imgwiz_phone_name'):
         return False
     state = context.user_data.get('imgwiz')
@@ -399,13 +666,12 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
             return True
         first = state['batch'][0]
         await update.message.reply_text(
-            f"🚀 starting image work on {len(state['batch'])} profile(s).\n\n"
-            f"➡️ first: `{first['name']}` (1/{len(state['batch'])}).\n"
-            f"Pick a background style:",
-            reply_markup=_bg_pick_style_kb(),
-            parse_mode='Markdown')
+            f"🚀 *Starting selection for {len(state['batch'])} profile(s).*\n\n"
+            f"➡️ first: `{first['name']}` (1/{len(state['batch'])})\n\n"
+            f"*Step 1 — Standard background.* Pick a style:",
+            parse_mode='Markdown',
+            reply_markup=_bg_pick_style_kb())
         return True
-    # Look up the GeeLark phone by name
     await update.message.reply_text(f"🔍 finding GeeLark phone `{text}`…",
                                      parse_mode='Markdown')
     phone_id, err = await asyncio.to_thread(_find_geelark_phone_by_name, text)
@@ -418,7 +684,13 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"⚠️ `{text}` already queued — skipping.",
                                           parse_mode='Markdown')
         return True
-    state['batch'].append({'name': text, 'phone_id': phone_id})
+    state['batch'].append({
+        'name': text, 'phone_id': phone_id,
+        'bg_paths': [],
+        'artistic_yes': False,
+        'drive_folder_id': None,
+        'drive_folder_name': None,
+    })
     queue = '\n'.join(f"  {i+1}. `{e['name']}`" for i, e in enumerate(state['batch']))
     await update.message.reply_text(
         f"✅ added `{text}`. Queue ({len(state['batch'])}):\n{queue}\n\n"
@@ -428,7 +700,5 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 def _find_geelark_phone_by_name(name):
-    """Local helper — wraps geelark_open's phone-by-name lookup so we can
-    asyncio.to_thread it cleanly."""
     from geelark_open import _geelark_find_phone_by_name as _f
     return _f(name)
