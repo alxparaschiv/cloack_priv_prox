@@ -51,6 +51,7 @@ import ig_setup
 import drive_image_picker
 import rental
 import geelark_image_wizard
+import artistic_bg_gen
 
 
 logging.basicConfig(
@@ -180,7 +181,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n"
         "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
         "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
-        "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n",
+        "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n"
+        "🎨 /artistic_bg — Generate a new background image from 6 random Drive refs\n",
         parse_mode='HTML')
 
 
@@ -202,6 +204,7 @@ async def post_init(application):
         BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
         BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
         BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
+        BotCommand("artistic_bg",       "Generate a new background image from 6 random Drive refs"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -226,6 +229,7 @@ async def post_init(application):
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
         ("📲 /geelark_profile_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
+        ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "GOOGLE_TOKEN_PICKLE"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
@@ -306,6 +310,7 @@ def main():
     application.add_handler(CommandHandler("ig_setup_private", ig_setup.ig_setup_command))
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
+    application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
