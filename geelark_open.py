@@ -291,10 +291,27 @@ def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
 # ─── Telegram handlers ──────────────────────────────────────────────────────
 
 async def geelark_profile_open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point. Initialises the batch selection."""
+    """Entry point. Shows a mode-select first:
+      - 🆕 Create + add images  (current create-batch flow, image step lands in
+        a follow-up commit)
+      - 🖼 Add images to existing GeeLark profiles  (image-only flow in
+        geelark_image_wizard)
+    Original create-batch behavior is preserved verbatim — only the entry
+    prompt is wrapped by the mode-select.
+    """
+    import geelark_image_wizard
+    await geelark_image_wizard.show_mode_select(update.message)
+
+
+async def geelark_profile_open_command_legacy_entry(msg, context):
+    """The original /geelark_profile_open prompt — kicks off the create-batch
+    name-collection flow. Called by the mode-select callback when the user
+    picks 'Create + add images'. Kept as a named function so the wizard can
+    hand off to it without duplicating the prompt text.
+    """
     context.user_data['geelark_batch'] = []
     context.user_data['expecting_geelark_name'] = True
-    await update.message.reply_text(
+    await msg.reply_text(
         "📱 *GeeLark profile opener*\n\n"
         "Send the *GoLogin profile name* for the first GeeLark phone "
         "(e.g. `Caroline Goni 5`).\n\n"

@@ -50,6 +50,7 @@ import geelark_open
 import ig_setup
 import drive_image_picker
 import rental
+import geelark_image_wizard
 
 
 logging.basicConfig(
@@ -132,6 +133,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_geelark_stop_name'):
         await geelark_open.geelark_stop_text_received(update, context)
         return
+    if context.user_data.get('expecting_imgwiz_phone_name'):
+        if await geelark_image_wizard.imgwiz_text_received(update, context):
+            return
     if context.user_data.get('ig_setup_state'):
         await ig_setup.ig_setup_text_received(update, context)
         return
@@ -317,6 +321,8 @@ def main():
         proxy.proxy_callback, pattern=r'^proxy:'))
     application.add_handler(CallbackQueryHandler(
         drive_image_picker.drive_pick_callback, pattern=r'^drive_pick:'))
+    application.add_handler(CallbackQueryHandler(
+        geelark_image_wizard.imgwiz_callback, pattern=r'^imgwiz:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
