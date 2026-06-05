@@ -44,7 +44,11 @@ import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from geelark_open import _geelark_post, _geelark_boot_wait
+from geelark_open import (
+    _geelark_post, _geelark_boot_wait,
+    _gologin_find_profile_by_name, _gologin_get_proxy,
+    _geelark_create_phone, _geelark_install_instagram,
+)
 import artistic_bg_gen
 
 logger = logging.getLogger(__name__)
@@ -260,6 +264,13 @@ def _start_and_get_adb(phone_id):
     _, err = _geelark_post('/phone/start', {'ids': [phone_id]})
     if err: return None, None, None, f'/phone/start: {err}'
     _geelark_boot_wait(phone_id, sleep_s=60)
+    return _adb_bring_up_only(phone_id)
+
+
+def _adb_bring_up_only(phone_id):
+    """Phone is already running — just enable ADB + poll for the endpoint.
+    Used when the create-flow's IG install already booted the phone, so we
+    don't re-boot for the image push."""
     _, err = _geelark_post('/adb/setStatus', {'ids': [phone_id], 'open': True})
     if err: return None, None, None, f'/adb/setStatus: {err}'
     for attempt in range(8):
@@ -353,33 +364,39 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith('imgwiz:mode:'):
         mode = data.split(':', 2)[2]
+        if mode not in ('create_plus_images', 'images_only'):
+            await query.edit_message_text("⚠️ unknown mode."); return
+        context.user_data['imgwiz'] = {
+            'mode': mode,
+            'batch': [],
+            'idx': 0,
+            'sub_step': 'pick_profile',
+            'last_bg_mode': None,
+            'last_bg_path': None,
+            'drive_nav_stack': [],
+        }
+        context.user_data['expecting_imgwiz_phone_name'] = True
         if mode == 'create_plus_images':
             await query.edit_message_text(
-                "🆕 *Create + images* — using existing create flow. "
-                "(The per-profile image step in the create flow lands "
-                "in a follow-up commit; today this path just creates the phones.)",
+                "🆕 *Create + add images*\n\n"
+                "Send the *GoLogin profile name* of the first GeeLark phone "
+                "to create (e.g. `Caroline Goni 5`). I'll validate against "
+                "GoLogin + grab the proxy.\n\n"
+                "After each one you can add more, or type `done` to start "
+                "the image-selection wizard. NOTHING gets created until "
+                "ALL selections are done — then the bot executes everything "
+                "in one batch (create phones, install IG, generate images, "
+                "push to phones, stop).",
                 parse_mode='Markdown')
-            from geelark_open import geelark_profile_open_command_legacy_entry
-            await geelark_profile_open_command_legacy_entry(query.message, context)
-            return
-        if mode == 'images_only':
-            context.user_data['imgwiz'] = {
-                'mode': 'images_only',
-                'batch': [],
-                'idx': 0,
-                'sub_step': 'pick_phone',
-                'last_bg_mode': None,
-                'last_bg_path': None,
-                'drive_nav_stack': [],
-            }
-            context.user_data['expecting_imgwiz_phone_name'] = True
+        else:
             await query.edit_message_text(
                 "🖼 *Add images to existing GeeLark profiles*\n\n"
-                "Send the GoLogin/GeeLark profile name of the first phone "
+                "Send the GeeLark profile name of the first phone "
                 "(e.g. `caro motorcycle`). After each one you can add more, "
-                "or type `done` to start the selection wizard for each.",
+                "or type `done` to start the selection wizard. Phones are "
+                "booted only at execution time, after all selections are done.",
                 parse_mode='Markdown')
-            return
+        return
 
     if not state:
         await query.edit_message_text("⚠️ wizard state expired — run /geelark_profile_open again.")
@@ -545,6 +562,7 @@ async def _execute_batch(msg, context):
         f"images (if chosen), boot phone, push all to /sdcard/Pictures, stop phone.",
         parse_mode='Markdown')
 
+    mode = state.get('mode', 'images_only')
     results = []
     for i, entry in enumerate(batch):
         await msg.reply_text(
@@ -552,6 +570,47 @@ async def _execute_batch(msg, context):
             parse_mode='Markdown')
         all_paths = list(entry.get('bg_paths') or [])
         per_profile_err = None
+
+        # 0. (create-plus-images only) create the GeeLark phone + install IG
+        if mode == 'create_plus_images' and not entry.get('phone_id'):
+            await msg.reply_text(
+                f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
+                parse_mode='Markdown')
+            phone_id, err = await asyncio.to_thread(
+                _geelark_create_phone, entry['name'], entry['proxy'])
+            if err or not phone_id:
+                per_profile_err = f'phone create: {err}'
+                await msg.reply_text(f"   ❌ phone create failed: `{err}`",
+                                      parse_mode='Markdown')
+                results.append({'name': entry['name'], 'phone_id': None,
+                                 'images_pushed': 0, 'err': per_profile_err})
+                continue
+            entry['phone_id'] = phone_id
+            await msg.reply_text(
+                f"   ✅ phone created (`{phone_id}`). Starting + booting…",
+                parse_mode='Markdown')
+            _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+            if start_err:
+                per_profile_err = f'/phone/start: {start_err}'
+                await msg.reply_text(f"   ❌ /phone/start failed: `{start_err}`",
+                                      parse_mode='Markdown')
+                results.append({'name': entry['name'], 'phone_id': phone_id,
+                                 'images_pushed': 0, 'err': per_profile_err})
+                continue
+            await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
+            await msg.reply_text(
+                f"   ✅ booted. Installing Instagram (~2-4 min)…",
+                parse_mode='Markdown')
+            ig_ok, ig_msg = await asyncio.to_thread(_geelark_install_instagram, phone_id)
+            if not ig_ok:
+                await msg.reply_text(
+                    f"   ⚠️ IG install: {ig_msg} (continuing with image push anyway)",
+                    parse_mode='Markdown')
+            else:
+                await msg.reply_text(f"   ✅ Instagram installed.",
+                                      parse_mode='Markdown')
+            # phone is already running — we keep it up for the ADB push below
+            entry['_already_running'] = True
 
         # 1. Artistic generation (if flagged)
         if entry.get('artistic_yes'):
@@ -593,13 +652,20 @@ async def _execute_batch(msg, context):
                     f"   ⚠️ Drive download err: `{type(e).__name__}: {e}`",
                     parse_mode='Markdown')
 
-        # 3. Boot phone + push everything
+        # 3. ADB bring-up + push everything
         if all_paths:
-            await msg.reply_text(
-                f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
-                parse_mode='Markdown')
-            ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
-                                                          entry['phone_id'])
+            if entry.get('_already_running'):
+                await msg.reply_text(
+                    f"   🔌 phone already running — enabling ADB + pushing {len(all_paths)} image(s)…",
+                    parse_mode='Markdown')
+                ip, port, pwd, err = await asyncio.to_thread(_adb_bring_up_only,
+                                                              entry['phone_id'])
+            else:
+                await msg.reply_text(
+                    f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
+                    parse_mode='Markdown')
+                ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
+                                                              entry['phone_id'])
             if err:
                 per_profile_err = f'ADB bring-up: {err}'
                 await msg.reply_text(f"   ❌ `{entry['name']}`: {per_profile_err}",
@@ -618,6 +684,13 @@ async def _execute_batch(msg, context):
             _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
             await msg.reply_text(f"   🛑 stopped `{entry['name']}`.",
                                   parse_mode='Markdown')
+        elif entry.get('_already_running'):
+            # create-plus-images mode but no images queued — still stop the
+            # phone since we started it for IG install
+            _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
+            await msg.reply_text(
+                f"   ⏭ no images for `{entry['name']}` — IG installed, phone stopped.",
+                parse_mode='Markdown')
         else:
             await msg.reply_text(
                 f"   ⏭ no images queued for `{entry['name']}` — nothing to push.",
@@ -672,25 +745,60 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode='Markdown',
             reply_markup=_bg_pick_style_kb())
         return True
-    await update.message.reply_text(f"🔍 finding GeeLark phone `{text}`…",
-                                     parse_mode='Markdown')
-    phone_id, err = await asyncio.to_thread(_find_geelark_phone_by_name, text)
-    if err or not phone_id:
+    # Mode-dependent name lookup:
+    #   create_plus_images → validate GoLogin profile + grab proxy (phone
+    #                        will be created at execution time)
+    #   images_only        → validate existing GeeLark phone
+    mode = state.get('mode', 'images_only')
+    if mode == 'create_plus_images':
         await update.message.reply_text(
-            f"❌ {err or 'not found'}\nTry another name, or `done`.",
-            parse_mode='Markdown')
-        return True
-    if any(e['name'].lower() == text.lower() for e in state['batch']):
-        await update.message.reply_text(f"⚠️ `{text}` already queued — skipping.",
-                                          parse_mode='Markdown')
-        return True
-    state['batch'].append({
-        'name': text, 'phone_id': phone_id,
-        'bg_paths': [],
-        'artistic_yes': False,
-        'drive_folder_id': None,
-        'drive_folder_name': None,
-    })
+            f"🔍 finding GoLogin profile `{text}`…", parse_mode='Markdown')
+        gologin_id, err = await asyncio.to_thread(_gologin_find_profile_by_name, text)
+        if err or not gologin_id:
+            await update.message.reply_text(
+                f"❌ {err or 'not found'}\nTry another name, or `done`.",
+                parse_mode='Markdown')
+            return True
+        proxy, err = await asyncio.to_thread(_gologin_get_proxy, gologin_id)
+        if err or not proxy:
+            await update.message.reply_text(
+                f"❌ proxy fetch failed: {err}", parse_mode='Markdown')
+            return True
+        if any(e['name'].lower() == text.lower() for e in state['batch']):
+            await update.message.reply_text(f"⚠️ `{text}` already queued — skipping.",
+                                              parse_mode='Markdown')
+            return True
+        state['batch'].append({
+            'name': text,
+            'gologin_id': gologin_id,
+            'proxy': proxy,
+            'phone_id': None,         # filled in at execution time
+            'bg_paths': [],
+            'artistic_yes': False,
+            'drive_folder_id': None,
+            'drive_folder_name': None,
+        })
+    else:
+        await update.message.reply_text(f"🔍 finding GeeLark phone `{text}`…",
+                                         parse_mode='Markdown')
+        phone_id, err = await asyncio.to_thread(_find_geelark_phone_by_name, text)
+        if err or not phone_id:
+            await update.message.reply_text(
+                f"❌ {err or 'not found'}\nTry another name, or `done`.",
+                parse_mode='Markdown')
+            return True
+        if any(e['name'].lower() == text.lower() for e in state['batch']):
+            await update.message.reply_text(f"⚠️ `{text}` already queued — skipping.",
+                                              parse_mode='Markdown')
+            return True
+        state['batch'].append({
+            'name': text, 'phone_id': phone_id,
+            'gologin_id': None, 'proxy': None,
+            'bg_paths': [],
+            'artistic_yes': False,
+            'drive_folder_id': None,
+            'drive_folder_name': None,
+        })
     queue = '\n'.join(f"  {i+1}. `{e['name']}`" for i, e in enumerate(state['batch']))
     await update.message.reply_text(
         f"✅ added `{text}`. Queue ({len(state['batch'])}):\n{queue}\n\n"
