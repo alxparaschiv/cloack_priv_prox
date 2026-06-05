@@ -49,6 +49,7 @@ import setup_pipeline
 import geelark_open
 import ig_setup
 import drive_image_picker
+import rental
 
 
 logging.basicConfig(
@@ -173,7 +174,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
         "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n"
         "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n"
-        "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n",
+        "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
+        "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
+        "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n",
         parse_mode='HTML')
 
 
@@ -193,6 +196,8 @@ async def post_init(application):
         BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
         BotCommand("geelark_stop_phone", "Batch-stop GeeLark phones when IG setup is done"),
         BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
+        BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
+        BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -295,6 +300,8 @@ def main():
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
     application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
     application.add_handler(CommandHandler("ig_setup_private", ig_setup.ig_setup_command))
+    application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
+    application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
