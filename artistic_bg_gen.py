@@ -1,10 +1,12 @@
 """/artistic_bg — Generate a new unique image whose style matches a folder
 of reference images in Drive.
 
-Engine: WaveSpeed `alibaba/wan-2.7/image-edit-pro` (multi-reference capable
-per reel_bot's notes, ~$0.06/img). Picks 6 random images from the reference
-folder, sends them all in the `images` array with a prompt that asks for a
-new visually-distinct image in the same aesthetic.
+Engine: WaveSpeed `google/nano-banana-pro/edit` (Gemini 3 Pro Image,
+~$0.07-0.20/img). The `images` array accepts multiple references — same
+pattern reel_bot uses when it sends a model+pose pair. Picks 6 random
+images from the reference folder, sends them all in the `images` array
+with a prompt that asks for a new visually-distinct image in the same
+aesthetic.
 
 Standalone Telegram command first (this commit). The image wizard
 integration lands next.
@@ -46,7 +48,7 @@ WAVESPEED_API_KEY = os.environ.get('WAVESPEED_API_KEY', '')
 REF_FOLDER_NAME    = 'Images bg goth artistic'
 OUTPUT_ROOT_NAME   = 'Images generated for account setup in GeeLark'
 REFS_PER_CALL      = 6
-ENGINE             = 'wan-2.7-pro'  # multi-reference capable; ~$0.06/img
+ENGINE             = 'nano-banana-pro'  # Gemini 3 Pro Image; ~$0.07-0.20/img
 
 # Prompt designed for no-people aesthetic-matching backgrounds. The model
 # tends to insert subjects unless explicitly told not to.
@@ -155,17 +157,24 @@ def _upload_bytes_to_drive(svc, parent_folder_id, file_name, content_bytes,
 # ─── WaveSpeed ─────────────────────────────────────────────────────────────
 
 def _wavespeed_submit_multi_ref(images_data_uris, prompt=PROMPT,
-                                  engine=ENGINE, size='1024*1024'):
-    """Submit a multi-reference image-edit task. Returns request_id or raises."""
+                                  engine=ENGINE,
+                                  aspect_ratio='1:1', resolution='2k'):
+    """Submit a multi-reference image-edit task to nano-banana-pro.
+    Returns request_id or raises.
+
+    Body shape matches reel_bot.wavespeed_submit_image_edit's nano-banana
+    branch: aspect_ratio + resolution (NOT size). The images[] array can
+    hold multiple data-URI references; nano-banana-pro reads all of them.
+    """
     if not WAVESPEED_API_KEY:
         raise RuntimeError("WAVESPEED_API_KEY not set in env")
-    url = f"{WAVESPEED_API_BASE}/alibaba/wan-2.7/image-edit-pro"
+    url = f"{WAVESPEED_API_BASE}/google/{engine}/edit"
     body = {
         'prompt': prompt,
         'images': images_data_uris,   # list of data:image/jpeg;base64,... strings
-        'size': size,
+        'aspect_ratio': aspect_ratio,
+        'resolution': resolution,
         'output_format': 'jpeg',
-        'seed': -1,
         'enable_sync_mode': False,
         'enable_base64_output': False,
     }
@@ -294,7 +303,7 @@ async def artistic_bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await msg.reply_text(
         "🎨 *Artistic background generator*\n\n"
         f"Reference folder: `{REF_FOLDER_NAME}`\n"
-        f"Engine: `{ENGINE}` (~$0.06/img)\n"
+        f"Engine: `{ENGINE}` (Gemini 3 Pro Image, ~$0.07-0.20/img)\n"
         f"Picking {REFS_PER_CALL} random refs + generating…",
         parse_mode='Markdown')
 
