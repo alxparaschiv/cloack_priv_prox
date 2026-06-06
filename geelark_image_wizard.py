@@ -344,15 +344,28 @@ def _geelark_upload_to_phone_gallery(phone_id, image_paths, send_progress=None):
             logger.warning(f"[imgwiz] OSS PUT err for {path}: {e}")
             continue
 
-        # Step 3: tell GeeLark to ingest into the phone's gallery
-        data, err = _geelark_post('/phone/uploadFile',
-                                  {'id': phone_id, 'fileUrl': resource_url})
-        if err or not data:
-            logger.warning(f"[imgwiz] /phone/uploadFile err for {path}: {err}")
-            continue
-        task_id = data.get('taskId')
-        if not task_id:
+        # Step 3: tell GeeLark to ingest into the phone's gallery.
+        # Phone may still be booting after our 60s wait (GeeLark boot times
+        # vary); retry on 42002 'env not running' for up to ~90s extra
+        # before giving up on this file.
+        task_id = None
+        for retry in range(10):
+            data, err = _geelark_post('/phone/uploadFile',
+                                      {'id': phone_id, 'fileUrl': resource_url})
+            if err and 'env not running' in err.lower():
+                logger.info(f"[imgwiz] /phone/uploadFile 42002 (phone still booting?) "
+                            f"attempt {retry+1}/10 — sleeping 10s")
+                time.sleep(10)
+                continue
+            if err or not data:
+                logger.warning(f"[imgwiz] /phone/uploadFile err for {path}: {err}")
+                break
+            task_id = data.get('taskId')
+            if task_id:
+                break
             logger.warning(f"[imgwiz] no taskId from /phone/uploadFile: {data}")
+            break
+        if not task_id:
             continue
 
         # Step 4: poll until status==1 (success) or status indicates failure
