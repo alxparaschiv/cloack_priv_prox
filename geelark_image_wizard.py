@@ -286,8 +286,104 @@ def _adb_bring_up_only(phone_id):
     return None, None, None, '/adb/getData never returned an endpoint'
 
 
+def _geelark_upload_to_phone_gallery(phone_id, image_paths, send_progress=None):
+    """Upload files to a GeeLark cloud phone using GeeLark's native upload
+    API (so they land in the Gallery / MediaStore properly, visible to IG
+    and other media-aware apps).
+
+    Flow per file (from GeeLark openapi docs, /Cloud Phone API/File Management/):
+      1. POST /open/v1/upload/getUrl {fileType:'jpg'|'png'}
+         → returns {uploadUrl (presigned OSS PUT URL), resourceUrl (public CDN URL)}
+      2. PUT the raw bytes to uploadUrl.
+         IMPORTANT: do NOT send Content-Type header — the OSS presigned
+         signature was generated without one, and including it produces
+         a SignatureDoesNotMatch 403.
+      3. POST /open/v1/phone/uploadFile {id: phone_id, fileUrl: resourceUrl}
+         → returns {taskId}. Phone must be running (env not running → 42002).
+      4. POST /open/v1/phone/uploadFile/result {taskId} until status==1.
+
+    This replaces the prior ADB-push + MEDIA_SCANNER_SCAN_FILE broadcast
+    approach, which deposited files at /sdcard/Pictures but failed to
+    register them with MediaStore because the broadcast routinely timed
+    out on these phones, leaving images invisible to Instagram's picker.
+
+    Returns (pushed_count, err_or_None).
+    """
+    if not image_paths:
+        return 0, None
+    pushed = 0
+    for path in image_paths:
+        if not os.path.exists(path):
+            continue
+        ext = os.path.splitext(path)[1].lstrip('.').lower() or 'jpg'
+        # GeeLark supports: jpg, jpeg, png, gif, bmp, webp, heif, heic, mp4, webm, xml, apk, xapk
+        # Map anything else to jpg as a safe default
+        if ext not in ('jpg','jpeg','png','gif','bmp','webp','heif','heic'):
+            ext = 'jpg'
+
+        # Step 1: get a pre-signed upload URL + a resource URL
+        data, err = _geelark_post('/upload/getUrl', {'fileType': ext})
+        if err or not data:
+            logger.warning(f"[imgwiz] getUrl err for {path}: {err}")
+            continue
+        upload_url = data.get('uploadUrl')
+        resource_url = data.get('resourceUrl')
+        if not upload_url or not resource_url:
+            logger.warning(f"[imgwiz] getUrl missing URLs for {path}: {data}")
+            continue
+
+        # Step 2: PUT raw bytes to OSS (no Content-Type — signature is sensitive)
+        try:
+            with open(path, 'rb') as f:
+                body = f.read()
+            r = requests.put(upload_url, data=body, timeout=120)
+            if r.status_code not in (200, 201):
+                logger.warning(f"[imgwiz] OSS PUT for {path} got {r.status_code}: {r.text[:200]}")
+                continue
+        except Exception as e:
+            logger.warning(f"[imgwiz] OSS PUT err for {path}: {e}")
+            continue
+
+        # Step 3: tell GeeLark to ingest into the phone's gallery
+        data, err = _geelark_post('/phone/uploadFile',
+                                  {'id': phone_id, 'fileUrl': resource_url})
+        if err or not data:
+            logger.warning(f"[imgwiz] /phone/uploadFile err for {path}: {err}")
+            continue
+        task_id = data.get('taskId')
+        if not task_id:
+            logger.warning(f"[imgwiz] no taskId from /phone/uploadFile: {data}")
+            continue
+
+        # Step 4: poll until status==1 (success) or status indicates failure
+        complete = False
+        for _ in range(20):  # up to ~60s
+            time.sleep(3)
+            data, err = _geelark_post('/phone/uploadFile/result', {'taskId': task_id})
+            if not data:
+                continue
+            status = data.get('status')
+            if status in (1, '1'):
+                complete = True; break
+            if status in (-1, '-1', 2, '2'):
+                logger.warning(f"[imgwiz] /uploadFile failed for {path}: {data}")
+                break
+        if complete:
+            pushed += 1
+        else:
+            logger.warning(f"[imgwiz] /uploadFile never reached success for {path}")
+    return pushed, None
+
+
+# Legacy ADB-push helper — kept for posterity but no longer used by the wizard.
+# The MEDIA_SCANNER_SCAN_FILE broadcast it relied on was prone to 15-30s
+# hangs on these phones, which left the files on /sdcard/Pictures but not
+# registered with MediaStore. The new _geelark_upload_to_phone_gallery flow
+# above uses GeeLark's native upload API and never has this problem.
 def _push_images_to_phone(adb_ip, adb_port, glogin_pwd, image_paths):
-    """Push files to /sdcard/Pictures via adb. The media-scanner broadcast is
+    """DEPRECATED — use _geelark_upload_to_phone_gallery instead.
+
+    Push files to /sdcard/Pictures via adb. The media-scanner broadcast is
     BEST EFFORT — wrapped in try/except because it can take 15+s on a slow
     phone and we don't want a single broadcast timeout to crash the whole
     wizard. The push itself is the load-bearing operation; the broadcast
@@ -726,35 +822,38 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
                 f"   ⚠️ Drive download err: `{type(e).__name__}: {e}`",
                 parse_mode='Markdown')
 
-    # 3. ADB bring-up + push everything
+    # 3. Upload images to the phone via GeeLark's native API (visible in Gallery)
     if all_paths:
+        # The /phone/uploadFile endpoint requires the phone to be running. If
+        # we got here from images_only mode, the phone is stopped → boot it.
+        if not entry.get('_already_running'):
+            await msg.reply_text(
+                f"   📲 booting `{entry['name']}` (~60s) before upload…",
+                parse_mode='Markdown')
+            _, start_err = _geelark_post('/phone/start', {'ids': [entry['phone_id']]})
+            if start_err:
+                per_profile_err = f'/phone/start: {start_err}'
+                await msg.reply_text(f"   ❌ {per_profile_err}",
+                                      parse_mode='Markdown')
+                pushed = 0
+            else:
+                await asyncio.to_thread(_geelark_boot_wait, entry['phone_id'], 60)
+                entry['_already_running'] = True
         if entry.get('_already_running'):
             await msg.reply_text(
-                f"   🔌 phone already running — enabling ADB + pushing {len(all_paths)} image(s)…",
+                f"   📤 uploading {len(all_paths)} image(s) to `{entry['name']}` "
+                f"via GeeLark's gallery API…",
                 parse_mode='Markdown')
-            ip, port, pwd, err = await asyncio.to_thread(_adb_bring_up_only,
-                                                          entry['phone_id'])
-        else:
-            await msg.reply_text(
-                f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
-                parse_mode='Markdown')
-            ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
-                                                          entry['phone_id'])
-        if err:
-            per_profile_err = f'ADB bring-up: {err}'
-            await msg.reply_text(f"   ❌ `{entry['name']}`: {per_profile_err}",
-                                  parse_mode='Markdown')
-            pushed = 0
-        else:
-            pushed, perr = await asyncio.to_thread(_push_images_to_phone,
-                                                    ip, port, pwd, all_paths)
+            pushed, perr = await asyncio.to_thread(
+                _geelark_upload_to_phone_gallery,
+                entry['phone_id'], all_paths)
             if perr:
                 per_profile_err = perr
-                await msg.reply_text(f"   ⚠️ push err: {perr}",
+                await msg.reply_text(f"   ⚠️ upload err: {perr}",
                                       parse_mode='Markdown')
             else:
                 await msg.reply_text(
-                    f"   ✅ pushed {pushed}/{len(all_paths)} image(s) to `{entry['name']}`",
+                    f"   ✅ uploaded {pushed}/{len(all_paths)} image(s) — visible in Gallery + IG picker",
                     parse_mode='Markdown')
         _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
         await msg.reply_text(f"   🛑 stopped `{entry['name']}`.",
