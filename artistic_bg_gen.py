@@ -303,7 +303,7 @@ async def artistic_bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await msg.reply_text(
         "🎨 *Artistic background generator*\n\n"
         f"Reference folder: `{REF_FOLDER_NAME}`\n"
-        f"Engine: `{ENGINE}` (Gemini 3 Pro Image, ~$0.07-0.20/img)\n"
+        f"Engine: `{ENGINE}` (~$0.07-0.20/img)\n"
         f"Picking {REFS_PER_CALL} random refs + generating…",
         parse_mode='Markdown')
 

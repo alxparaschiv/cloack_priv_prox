@@ -478,10 +478,22 @@ async def geelark_stop_phone_command(update: Update, context: ContextTypes.DEFAU
 
 
 def _geelark_find_phone_by_name(profile_name):
-    """Search the GeeLark phone list for a phone whose profileName matches.
-    Returns (phone_id, err)."""
+    """Search the GeeLark phone list for a phone whose name matches.
+
+    GOTCHA — name field: GeeLark's /phone/list payload populates `serialName`
+    (e.g. 'caro motorcycle') and leaves `profileName=null`. Looking up by
+    `profileName` first would always miss. We check the FULL chain
+    serialName → profileName → name and dedupe via .lower() compare.
+
+    On miss, returns a diagnostic that includes the top 3 substring-similar
+    phone names actually found, so the user can see whether the issue is a
+    typo / hidden whitespace / pagination cap.
+    """
     target = profile_name.strip().lower()
+    target_first_word = target.split(' ', 1)[0]
     page = 1
+    total_seen = 0
+    similar_samples = []  # phones whose name shares a word with the target
     while True:
         data, err = _geelark_post('/phone/list', {'page': page, 'pageSize': 100})
         if err:
@@ -490,16 +502,26 @@ def _geelark_find_phone_by_name(profile_name):
         if not items:
             break
         for it in items:
-            name = (it.get('profileName') or it.get('name') or '').strip().lower()
-            if name == target:
+            total_seen += 1
+            raw = (it.get('serialName') or it.get('profileName')
+                   or it.get('name') or '').strip()
+            name_lc = raw.lower()
+            if name_lc == target:
                 return (it.get('id') or it.get('phoneId') or it.get('envId')), None
+            # collect samples that share the first word — useful diagnostic
+            if target_first_word and target_first_word in name_lc and len(similar_samples) < 5:
+                similar_samples.append(raw)
         total = data.get('total', 0)
         if total and len(items) < 100:
             break
         if total and (page * 100) >= int(total):
             break
         page += 1
-    return None, f"no GeeLark phone with profileName == '{profile_name}'"
+    diag = f" (walked {total_seen} phones"
+    if similar_samples:
+        diag += f"; similar names: {similar_samples[:3]}"
+    diag += ")"
+    return None, f"no GeeLark phone named '{profile_name}'{diag}"
 
 
 async def geelark_stop_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):

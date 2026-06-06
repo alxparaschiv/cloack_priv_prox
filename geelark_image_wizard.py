@@ -506,7 +506,7 @@ async def _ask_artistic(msg, state):
     await msg.reply_text(
         f"*Step 2 — Artistic background for `{entry['name']}`*\n\n"
         f"Generate one new image based on 6 random refs from "
-        f"`{artistic_bg_gen.REF_FOLDER_NAME}` (Gemini 3 Pro Image, ~$0.10)?\n\n"
+        f"`{artistic_bg_gen.REF_FOLDER_NAME}` (`nano-banana-pro`, ~$0.10)?\n\n"
         f"_The image is generated silently at execution time — no preview._",
         parse_mode='Markdown',
         reply_markup=_artistic_kb())
