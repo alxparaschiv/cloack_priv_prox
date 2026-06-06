@@ -368,7 +368,12 @@ def _geelark_upload_to_phone_gallery(phone_id, image_paths, send_progress=None):
         if not task_id:
             continue
 
-        # Step 4: poll until status==1 (success) or status indicates failure
+        # Step 4: poll until status==1 (success) or status indicates failure.
+        # NOTE — status=1 from GeeLark sometimes returns immediately even when
+        # the OSS→phone file copy hasn't finished. Tested 2026-06-06 on 4 phones:
+        # only 1 actually had the file on disk after status=1. So we ALSO wait
+        # an extra ~20s before declaring success, giving GeeLark time to
+        # finalize the async copy into /sdcard/Download/.
         complete = False
         for _ in range(20):  # up to ~60s
             time.sleep(3)
@@ -382,6 +387,9 @@ def _geelark_upload_to_phone_gallery(phone_id, image_paths, send_progress=None):
                 logger.warning(f"[imgwiz] /uploadFile failed for {path}: {data}")
                 break
         if complete:
+            # Extra settle time — GeeLark's OSS→phone copy is async and the
+            # status=1 ack can fire before the file actually lands.
+            time.sleep(20)
             pushed += 1
         else:
             logger.warning(f"[imgwiz] /uploadFile never reached success for {path}")
