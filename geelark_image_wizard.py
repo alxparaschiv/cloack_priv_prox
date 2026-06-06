@@ -287,36 +287,70 @@ def _adb_bring_up_only(phone_id):
 
 
 def _push_images_to_phone(adb_ip, adb_port, glogin_pwd, image_paths):
+    """Push files to /sdcard/Pictures via adb. The media-scanner broadcast is
+    BEST EFFORT — wrapped in try/except because it can take 15+s on a slow
+    phone and we don't want a single broadcast timeout to crash the whole
+    wizard. The push itself is the load-bearing operation; the broadcast
+    just hints to Android's media DB that new files exist. Without it,
+    the files are still on disk and the Gallery app picks them up after
+    a manual refresh / on next launch."""
     if not image_paths: return 0, None
     adb_addr = f'{adb_ip}:{adb_port}'
-    subprocess.run(['adb', 'disconnect', adb_addr], capture_output=True, timeout=10)
-    time.sleep(1)
-    r = subprocess.run(['adb', 'connect', adb_addr],
-                       capture_output=True, text=True, timeout=30)
-    if 'connected' not in (r.stdout + r.stderr).lower() and 'already' not in (r.stdout + r.stderr).lower():
-        return 0, f'adb connect: {r.stderr or r.stdout}'
-    subprocess.run(['adb', '-s', adb_addr, 'wait-for-device'],
-                   capture_output=True, timeout=60)
-    time.sleep(2)
-    if glogin_pwd:
-        r = _adb(adb_addr, 'shell', 'glogin', glogin_pwd, timeout=20)
-        if 'success' not in (r.stdout + r.stderr).lower():
-            return 0, f'glogin: {r.stdout} {r.stderr}'
-    _adb(adb_addr, 'shell', 'mkdir', '-p', '/sdcard/Pictures')
-    pushed = 0
-    for path in image_paths:
-        if not os.path.exists(path): continue
-        safe_name = os.path.basename(path).replace(' ', '_')
-        remote = f'/sdcard/Pictures/{safe_name}'
-        r = subprocess.run(['adb', '-s', adb_addr, 'push', path, remote],
-                           capture_output=True, text=True, timeout=120)
-        if r.returncode == 0:
-            _adb(adb_addr, 'shell', 'am', 'broadcast', '-a',
-                 'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
-                 '-d', f'file://{remote}')
+    try:
+        subprocess.run(['adb', 'disconnect', adb_addr],
+                       capture_output=True, timeout=10)
+        time.sleep(1)
+        r = subprocess.run(['adb', 'connect', adb_addr],
+                           capture_output=True, text=True, timeout=30)
+        if ('connected' not in (r.stdout + r.stderr).lower()
+                and 'already' not in (r.stdout + r.stderr).lower()):
+            return 0, f'adb connect: {r.stderr or r.stdout}'
+        subprocess.run(['adb', '-s', adb_addr, 'wait-for-device'],
+                       capture_output=True, timeout=60)
+        time.sleep(2)
+        if glogin_pwd:
+            try:
+                r = _adb(adb_addr, 'shell', 'glogin', glogin_pwd, timeout=20)
+                if 'success' not in (r.stdout + r.stderr).lower():
+                    return 0, f'glogin: {r.stdout} {r.stderr}'
+            except subprocess.TimeoutExpired:
+                return 0, 'glogin timed out'
+        try:
+            _adb(adb_addr, 'shell', 'mkdir', '-p', '/sdcard/Pictures')
+        except subprocess.TimeoutExpired:
+            pass  # mkdir may already exist — non-fatal
+        pushed = 0
+        for path in image_paths:
+            if not os.path.exists(path): continue
+            safe_name = os.path.basename(path).replace(' ', '_')
+            remote = f'/sdcard/Pictures/{safe_name}'
+            try:
+                r = subprocess.run(['adb', '-s', adb_addr, 'push', path, remote],
+                                   capture_output=True, text=True, timeout=120)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[imgwiz] adb push {safe_name} timed out")
+                continue
+            if r.returncode != 0:
+                logger.warning(f"[imgwiz] adb push {safe_name} rc={r.returncode}: {r.stderr[:200]}")
+                continue
             pushed += 1
-    subprocess.run(['adb', 'disconnect', adb_addr], capture_output=True, timeout=10)
-    return pushed, None
+            # Best-effort media-scanner broadcast — DO NOT let its timeout
+            # crash the wizard. If this fails, the file is still on disk;
+            # Android's media DB will pick it up on next gallery refresh.
+            try:
+                _adb(adb_addr, 'shell', 'am', 'broadcast', '-a',
+                     'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
+                     '-d', f'file://{remote}', timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.info(f"[imgwiz] media scan broadcast for {safe_name} timed out (non-fatal)")
+            except Exception as e:
+                logger.info(f"[imgwiz] media scan broadcast err: {e} (non-fatal)")
+        return pushed, None
+    finally:
+        try:
+            subprocess.run(['adb', 'disconnect', adb_addr],
+                           capture_output=True, timeout=10)
+        except Exception: pass
 
 
 # ─── Drive image downloader (for the picked Drive folder) ───────────────────
@@ -565,142 +599,22 @@ async def _execute_batch(msg, context):
     mode = state.get('mode', 'images_only')
     results = []
     for i, entry in enumerate(batch):
-        await msg.reply_text(
-            f"⏳ [{i+1}/{len(batch)}] `{entry['name']}` — starting",
-            parse_mode='Markdown')
-        all_paths = list(entry.get('bg_paths') or [])
-        per_profile_err = None
-
-        # 0. (create-plus-images only) create the GeeLark phone + install IG
-        if mode == 'create_plus_images' and not entry.get('phone_id'):
+        try:
+            await _process_one_profile(msg, mode, i, len(batch), entry, results)
+        except Exception as e:
+            logger.exception(f"[imgwiz] profile {entry.get('name')} crashed")
             await msg.reply_text(
-                f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
+                f"   ❌ `{entry.get('name')}`: unexpected error — `{type(e).__name__}: {e}` "
+                f"— moving on to next profile",
                 parse_mode='Markdown')
-            phone_id, err = await asyncio.to_thread(
-                _geelark_create_phone, entry['name'], entry['proxy'])
-            if err or not phone_id:
-                per_profile_err = f'phone create: {err}'
-                await msg.reply_text(f"   ❌ phone create failed: `{err}`",
-                                      parse_mode='Markdown')
-                results.append({'name': entry['name'], 'phone_id': None,
-                                 'images_pushed': 0, 'err': per_profile_err})
-                continue
-            entry['phone_id'] = phone_id
-            await msg.reply_text(
-                f"   ✅ phone created (`{phone_id}`). Starting + booting…",
-                parse_mode='Markdown')
-            _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
-            if start_err:
-                per_profile_err = f'/phone/start: {start_err}'
-                await msg.reply_text(f"   ❌ /phone/start failed: `{start_err}`",
-                                      parse_mode='Markdown')
-                results.append({'name': entry['name'], 'phone_id': phone_id,
-                                 'images_pushed': 0, 'err': per_profile_err})
-                continue
-            await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
-            await msg.reply_text(
-                f"   ✅ booted. Installing Instagram (~2-4 min)…",
-                parse_mode='Markdown')
-            ig_ok, ig_msg = await asyncio.to_thread(_geelark_install_instagram, phone_id)
-            if not ig_ok:
-                await msg.reply_text(
-                    f"   ⚠️ IG install: {ig_msg} (continuing with image push anyway)",
-                    parse_mode='Markdown')
-            else:
-                await msg.reply_text(f"   ✅ Instagram installed.",
-                                      parse_mode='Markdown')
-            # phone is already running — we keep it up for the ADB push below
-            entry['_already_running'] = True
-
-        # 1. Artistic generation (if flagged)
-        if entry.get('artistic_yes'):
-            await msg.reply_text(
-                f"   🎨 generating artistic image for `{entry['name']}`…",
-                parse_mode='Markdown')
-            try:
-                drive_id, local_path, err = await asyncio.to_thread(
-                    artistic_bg_gen.generate_artistic_bg,
-                    entry['name'],   # save to Drive subfolder named after the profile
-                    None)
-                if err:
-                    await msg.reply_text(f"   ⚠️ artistic err: `{err}`",
-                                          parse_mode='Markdown')
-                elif local_path:
-                    all_paths.append(local_path)
-                    await msg.reply_text(
-                        f"   ✅ artistic generated + saved to Drive (id `{drive_id}`)",
-                        parse_mode='Markdown')
-            except Exception as e:
-                await msg.reply_text(f"   ⚠️ artistic crashed: `{type(e).__name__}: {e}`",
-                                      parse_mode='Markdown')
-
-        # 2. Drive folder images (if picked)
-        if entry.get('drive_folder_id'):
-            await msg.reply_text(
-                f"   📁 downloading images from `{entry.get('drive_folder_name')}`…",
-                parse_mode='Markdown')
-            try:
-                paths = await asyncio.to_thread(
-                    _download_drive_folder_images,
-                    entry['drive_folder_id'], '/tmp')
-                all_paths.extend(paths)
-                await msg.reply_text(
-                    f"   ✅ {len(paths)} image(s) downloaded from Drive",
-                    parse_mode='Markdown')
-            except Exception as e:
-                await msg.reply_text(
-                    f"   ⚠️ Drive download err: `{type(e).__name__}: {e}`",
-                    parse_mode='Markdown')
-
-        # 3. ADB bring-up + push everything
-        if all_paths:
-            if entry.get('_already_running'):
-                await msg.reply_text(
-                    f"   🔌 phone already running — enabling ADB + pushing {len(all_paths)} image(s)…",
-                    parse_mode='Markdown')
-                ip, port, pwd, err = await asyncio.to_thread(_adb_bring_up_only,
-                                                              entry['phone_id'])
-            else:
-                await msg.reply_text(
-                    f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
-                    parse_mode='Markdown')
-                ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
-                                                              entry['phone_id'])
-            if err:
-                per_profile_err = f'ADB bring-up: {err}'
-                await msg.reply_text(f"   ❌ `{entry['name']}`: {per_profile_err}",
-                                      parse_mode='Markdown')
-            else:
-                pushed, perr = await asyncio.to_thread(_push_images_to_phone,
-                                                        ip, port, pwd, all_paths)
-                if perr:
-                    per_profile_err = perr
-                    await msg.reply_text(f"   ⚠️ push err: {perr}",
-                                          parse_mode='Markdown')
-                else:
-                    await msg.reply_text(
-                        f"   ✅ pushed {pushed}/{len(all_paths)} image(s) to `{entry['name']}`",
-                        parse_mode='Markdown')
-            _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
-            await msg.reply_text(f"   🛑 stopped `{entry['name']}`.",
-                                  parse_mode='Markdown')
-        elif entry.get('_already_running'):
-            # create-plus-images mode but no images queued — still stop the
-            # phone since we started it for IG install
-            _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
-            await msg.reply_text(
-                f"   ⏭ no images for `{entry['name']}` — IG installed, phone stopped.",
-                parse_mode='Markdown')
-        else:
-            await msg.reply_text(
-                f"   ⏭ no images queued for `{entry['name']}` — nothing to push.",
-                parse_mode='Markdown')
-
-        results.append({
-            'name': entry['name'], 'phone_id': entry['phone_id'],
-            'images_pushed': len([p for p in all_paths if os.path.exists(p)]),
-            'err': per_profile_err,
-        })
+            results.append({'name': entry.get('name'),
+                             'phone_id': entry.get('phone_id'),
+                             'images_pushed': 0,
+                             'err': f"{type(e).__name__}: {e}"})
+            # Try to stop the phone anyway if we know its id
+            if entry.get('phone_id'):
+                try: _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
+                except Exception: pass
 
     # ─── Final summary
     ok_count = sum(1 for r in results if not r['err'])
@@ -719,6 +633,151 @@ async def _execute_batch(msg, context):
             lines.append(f"  ✅ `{r['name']}` — pushed {r['images_pushed']} image(s)")
     await msg.reply_text('\n'.join(lines), parse_mode='Markdown')
     context.user_data.pop('imgwiz', None)
+    return
+
+
+async def _process_one_profile(msg, mode, i, total, entry, results):
+    """Per-profile work; wrapped by the caller in try/except so any single
+    profile's crash doesn't kill the rest of the batch."""
+    await msg.reply_text(
+        f"⏳ [{i+1}/{total}] `{entry['name']}` — starting",
+        parse_mode='Markdown')
+    all_paths = list(entry.get('bg_paths') or [])
+    per_profile_err = None
+
+    # 0. (create-plus-images only) create the GeeLark phone + install IG
+    if mode == 'create_plus_images' and not entry.get('phone_id'):
+        await msg.reply_text(
+            f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
+            parse_mode='Markdown')
+        phone_id, err = await asyncio.to_thread(
+            _geelark_create_phone, entry['name'], entry['proxy'])
+        if err or not phone_id:
+            per_profile_err = f'phone create: {err}'
+            await msg.reply_text(f"   ❌ phone create failed: `{err}`",
+                                  parse_mode='Markdown')
+            results.append({'name': entry['name'], 'phone_id': None,
+                             'images_pushed': 0, 'err': per_profile_err})
+            return
+        entry['phone_id'] = phone_id
+        await msg.reply_text(
+            f"   ✅ phone created (`{phone_id}`). Starting + booting…",
+            parse_mode='Markdown')
+        _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+        if start_err:
+            per_profile_err = f'/phone/start: {start_err}'
+            await msg.reply_text(f"   ❌ /phone/start failed: `{start_err}`",
+                                  parse_mode='Markdown')
+            results.append({'name': entry['name'], 'phone_id': phone_id,
+                             'images_pushed': 0, 'err': per_profile_err})
+            return
+        await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
+        await msg.reply_text(
+            f"   ✅ booted. Installing Instagram (~2-4 min)…",
+            parse_mode='Markdown')
+        ig_ok, ig_msg = await asyncio.to_thread(_geelark_install_instagram, phone_id)
+        if not ig_ok:
+            await msg.reply_text(
+                f"   ⚠️ IG install: {ig_msg} (continuing with image push anyway)",
+                parse_mode='Markdown')
+        else:
+            await msg.reply_text(f"   ✅ Instagram installed.",
+                                  parse_mode='Markdown')
+        # phone already running — keep it up for the ADB push below
+        entry['_already_running'] = True
+
+    # 1. Artistic generation (if flagged)
+    if entry.get('artistic_yes'):
+        await msg.reply_text(
+            f"   🎨 generating artistic image for `{entry['name']}`…",
+            parse_mode='Markdown')
+        try:
+            drive_id, local_path, err = await asyncio.to_thread(
+                artistic_bg_gen.generate_artistic_bg,
+                entry['name'],   # save to Drive subfolder named after the profile
+                None)
+            if err:
+                await msg.reply_text(f"   ⚠️ artistic err: `{err}`",
+                                      parse_mode='Markdown')
+            elif local_path:
+                all_paths.append(local_path)
+                await msg.reply_text(
+                    f"   ✅ artistic generated + saved to Drive (id `{drive_id}`)",
+                    parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(f"   ⚠️ artistic crashed: `{type(e).__name__}: {e}`",
+                                  parse_mode='Markdown')
+
+    # 2. Drive folder images (if picked)
+    if entry.get('drive_folder_id'):
+        await msg.reply_text(
+            f"   📁 downloading images from `{entry.get('drive_folder_name')}`…",
+            parse_mode='Markdown')
+        try:
+            paths = await asyncio.to_thread(
+                _download_drive_folder_images,
+                entry['drive_folder_id'], '/tmp')
+            all_paths.extend(paths)
+            await msg.reply_text(
+                f"   ✅ {len(paths)} image(s) downloaded from Drive",
+                parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(
+                f"   ⚠️ Drive download err: `{type(e).__name__}: {e}`",
+                parse_mode='Markdown')
+
+    # 3. ADB bring-up + push everything
+    if all_paths:
+        if entry.get('_already_running'):
+            await msg.reply_text(
+                f"   🔌 phone already running — enabling ADB + pushing {len(all_paths)} image(s)…",
+                parse_mode='Markdown')
+            ip, port, pwd, err = await asyncio.to_thread(_adb_bring_up_only,
+                                                          entry['phone_id'])
+        else:
+            await msg.reply_text(
+                f"   📲 booting `{entry['name']}` + pushing {len(all_paths)} image(s)…",
+                parse_mode='Markdown')
+            ip, port, pwd, err = await asyncio.to_thread(_start_and_get_adb,
+                                                          entry['phone_id'])
+        if err:
+            per_profile_err = f'ADB bring-up: {err}'
+            await msg.reply_text(f"   ❌ `{entry['name']}`: {per_profile_err}",
+                                  parse_mode='Markdown')
+            pushed = 0
+        else:
+            pushed, perr = await asyncio.to_thread(_push_images_to_phone,
+                                                    ip, port, pwd, all_paths)
+            if perr:
+                per_profile_err = perr
+                await msg.reply_text(f"   ⚠️ push err: {perr}",
+                                      parse_mode='Markdown')
+            else:
+                await msg.reply_text(
+                    f"   ✅ pushed {pushed}/{len(all_paths)} image(s) to `{entry['name']}`",
+                    parse_mode='Markdown')
+        _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
+        await msg.reply_text(f"   🛑 stopped `{entry['name']}`.",
+                              parse_mode='Markdown')
+    elif entry.get('_already_running'):
+        # create-plus-images mode but no images queued — still stop the
+        # phone since we started it for IG install
+        pushed = 0
+        _geelark_post('/phone/stop', {'ids': [entry['phone_id']]})
+        await msg.reply_text(
+            f"   ⏭ no images for `{entry['name']}` — IG installed, phone stopped.",
+            parse_mode='Markdown')
+    else:
+        pushed = 0
+        await msg.reply_text(
+            f"   ⏭ no images queued for `{entry['name']}` — nothing to push.",
+            parse_mode='Markdown')
+
+    results.append({
+        'name': entry['name'], 'phone_id': entry['phone_id'],
+        'images_pushed': pushed,
+        'err': per_profile_err,
+    })
 
 
 # ─── Text router entry: name-collection for the batch ──────────────────────
