@@ -1,16 +1,16 @@
-"""/rambler — Fetch the latest Meta (Facebook OR Instagram) verification code from a Rambler inbox.
+"""/rambler{,_microsoft} — Fetch the latest verification code from a Rambler inbox.
 
-Conversation flow:
-  /rambler              → prompt for "<email>:<password>"
-  user replies          → IMAP fetch, extract code, reply
+Conversation flows:
+  /rambler            → prompt for "<email>:<password>", fetches FB/IG codes
+  /rambler_microsoft  → same, fetches Microsoft account codes
 
-Why this exists: during Meta Dev account creation / unlock flows, the user
-sometimes needs to grab a fresh FB or IG confirmation code from a Rambler inbox.
-Manual login to Rambler in the GoLogin browser is annoying — easier to
-just paste creds here and get the code back instantly.
+Why this exists: during account creation / unlock flows, the user often needs
+to grab a fresh confirmation code from a Rambler inbox. Manual login to
+Rambler in the GoLogin browser is annoying — easier to just paste creds and
+get the code back instantly.
 
-The fetcher walks the most-recent N messages and returns the FIRST one whose
-sender is Facebook OR Instagram (Meta family). Reply tags the service so the
+Each fetcher walks the most-recent N messages and returns the FIRST one whose
+sender keyword matches the requested service. Reply tags the service so the
 user knows which platform the code is for.
 
 Note: cred are NOT persisted. They're held in context.user_data only for
@@ -70,14 +70,17 @@ def _extract_code_from_body(msg):
     return fm.group(1) if fm else None
 
 
-def _fetch_latest_meta_code(email_addr: str, password: str):
+def _fetch_latest_code(email_addr: str, password: str, services):
     """Connect to Rambler IMAP, return (code, subject, sender, service, error).
 
-    Walks the last RECENT_N messages newest-first; returns the FIRST email
-    from Facebook OR Instagram. Tries to extract the code from the subject
-    first (works for FB which puts digits in subject), then falls back to
-    the BODY (necessary for Instagram whose subject is just text).
-    service = 'Facebook' | 'Instagram' (derived from sender header).
+    `services` is a list of (keyword, display_name) tuples — e.g.
+    [('instagram','Instagram'), ('facebook','Facebook')] for Meta, or
+    [('microsoft','Microsoft'), ('accountprotection','Microsoft'),
+     ('outlook','Microsoft')] for Microsoft account codes.
+
+    The walker checks the From: header for ANY of the keywords (lowercased
+    substring match), tagging with the corresponding display_name. Subject
+    is tried first for the code, then the body as a fallback.
     """
     try:
         m = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT)
@@ -94,19 +97,21 @@ def _fetch_latest_meta_code(email_addr: str, password: str):
         _, ids = m.search(None, 'ALL')
         all_ids = ids[0].split() if ids and ids[0] else []
         for eid in all_ids[::-1][:RECENT_N]:
-            # Cheap header pre-check first (avoid fetching full body for non-Meta mail)
+            # Cheap header pre-check first (avoid fetching full body for non-matching mail)
             _, hdr_data = m.fetch(eid, '(RFC822.HEADER)')
             hdr_msg = _em.message_from_bytes(hdr_data[0][1])
             frm = hdr_msg.get('From', '') or ''
             subj = hdr_msg.get('Subject', '') or ''
             frm_lower = frm.lower()
-            if 'instagram' in frm_lower:
-                service = 'Instagram'
-            elif 'facebook' in frm_lower:
-                service = 'Facebook'
-            else:
+            service = None
+            for kw, display in services:
+                if kw in frm_lower:
+                    service = display
+                    break
+            if not service:
                 continue
-            # 1) try subject (FB convention: "648099 is your code…")
+            # 1) try subject (FB convention: "648099 is your code…",
+            #    MS convention: "Microsoft account security code: 1234567")
             code = None
             sm = re.search(r'\b(\d{4,8})\b', subj)
             if sm: code = sm.group(1)
@@ -120,11 +125,35 @@ def _fetch_latest_meta_code(email_addr: str, password: str):
                 return code, subj, frm, service, None
             # Email matched service but no code parseable — keep walking
         m.logout()
-        return None, None, None, None, f"no Facebook or Instagram email with a code found in last {RECENT_N} messages"
+        names = ', '.join(sorted({d for _, d in services}))
+        return None, None, None, None, f"no {names} email with a code found in last {RECENT_N} messages"
     except Exception as e:
         try: m.logout()
         except: pass
         return None, None, None, None, f"fetch failed: {type(e).__name__}: {e}"
+
+
+# Sender-keyword tables per provider.
+META_SERVICES = [
+    ('instagram', 'Instagram'),
+    ('facebook',  'Facebook'),
+]
+MICROSOFT_SERVICES = [
+    # Microsoft sends account verification mail from a few addresses;
+    # `accountprotection.microsoft.com` is the most common, but seen also
+    # plain `microsoft.com`, `microsoftonline.com`, and Outlook security mail.
+    ('accountprotection', 'Microsoft'),
+    ('microsoft',         'Microsoft'),
+    ('microsoftonline',   'Microsoft'),
+    ('outlook',           'Microsoft'),
+]
+
+
+def _fetch_latest_meta_code(email_addr, password):
+    return _fetch_latest_code(email_addr, password, META_SERVICES)
+
+def _fetch_latest_microsoft_code(email_addr, password):
+    return _fetch_latest_code(email_addr, password, MICROSOFT_SERVICES)
 
 # back-compat alias — some callers may import the old name
 _fetch_latest_fb_code = _fetch_latest_meta_code
@@ -175,6 +204,59 @@ async def rambler_text_received(update: Update, context: ContextTypes.DEFAULT_TY
     icon = '📘' if service == 'Facebook' else '📷'
     await update.message.reply_text(
         f"{icon} *{service} code: `{code}`*\n\n"
+        f"From: `{sender}`\n"
+        f"Subject: `{subject}`",
+        parse_mode='Markdown')
+
+
+# ─── /rambler_microsoft ─────────────────────────────────────────────────────
+
+async def rambler_microsoft_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /rambler_microsoft — prompt for credentials."""
+    context.user_data['expecting_rambler_microsoft_creds'] = True
+    await update.message.reply_text(
+        "🪟 *Rambler Microsoft code fetcher*\n\n"
+        "Send your Rambler credentials in the format:\n"
+        "`email@rambler.ru:password`\n\n"
+        "I'll fetch the most recent *Microsoft account* email and reply with "
+        "the verification code.\n"
+        "Credentials are NOT stored — used for one fetch then dropped.",
+        parse_mode='Markdown')
+
+
+async def rambler_microsoft_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the text reply with email:password for /rambler_microsoft."""
+    if not context.user_data.get('expecting_rambler_microsoft_creds'):
+        return
+    text = (update.message.text or '').strip()
+    context.user_data.pop('expecting_rambler_microsoft_creds', None)
+    parts = text.split(':', 1)
+    if len(parts) != 2 or '@' not in parts[0]:
+        await update.message.reply_text(
+            "❌ Format error. Expected `email@rambler.ru:password`. "
+            "Run /rambler_microsoft again.",
+            parse_mode='Markdown')
+        return
+    email_addr = parts[0].strip()
+    password = parts[1].strip()
+    if not email_addr or not password:
+        await update.message.reply_text("❌ Empty email or password. Run /rambler_microsoft again.")
+        return
+
+    await update.message.reply_text(
+        f"🔍 Connecting to Rambler IMAP for `{email_addr}`…",
+        parse_mode='Markdown')
+    code, subject, sender, service, err = _fetch_latest_microsoft_code(email_addr, password)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+        return
+    if not code:
+        await update.message.reply_text(
+            f"⚠️ No Microsoft code found in last {RECENT_N} messages.",
+            parse_mode='Markdown')
+        return
+    await update.message.reply_text(
+        f"🪟 *{service} code: `{code}`*\n\n"
         f"From: `{sender}`\n"
         f"Subject: `{subject}`",
         parse_mode='Markdown')

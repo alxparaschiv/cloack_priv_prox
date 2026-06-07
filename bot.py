@@ -125,6 +125,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("expecting_rambler_creds"):
         await rambler.rambler_text_received(update, context)
         return
+    if context.user_data.get("expecting_rambler_microsoft_creds"):
+        await rambler.rambler_microsoft_text_received(update, context)
+        return
     if context.user_data.get("expecting_sms_phone"):
         await sms_verified.sms_text_received(update, context)
         return
@@ -173,7 +176,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
         "🎨 /bg_generator — Solid-color background PNG\n"
         "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
-        "📬 /rambler — Fetch latest FB code from a Rambler inbox\n"
+        "📬 /rambler — Fetch latest FB/IG code from a Rambler inbox\n"
+        "🪟 /rambler_microsoft — Fetch latest Microsoft code from a Rambler inbox\n"
         "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
@@ -196,7 +200,8 @@ async def post_init(application):
         BotCommand("bg_generator",  "Solid-color background PNG"),
         BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
         BotCommand("proxy_status",  "Last /proxy batch result"),
-        BotCommand("rambler",       "Fetch latest FB code from a Rambler inbox"),
+        BotCommand("rambler",       "Fetch latest FB/IG code from a Rambler inbox"),
+        BotCommand("rambler_microsoft", "Fetch latest Microsoft code from a Rambler inbox"),
         BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
         BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
         BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
@@ -225,6 +230,7 @@ async def post_init(application):
                             "IPQS_API_KEY", "ABUSEIPDB_API_KEY",
                             "FB_PROXY_TEST_PHONE", "FB_PROXY_TEST_PASSWORD"]),
         ("📬 /rambler",     []),  # zero env deps — user provides creds per-call
+        ("🪟 /rambler_microsoft", []),  # zero env deps — user provides creds per-call
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
@@ -304,6 +310,7 @@ def main():
     # (The legacy meta_dev.meta_dev_command is no longer registered.)
     application.add_handler(CommandHandler("meta_dev_setup", setup_pipeline.setup_full_command))
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
+    application.add_handler(CommandHandler("rambler_microsoft", rambler.rambler_microsoft_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
     application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
