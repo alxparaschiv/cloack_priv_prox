@@ -72,6 +72,16 @@ def _rent_seven_day(service_name):
     return rental_id, phone, None
 
 
+def _balance_str():
+    """Best-effort TextVerified balance fetch — returns '$X.XX' or '?' on err."""
+    try:
+        bal = tv_client().balance()
+        return f"${bal:.2f}"
+    except Exception as e:
+        logger.warning(f"[rental] balance fetch err: {e}")
+        return "?"
+
+
 async def _do_rental(update: Update, service_label: str, service_api: str):
     """Shared handler for both /rental_instagram and /rental_facebook."""
     await update.message.reply_text(
@@ -79,19 +89,26 @@ async def _do_rental(update: Update, service_label: str, service_api: str):
         parse_mode='Markdown')
     rental_id, phone, err = _rent_seven_day(service_api)
     if err:
+        # Even on failure, surface the current balance so the user can see if
+        # it's a funds issue.
         await update.message.reply_text(
-            f"❌ rental failed: `{err}`", parse_mode='Markdown')
+            f"❌ rental failed: `{err}`\n"
+            f"💰 TextVerified balance: `{_balance_str()}`",
+            parse_mode='Markdown')
         return
     # Format phone for both contexts: with + sign (E.164) + 10-digit (US local)
     phone_e164 = phone if phone.startswith('+') else f'+{phone}'
     digits = ''.join(c for c in phone if c.isdigit())
     phone_10 = digits[-10:] if len(digits) >= 10 else digits
+    # Pull the post-rental balance so the user knows how much is left to spend.
+    balance = _balance_str()
     await update.message.reply_text(
-        f"✅ *{service_label} rental ready*\n\n"
+        f"✅ *{service_label} rental ready* (balance left: `{balance}`)\n\n"
         f"📞 Phone (E.164): `{phone_e164}`\n"
         f"📞 Phone (10-digit): `{phone_10}`\n"
         f"🪪 Rental ID: `{rental_id}`\n"
-        f"⏳ Duration: 7 days, non-renewable\n\n"
+        f"⏳ Duration: 7 days, non-renewable\n"
+        f"💰 TextVerified balance after rental: `{balance}`\n\n"
         f"_Use /sms with this number to fetch the SMS code when it arrives._",
         parse_mode='Markdown')
 
