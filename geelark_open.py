@@ -394,8 +394,27 @@ async def _run_geelark_batch(update, context, batch):
     for i, entry in enumerate(batch):
         name = entry['name']
         gid = entry['gologin_id']
+        # DUPLICATE CHECK: if a GeeLark phone with this serialName already
+        # exists, skip the create entirely. Otherwise repeated wizard runs
+        # would accumulate duplicates ('kira karate' + 'kira karate (DISABLED)'
+        # + …). Honors the same 64-char truncation as create — so a long
+        # GoLogin name that was truncated previously will still match.
         await update.message.reply_text(
-            f"⏳ [{i+1}/{len(batch)}] `{name}`: fetching GoLogin proxy…",
+            f"⏳ [{i+1}/{len(batch)}] `{name}`: checking GeeLark for an existing phone…",
+            parse_mode='Markdown')
+        existing_id, _ = _geelark_find_phone_by_name(name)
+        if existing_id:
+            results.append({'name': name, 'ok': False, 'stage': 'duplicate',
+                            'err': f'phone already exists ({existing_id})',
+                            'phone_id': existing_id})
+            await update.message.reply_text(
+                f"⏭ `{name}`: a GeeLark phone with this name already exists "
+                f"(`{existing_id}`). Skipping create — delete it manually in "
+                f"GeeLark first if you want a fresh one.",
+                parse_mode='Markdown')
+            continue
+        await update.message.reply_text(
+            f"   no existing phone — fetching GoLogin proxy…",
             parse_mode='Markdown')
         proxy, err = _gologin_get_proxy(gid)
         if err or not proxy:
@@ -681,8 +700,23 @@ async def _run_geelark_fb_batch(update, context, batch):
     for i, entry in enumerate(batch):
         name = entry['name']
         gid = entry['gologin_id']
+        # DUPLICATE CHECK — same as the IG batch (see _run_geelark_batch).
         await update.message.reply_text(
-            f"⏳ [{i+1}/{len(batch)}] `{name}`: fetching GoLogin proxy…",
+            f"⏳ [{i+1}/{len(batch)}] `{name}`: checking GeeLark for an existing phone…",
+            parse_mode='Markdown')
+        existing_id, _ = _geelark_find_phone_by_name(name)
+        if existing_id:
+            results.append({'name': name, 'ok': False, 'stage': 'duplicate',
+                            'err': f'phone already exists ({existing_id})',
+                            'phone_id': existing_id})
+            await update.message.reply_text(
+                f"⏭ `{name}`: a GeeLark phone with this name already exists "
+                f"(`{existing_id}`). Skipping create — delete it manually in "
+                f"GeeLark first if you want a fresh one.",
+                parse_mode='Markdown')
+            continue
+        await update.message.reply_text(
+            f"   no existing phone — fetching GoLogin proxy…",
             parse_mode='Markdown')
         proxy, err = _gologin_get_proxy(gid)
         if err or not proxy:

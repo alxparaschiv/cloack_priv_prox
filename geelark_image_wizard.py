@@ -762,46 +762,65 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
     all_paths = list(entry.get('bg_paths') or [])
     per_profile_err = None
 
-    # 0. (create-plus-images only) create the GeeLark phone + install IG
+    # 0. (create-plus-images only) create the GeeLark phone + install IG.
+    # Duplicate guard: if a GeeLark phone with this name already exists,
+    # reuse it instead of creating a duplicate. Mirrors the IG / FB batches
+    # in geelark_open.py.
     if mode == 'create_plus_images' and not entry.get('phone_id'):
-        await msg.reply_text(
-            f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
-            parse_mode='Markdown')
-        phone_id, err = await asyncio.to_thread(
-            _geelark_create_phone, entry['name'], entry['proxy'])
-        if err or not phone_id:
-            per_profile_err = f'phone create: {err}'
-            await msg.reply_text(f"   ❌ phone create failed: `{err}`",
-                                  parse_mode='Markdown')
-            results.append({'name': entry['name'], 'phone_id': None,
-                             'images_pushed': 0, 'err': per_profile_err})
-            return
-        entry['phone_id'] = phone_id
-        await msg.reply_text(
-            f"   ✅ phone created (`{phone_id}`). Starting + booting…",
-            parse_mode='Markdown')
-        _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
-        if start_err:
-            per_profile_err = f'/phone/start: {start_err}'
-            await msg.reply_text(f"   ❌ /phone/start failed: `{start_err}`",
-                                  parse_mode='Markdown')
-            results.append({'name': entry['name'], 'phone_id': phone_id,
-                             'images_pushed': 0, 'err': per_profile_err})
-            return
-        await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
-        await msg.reply_text(
-            f"   ✅ booted. Installing Instagram (~2-4 min)…",
-            parse_mode='Markdown')
-        ig_ok, ig_msg = await asyncio.to_thread(_geelark_install_instagram, phone_id)
-        if not ig_ok:
+        from geelark_open import _geelark_find_phone_by_name
+        existing_id, _ = await asyncio.to_thread(
+            _geelark_find_phone_by_name, entry['name'])
+        if existing_id:
             await msg.reply_text(
-                f"   ⚠️ IG install: {ig_msg} (continuing with image push anyway)",
+                f"   ♻️ existing GeeLark phone for `{entry['name']}` found "
+                f"(`{existing_id}`) — reusing instead of creating a duplicate. "
+                f"Skipping create + IG install; image push (if any) will boot "
+                f"the phone itself.",
                 parse_mode='Markdown')
+            entry['phone_id'] = existing_id
+            # Don't touch _already_running — the phone is currently stopped,
+            # so the image-push branch below will boot it.
         else:
-            await msg.reply_text(f"   ✅ Instagram installed.",
-                                  parse_mode='Markdown')
-        # phone already running — keep it up for the ADB push below
-        entry['_already_running'] = True
+            await msg.reply_text(
+                f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
+                parse_mode='Markdown')
+            phone_id, err = await asyncio.to_thread(
+                _geelark_create_phone, entry['name'], entry['proxy'])
+            if err or not phone_id:
+                per_profile_err = f'phone create: {err}'
+                await msg.reply_text(f"   ❌ phone create failed: `{err}`",
+                                      parse_mode='Markdown')
+                results.append({'name': entry['name'], 'phone_id': None,
+                                 'images_pushed': 0, 'err': per_profile_err})
+                return
+            entry['phone_id'] = phone_id
+            await msg.reply_text(
+                f"   ✅ phone created (`{phone_id}`). Starting + booting…",
+                parse_mode='Markdown')
+            _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+            if start_err:
+                per_profile_err = f'/phone/start: {start_err}'
+                await msg.reply_text(f"   ❌ /phone/start failed: `{start_err}`",
+                                      parse_mode='Markdown')
+                results.append({'name': entry['name'], 'phone_id': phone_id,
+                                 'images_pushed': 0, 'err': per_profile_err})
+                return
+            await asyncio.to_thread(_geelark_boot_wait, phone_id, 60)
+            await msg.reply_text(
+                f"   ✅ booted. Installing Instagram (~2-4 min)…",
+                parse_mode='Markdown')
+            ig_ok, ig_msg = await asyncio.to_thread(_geelark_install_instagram, phone_id)
+            if not ig_ok:
+                await msg.reply_text(
+                    f"   ⚠️ IG install: {ig_msg} (continuing with image push anyway)",
+                    parse_mode='Markdown')
+            else:
+                await msg.reply_text(f"   ✅ Instagram installed.",
+                                      parse_mode='Markdown')
+            # phone already running from boot — keep it up for the ADB push.
+            # (Skip this flag in the existing-reuse branch — the existing
+            # phone is currently stopped and the push step boots it itself.)
+            entry['_already_running'] = True
 
     # 1. Artistic generation (if flagged)
     if entry.get('artistic_yes'):
