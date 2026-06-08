@@ -248,9 +248,10 @@ def _geelark_boot_wait(phone_id, sleep_s=60):
     return True, f"slept {sleep_s}s for boot", None
 
 
-def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
-                                install_max_attempts=6, install_sleep=10):
-    """Look up the Instagram app version on the running phone and install it.
+def _geelark_install_app(phone_id, package, search_name,
+                          list_max_attempts=24, list_sleep=10,
+                          install_max_attempts=6, install_sleep=10):
+    """Look up `package` in the running phone's installable catalog and install it.
 
     Two retry loops:
       - installable/list — phone may take a while to populate the catalog
@@ -259,9 +260,6 @@ def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
 
     Returns (ok, msg).
     """
-    package = 'com.instagram.android'
-    search_name = 'Instagram'
-
     # ── Step 1: find the package in the installable catalog
     target = None
     last = None
@@ -298,6 +296,17 @@ def _geelark_install_instagram(phone_id, list_max_attempts=24, list_sleep=10,
         # 42002 = env not running — phone state may flap right after boot. Sleep and retry.
         time.sleep(install_sleep)
     return False, last_err or "install failed after all retries"
+
+
+# Per-app convenience wrappers. Same retry parameters as the generic install
+# helper above; just feed it the package name + search-by-display-name string.
+# (GeeLark's /app/installable/list filters by display name, case-sensitive.)
+
+def _geelark_install_instagram(phone_id, **kw):
+    return _geelark_install_app(phone_id, 'com.instagram.android', 'Instagram', **kw)
+
+def _geelark_install_facebook(phone_id, **kw):
+    return _geelark_install_app(phone_id, 'com.facebook.katana', 'Facebook', **kw)
 
 
 # ─── Telegram handlers ──────────────────────────────────────────────────────
@@ -599,3 +608,141 @@ async def _run_geelark_stop_batch(update, context, batch):
     else:
         header = f"🔴 *0/{len(batch)} stopped.* All failed."
     await update.message.reply_text(header + "\n" + '\n'.join(lines), parse_mode='Markdown')
+
+
+# ─── /geelark_profile_fb_open — Facebook-only create-and-install flow ──────
+# Mirrors /geelark_profile_ig_open's name-collection pattern but skips the
+# image wizard entirely. For each name: GoLogin proxy lookup → GeeLark phone
+# create → /phone/start → 60s boot → install com.facebook.katana → stop.
+
+async def geelark_profile_fb_open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point — directly into batch collection (no mode select)."""
+    context.user_data['geelark_fb_batch'] = []
+    context.user_data['expecting_geelark_fb_name'] = True
+    await update.message.reply_text(
+        "📘 *GeeLark profile opener — Facebook*\n\n"
+        "Send the *GoLogin profile name* for the first GeeLark phone "
+        "(e.g. `Caroline Goni 5`). I'll validate against GoLogin first.\n\n"
+        "Each phone will be created + Facebook installed + stopped. "
+        "No images, no mode select — just pure create-and-install.\n\n"
+        "After each name you can add more, or type `done` to start the batch.",
+        parse_mode='Markdown')
+
+
+async def geelark_fb_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the user's reply when expecting a GoLogin profile name for FB."""
+    if not context.user_data.get('expecting_geelark_fb_name'):
+        return
+    text = (update.message.text or '').strip()
+    text_lower = text.lower()
+
+    if text_lower in DONE_WORDS:
+        batch = context.user_data.get('geelark_fb_batch') or []
+        context.user_data.pop('expecting_geelark_fb_name', None)
+        if not batch:
+            await update.message.reply_text("⚠️ batch is empty — nothing to do. Run /geelark_profile_fb_open again.")
+            return
+        await _run_geelark_fb_batch(update, context, batch)
+        context.user_data.pop('geelark_fb_batch', None)
+        return
+
+    await update.message.reply_text(f"🔍 Looking up `{text}` in GoLogin…", parse_mode='Markdown')
+    profile_id, err = _gologin_find_profile_by_name(text)
+    if err or not profile_id:
+        await update.message.reply_text(
+            f"❌ {err or 'profile not found'}\n\nTry another name, or type `done` to stop.",
+            parse_mode='Markdown')
+        return
+
+    batch = context.user_data.setdefault('geelark_fb_batch', [])
+    if any(b['name'].lower() == text.lower() for b in batch):
+        await update.message.reply_text(
+            f"⚠️ `{text}` already in this batch — skipping. "
+            f"Send another name or `done`.",
+            parse_mode='Markdown')
+        return
+    batch.append({'name': text, 'gologin_id': profile_id})
+    queue = '\n'.join(f"  {i+1}. `{b['name']}`" for i, b in enumerate(batch))
+    await update.message.reply_text(
+        f"✅ added `{text}` ({profile_id}). Batch so far ({len(batch)}):\n{queue}\n\n"
+        f"Send another GoLogin name to add more, or type `done` to start.",
+        parse_mode='Markdown')
+
+
+async def _run_geelark_fb_batch(update, context, batch):
+    """Create a GeeLark phone per entry + install Facebook on each. No images.
+    Same flow as _run_geelark_batch but with Facebook instead of Instagram and
+    no per-profile image step at the end.
+    """
+    await update.message.reply_text(
+        f"🚀 starting Facebook batch of {len(batch)} GeeLark phone(s)…",
+        parse_mode='Markdown')
+    results = []
+    for i, entry in enumerate(batch):
+        name = entry['name']
+        gid = entry['gologin_id']
+        await update.message.reply_text(
+            f"⏳ [{i+1}/{len(batch)}] `{name}`: fetching GoLogin proxy…",
+            parse_mode='Markdown')
+        proxy, err = _gologin_get_proxy(gid)
+        if err or not proxy:
+            results.append({'name': name, 'ok': False, 'stage': 'gologin_proxy', 'err': err})
+            await update.message.reply_text(f"❌ `{name}`: {err}", parse_mode='Markdown')
+            continue
+        await update.message.reply_text(
+            f"   proxy: `{proxy['protocol']}://{proxy['host']}:{proxy['port']}` — creating GeeLark phone…",
+            parse_mode='Markdown')
+        phone_id, err = _geelark_create_phone(name, proxy)
+        if err or not phone_id:
+            results.append({'name': name, 'ok': False, 'stage': 'geelark_create', 'err': err})
+            await update.message.reply_text(f"❌ `{name}`: phone create failed — {err}", parse_mode='Markdown')
+            continue
+        await update.message.reply_text(
+            f"   ✅ phone created ({phone_id}). Starting phone + waiting ~60s for boot…",
+            parse_mode='Markdown')
+        _, start_err = _geelark_post('/phone/start', {'ids': [phone_id]})
+        if start_err:
+            results.append({'name': name, 'ok': False, 'stage': 'phone_start', 'err': start_err, 'phone_id': phone_id})
+            await update.message.reply_text(f"❌ `{name}`: /phone/start failed — {start_err}", parse_mode='Markdown')
+            continue
+        _geelark_boot_wait(phone_id, sleep_s=60)
+        await update.message.reply_text(
+            f"   ✅ booted. Installing Facebook (~2-4 min)…",
+            parse_mode='Markdown')
+        ok, msg = _geelark_install_facebook(phone_id)
+        _, stop_err = _geelark_post('/phone/stop', {'ids': [phone_id]})
+        if stop_err:
+            logger.warning(f"[geelark_fb] post-install stop failed for {phone_id}: {stop_err}")
+        results.append({
+            'name': name, 'phone_id': phone_id,
+            'ok': ok, 'stage': 'install_fb' if not ok else 'done',
+            'err': None if ok else msg,
+        })
+        if ok:
+            await update.message.reply_text(f"   ✅ `{name}`: Facebook installed + phone stopped.", parse_mode='Markdown')
+        else:
+            await update.message.reply_text(f"   ⚠️ `{name}`: phone exists but FB install failed — {msg} (phone stopped)", parse_mode='Markdown')
+
+    # Final summary
+    okay = sum(1 for r in results if r['ok'])
+    ready = [r for r in results if r['ok']]
+    failed = [r for r in results if not r['ok']]
+    if okay == len(results):
+        header = (f"🟢 *ALL DONE — {okay}/{len(results)} GeeLark phones ready.*\n"
+                  f"Every phone has Facebook installed and has been *stopped* — "
+                  f"start each one from the GeeLark app when you're ready to sign in.")
+    elif okay > 0:
+        header = (f"🟡 *Batch finished — {okay}/{len(results)} ready, {len(results)-okay} failed.*")
+    else:
+        header = (f"🔴 *Batch finished — 0/{len(results)} ready.*")
+    lines = [header, ""]
+    if ready:
+        lines.append("*✅ Ready to use:*")
+        for r in ready:
+            lines.append(f"  • `{r['name']}` → phone id `{r['phone_id']}`")
+    if failed:
+        if ready: lines.append("")
+        lines.append("*❌ Failed:*")
+        for r in failed:
+            lines.append(f"  • `{r['name']}` — stage `{r['stage']}` — {r['err']}")
+    await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')

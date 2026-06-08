@@ -134,6 +134,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_geelark_name'):
         await geelark_open.geelark_text_received(update, context)
         return
+    if context.user_data.get('expecting_geelark_fb_name'):
+        await geelark_open.geelark_fb_text_received(update, context)
+        return
     if context.user_data.get('expecting_geelark_stop_name'):
         await geelark_open.geelark_stop_text_received(update, context)
         return
@@ -181,7 +184,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
         "📊 /proxy_status — Last batch result\n"
         "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
-        "📲 /geelark_profile_open — Batch-mirror GoLogin profiles to GeeLark + install IG\n"
+        "📷 /geelark_profile_ig_open — Batch-mirror GoLogin → GeeLark + install Instagram (+ images)\n"
+        "📘 /geelark_profile_fb_open — Batch-mirror GoLogin → GeeLark + install Facebook (no images)\n"
         "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n"
         "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
         "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
@@ -204,7 +208,8 @@ async def post_init(application):
         BotCommand("rambler_microsoft", "Fetch latest Microsoft code from a Rambler inbox"),
         BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
         BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
-        BotCommand("geelark_profile_open", "Batch-mirror GoLogin profiles to GeeLark + install IG"),
+        BotCommand("geelark_profile_ig_open", "Batch-mirror GoLogin → GeeLark + install IG (+ images)"),
+        BotCommand("geelark_profile_fb_open", "Batch-mirror GoLogin → GeeLark + install Facebook"),
         BotCommand("geelark_stop_phone", "Batch-stop GeeLark phones when IG setup is done"),
         BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
         BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
@@ -234,7 +239,8 @@ async def post_init(application):
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
-        ("📲 /geelark_profile_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
+        ("📷 /geelark_profile_ig_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
+        ("📘 /geelark_profile_fb_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
         ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
     ]
     feature_lines = []
@@ -312,7 +318,13 @@ def main():
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("rambler_microsoft", rambler.rambler_microsoft_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
+    # IG flow — keep both old + new names registered for in-flight runs.
+    # geelark_profile_open is the legacy alias; geelark_profile_ig_open is the
+    # user-facing canonical name as of 2026-06-08.
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
+    application.add_handler(CommandHandler("geelark_profile_ig_open", geelark_open.geelark_profile_open_command))
+    # FB flow — create phone + install Facebook, no images, no mode select
+    application.add_handler(CommandHandler("geelark_profile_fb_open", geelark_open.geelark_profile_fb_open_command))
     application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
     application.add_handler(CommandHandler("ig_setup_private", ig_setup.ig_setup_command))
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
