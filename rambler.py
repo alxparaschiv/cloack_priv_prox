@@ -21,6 +21,9 @@ import re
 import imaplib
 import email as _em
 import logging
+import datetime as _dt
+from email.header import decode_header
+from email.utils import parsedate_to_datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -30,8 +33,103 @@ IMAP_HOST = 'imap.rambler.ru'
 IMAP_PORT = 993
 IMAP_TIMEOUT = 15
 
-# Look in the last N emails for the most recent Facebook code
+# Look in the last N emails per folder for the most recent code
 RECENT_N = 30
+
+# Folders to scan. INBOX first (most likely), Spam second (FB sometimes
+# gets quarantined). Trash/Sent/Drafts skipped.
+SCAN_FOLDERS = ['INBOX', 'Spam']
+
+# Notification / activity senders we EXPLICITLY skip even though their
+# domain matches 'facebook' / 'instagram'. These never carry codes —
+# they're feed reminders, group updates, friend suggestions, etc.
+# Adding to this list is purely subtractive — it only PREVENTS bad
+# matches; it never blocks a sender that's already working today.
+REJECTED_SENDER_PREFIXES = (
+    'groupupdates@facebookmail.com',
+    'reminders@facebookmail.com',
+    'friendupdates@facebookmail.com',
+    'newsletter@facebookmail.com',
+    'notify@facebookmail.com',
+    'mention@facebookmail.com',
+    'comment@facebookmail.com',
+    'tag@facebookmail.com',
+)
+
+# An email is "fresh enough" to be a recent verification code if its
+# date is within this many minutes. Older matches are STILL returned
+# (so we don't regress accounts where the existing flow works), but
+# the user-facing reply prepends a ⚠️ stale warning + age so it's
+# obvious if the code is from 4 years ago vs. 4 minutes ago.
+FRESH_MINUTES = 15
+
+
+def _mime_decode(s):
+    """MIME-decode a header (handles =?UTF-8?B?...?= bundles). Returns
+    a plain unicode string."""
+    if not s:
+        return ''
+    out = []
+    for txt, enc in decode_header(s):
+        if isinstance(txt, bytes):
+            try:
+                out.append(txt.decode(enc or 'utf-8', errors='replace'))
+            except Exception:
+                out.append(txt.decode('utf-8', errors='replace'))
+        else:
+            out.append(txt)
+    return ''.join(out)
+
+
+def _age_str(dt):
+    """Format the age of an email (datetime) in a human-readable way:
+    '4y ago', '2mo ago', '13d ago', '47m ago', '8s ago'. Returns
+    ('age_string', is_stale_bool)."""
+    if not dt:
+        return ('unknown age', True)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        delta = now - dt
+    except Exception:
+        return ('unknown age', True)
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return ('just now', False)
+    if seconds < 60:
+        return (f'{seconds}s ago', seconds > FRESH_MINUTES * 60)
+    minutes = seconds // 60
+    if minutes < 60:
+        return (f'{minutes}m ago', minutes > FRESH_MINUTES)
+    hours = minutes // 60
+    if hours < 24:
+        return (f'{hours}h ago', True)
+    days = hours // 24
+    if days < 30:
+        return (f'{days}d ago', True)
+    months = days // 30
+    if months < 12:
+        return (f'{months}mo ago', True)
+    years = days // 365
+    return (f'{years}y ago', True)
+
+
+def _mime_decode(s):
+    """MIME-decode a header (handles =?UTF-8?B?...?= bundles). Returns
+    a plain unicode string."""
+    if not s:
+        return ''
+    out = []
+    for txt, enc in decode_header(s):
+        if isinstance(txt, bytes):
+            try:
+                out.append(txt.decode(enc or 'utf-8', errors='replace'))
+            except Exception:
+                out.append(txt.decode('utf-8', errors='replace'))
+        else:
+            out.append(txt)
+    return ''.join(out)
 
 
 def _extract_code_from_body(msg):
@@ -71,66 +169,123 @@ def _extract_code_from_body(msg):
 
 
 def _fetch_latest_code(email_addr: str, password: str, services):
-    """Connect to Rambler IMAP, return (code, subject, sender, service, error).
+    """Connect to Rambler IMAP, return (code, subject, sender, service,
+    age_str, is_stale, error).
 
     `services` is a list of (keyword, display_name) tuples — e.g.
     [('instagram','Instagram'), ('facebook','Facebook')] for Meta, or
     [('microsoft','Microsoft'), ('accountprotection','Microsoft'),
      ('outlook','Microsoft')] for Microsoft account codes.
 
-    The walker checks the From: header for ANY of the keywords (lowercased
-    substring match), tagging with the corresponding display_name. Subject
-    is tried first for the code, then the body as a fallback.
+    Improvements over the original "first match in INBOX" logic:
+      • Scans ALL folders in SCAN_FOLDERS (INBOX + Spam) — codes can
+        land in Spam and the old logic missed them entirely.
+      • Skips notification-noise senders (groupupdates@, reminders@, …)
+        which match the broad 'facebook' keyword but never carry codes.
+      • Collects ALL service-matching candidates across folders, then
+        picks the actually-newest one by INTERNALDATE / Date: header.
+        Old logic relied on IMAP UID order in one folder, which can
+        misorder messages that arrived via different routes.
+      • MIME-decodes the Subject so non-ASCII subjects (Hindi, Russian,
+        Chinese, etc.) display readably in TG instead of as base64.
+      • Returns the email's age and a is_stale flag (>15min old). The
+        caller surfaces these so a 4-year-old match is obviously stale.
     """
     try:
         m = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT)
     except Exception as e:
-        return None, None, None, None, f"connect failed: {type(e).__name__}: {e}"
+        return None, None, None, None, None, False, f"connect failed: {type(e).__name__}: {e}"
     try:
         m.login(email_addr, password)
     except Exception as e:
         try: m.logout()
         except: pass
-        return None, None, None, None, f"login failed (check email/password): {type(e).__name__}: {e}"
+        return None, None, None, None, None, False, \
+            f"login failed (check email/password): {type(e).__name__}: {e}"
+
+    candidates = []  # list of dicts with code/subj/frm/service/dt per match
     try:
-        m.select('INBOX')
-        _, ids = m.search(None, 'ALL')
-        all_ids = ids[0].split() if ids and ids[0] else []
-        for eid in all_ids[::-1][:RECENT_N]:
-            # Cheap header pre-check first (avoid fetching full body for non-matching mail)
-            _, hdr_data = m.fetch(eid, '(RFC822.HEADER)')
-            hdr_msg = _em.message_from_bytes(hdr_data[0][1])
-            frm = hdr_msg.get('From', '') or ''
-            subj = hdr_msg.get('Subject', '') or ''
-            frm_lower = frm.lower()
-            service = None
-            for kw, display in services:
-                if kw in frm_lower:
-                    service = display
-                    break
-            if not service:
+        for folder in SCAN_FOLDERS:
+            rv, info = m.select(folder, readonly=True)
+            if rv != 'OK':
+                logger.info(f"[rambler] skip folder {folder!r}: select={rv}")
                 continue
-            # 1) try subject (FB convention: "648099 is your code…",
-            #    MS convention: "Microsoft account security code: 1234567")
-            code = None
-            sm = re.search(r'\b(\d{4,8})\b', subj)
-            if sm: code = sm.group(1)
-            # 2) fall back to body (IG convention: subject has no digits, code is in body)
-            if not code:
-                _, full_data = m.fetch(eid, '(RFC822)')
-                full_msg = _em.message_from_bytes(full_data[0][1])
-                code = _extract_code_from_body(full_msg)
-            if code:
-                m.logout()
-                return code, subj, frm, service, None
-            # Email matched service but no code parseable — keep walking
-        m.logout()
-        names = ', '.join(sorted({d for _, d in services}))
-        return None, None, None, None, f"no {names} email with a code found in last {RECENT_N} messages"
+            _, ids = m.search(None, 'ALL')
+            all_ids = ids[0].split() if ids and ids[0] else []
+            if not all_ids:
+                continue
+            # Walk newest-first by IMAP UID, capped at RECENT_N per folder
+            for eid in all_ids[::-1][:RECENT_N]:
+                try:
+                    _, hdr_data = m.fetch(eid, '(RFC822.HEADER)')
+                    hdr_msg = _em.message_from_bytes(hdr_data[0][1])
+                except Exception as e:
+                    logger.warning(f"[rambler] header fetch err in {folder}/{eid}: {e}")
+                    continue
+                frm = hdr_msg.get('From', '') or ''
+                subj_raw = hdr_msg.get('Subject', '') or ''
+                subj = _mime_decode(subj_raw)
+                date_hdr = hdr_msg.get('Date', '') or ''
+                frm_lower = frm.lower()
+                # Skip known-noise senders even if their domain matches
+                if any(p in frm_lower for p in REJECTED_SENDER_PREFIXES):
+                    continue
+                # Match against the service keyword list (UNCHANGED — same
+                # broad match the old logic used, just additive filtering
+                # on top)
+                service = None
+                for kw, display in services:
+                    if kw in frm_lower:
+                        service = display
+                        break
+                if not service:
+                    continue
+                # Parse code: subject first (existing logic), body fallback
+                code = None
+                sm = re.search(r'\b(\d{4,8})\b', subj)
+                if sm:
+                    code = sm.group(1)
+                if not code:
+                    try:
+                        _, full_data = m.fetch(eid, '(RFC822)')
+                        full_msg = _em.message_from_bytes(full_data[0][1])
+                        code = _extract_code_from_body(full_msg)
+                    except Exception as e:
+                        logger.warning(f"[rambler] body fetch err in {folder}/{eid}: {e}")
+                if not code:
+                    continue
+                # Parse the email date for freshness sorting
+                try:
+                    dt = parsedate_to_datetime(date_hdr) if date_hdr else None
+                except Exception:
+                    dt = None
+                candidates.append({
+                    'code': code, 'subj': subj, 'frm': frm,
+                    'service': service, 'dt': dt, 'folder': folder,
+                })
+        try: m.logout()
+        except: pass
     except Exception as e:
         try: m.logout()
         except: pass
-        return None, None, None, None, f"fetch failed: {type(e).__name__}: {e}"
+        return None, None, None, None, None, False, f"fetch failed: {type(e).__name__}: {e}"
+
+    if not candidates:
+        names = ', '.join(sorted({d for _, d in services}))
+        return None, None, None, None, None, False, \
+            f"no {names} email with a code found in last {RECENT_N} messages " \
+            f"(scanned: {', '.join(SCAN_FOLDERS)})"
+
+    # Pick the truly newest by Date: header. If a candidate has no
+    # parseable date, it sorts to the bottom (we still return it as a
+    # last resort, but only if nothing dated is available).
+    def _key(c):
+        return c['dt'] or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc)
+    candidates.sort(key=_key, reverse=True)
+    best = candidates[0]
+    age_str, is_stale = _age_str(best['dt'])
+    return best['code'], best['subj'], best['frm'], best['service'], \
+        age_str, is_stale, None
 
 
 # Sender-keyword tables per provider.
@@ -192,7 +347,7 @@ async def rambler_text_received(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     await update.message.reply_text(f"🔍 Connecting to Rambler IMAP for `{email_addr}`…", parse_mode='Markdown')
-    code, subject, sender, service, err = _fetch_latest_meta_code(email_addr, password)
+    code, subject, sender, service, age, is_stale, err = _fetch_latest_meta_code(email_addr, password)
     if err:
         await update.message.reply_text(f"❌ {err}")
         return
@@ -202,8 +357,15 @@ async def rambler_text_received(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown')
         return
     icon = '📘' if service == 'Facebook' else '📷'
+    stale_warn = (f"⚠️ *STALE — this email is {age}*. Likely NOT a fresh "
+                  f"verification code; the latest matching email in this "
+                  f"inbox is old. If you just triggered a new code, try "
+                  f"again in 1 min or check whether the request actually "
+                  f"sent (FB sometimes silently rate-limits new accounts).\n\n"
+                  if is_stale else f"_(received {age})_\n\n")
     await update.message.reply_text(
         f"{icon} *{service} code: `{code}`*\n\n"
+        f"{stale_warn}"
         f"From: `{sender}`\n"
         f"Subject: `{subject}`",
         parse_mode='Markdown')
@@ -246,7 +408,7 @@ async def rambler_microsoft_text_received(update: Update, context: ContextTypes.
     await update.message.reply_text(
         f"🔍 Connecting to Rambler IMAP for `{email_addr}`…",
         parse_mode='Markdown')
-    code, subject, sender, service, err = _fetch_latest_microsoft_code(email_addr, password)
+    code, subject, sender, service, age, is_stale, err = _fetch_latest_microsoft_code(email_addr, password)
     if err:
         await update.message.reply_text(f"❌ {err}")
         return
@@ -255,8 +417,13 @@ async def rambler_microsoft_text_received(update: Update, context: ContextTypes.
             f"⚠️ No Microsoft code found in last {RECENT_N} messages.",
             parse_mode='Markdown')
         return
+    stale_warn = (f"⚠️ *STALE — this email is {age}*. Likely NOT a fresh "
+                  f"verification code; the latest matching email in this "
+                  f"inbox is old.\n\n"
+                  if is_stale else f"_(received {age})_\n\n")
     await update.message.reply_text(
         f"🪟 *{service} code: `{code}`*\n\n"
+        f"{stale_warn}"
         f"From: `{sender}`\n"
         f"Subject: `{subject}`",
         parse_mode='Markdown')
