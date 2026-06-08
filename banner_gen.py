@@ -37,10 +37,18 @@ ENGINE = 'nano-banana-pro'  # Gemini 3 Pro Image; ~$0.07-0.20/img
 #
 # Adjective levels for the expression — used by _build_prompt to soften
 # wording across retries if the safety filter blocks the first attempt.
+# All three include "warm friendly subtle closed-mouth smile" — that's the
+# anchor (matches reel_bot's Carolina formula). Only the surrounding
+# energy descriptors change between levels.
 EXPRESSION_LEVELS = [
-    "natural relaxed expression — calm and confident, directly engaging the camera",  # softest
-    "natural editorial expression — composed, magazine-cover energy",                   # softer
-    "thoughtful expression — looking at the camera with quiet poise",                   # softest
+    "warm friendly expression — subtle closed-mouth smile, eyes soft and "
+    "welcoming, gentle and approachable, like she's smiling at a friend "
+    "behind the camera. NOT a stern face, NOT a model-pout, NOT a serious "
+    "or sultry stare — genuinely friendly and inviting",
+    "warm friendly expression — subtle closed-mouth smile, kind eyes, "
+    "relaxed and approachable look, gentle warmth in her face",
+    "kind friendly expression — soft closed-mouth smile, gentle eyes, "
+    "warm and approachable",
 ]
 
 
@@ -73,10 +81,37 @@ def _build_prompt(softening_level: int = 0) -> str:
         f"obscured by any bedsheet, blanket, duvet, or pillow. The bedding "
         f"is FLAT underneath her, not over her. {expression}.\n"
         "\n"
-        "SETTING: minimalist modern bedroom, white or off-white bedding (a "
-        "flat sheet, not a fluffy duvet pulled over her), one or two pillows "
-        "behind her head, soft natural daylight from the left. Clean, "
-        "uncluttered background.\n"
+        "SETTING: modern bedroom, white or off-white bedding (a flat sheet, "
+        "not a fluffy duvet pulled over her), one or two pillows behind her "
+        "head, soft natural daylight from a window. The room should feel "
+        "lived-in rather than staged — a regular bedroom, not a hotel suite "
+        "or a photo studio. Background may have small everyday details "
+        "visible (a lamp, the edge of a nightstand, a slight wrinkle in the "
+        "sheet) but not cluttered.\n"
+        "\n"
+        "CAMERA / PHOTOGRAPHY STYLE — CRITICAL (this is what makes the image "
+        "look REAL instead of like a Photoshopped studio shot):\n"
+        "  • Smartphone camera look ONLY — NOT professional photography. "
+        "Think iPhone front camera or modest DSLR snapshot, NOT a fashion "
+        "magazine shoot.\n"
+        "  • ABSOLUTELY NO bokeh, NO depth-of-field blur, NO background "
+        "blur. The background should be IN FOCUS just like the foreground "
+        "— no creamy out-of-focus pillows or walls. Everything in the "
+        "frame at roughly the same sharpness.\n"
+        "  • NO cinematic lighting, NO dramatic shadows, NO color grading, "
+        "NO film-look filter, NO HDR effect, NO professional retouching, "
+        "NO skin smoothing.\n"
+        "  • NO studio lighting, NO ring light, NO softbox, NO reflector. "
+        "Just plain ambient natural daylight from a window.\n"
+        "  • Slight imperfections are GOOD and should be present: a touch "
+        "of sensor noise, slightly imperfect framing, mild over- or "
+        "under-exposure, a stray hair or two out of place, natural skin "
+        "texture (visible pores, slight unevenness — NOT airbrushed). "
+        "These cues make it feel like a real candid photo a friend took, "
+        "not an AI render.\n"
+        "  • Photorealistic, candid, Instagram-feed feel. Like a casual "
+        "smartphone photo a friend snapped from across the bed on a "
+        "regular afternoon.\n"
         "\n"
         "COMPOSITION (CRITICAL — read carefully):\n"
         "  • Cinematic ultrawide banner aspect ratio.\n"
