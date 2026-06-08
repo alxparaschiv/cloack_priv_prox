@@ -52,6 +52,7 @@ import drive_image_picker
 import rental
 import geelark_image_wizard
 import artistic_bg_gen
+import banner_gen
 
 
 logging.basicConfig(
@@ -166,6 +167,8 @@ async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Photo dispatcher — routes to whichever wizard is awaiting one."""
     if await ig_setup.ig_setup_photo_received(update, context):
         return
+    if await banner_gen.banner_photo_received(update, context):
+        return
 
 
 # ─── /start /help ─────────────────────────────────────────────────────
@@ -190,7 +193,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
         "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
         "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n"
-        "🎨 /artistic_bg — Generate a new background image from 6 random Drive refs\n",
+        "🎨 /artistic_bg — Generate a new background image from 6 random Drive refs\n"
+        "🖼 /banner_gen — Upload a model photo → 21:9 banner image in bed pose (nano-banana-pro)\n",
         parse_mode='HTML')
 
 
@@ -215,6 +219,7 @@ async def post_init(application):
         BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
         BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
         BotCommand("artistic_bg",       "Generate a new background image from 6 random Drive refs"),
+        BotCommand("banner_gen",        "Upload a model photo → 21:9 banner in bed pose (nano-banana-pro)"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -242,6 +247,7 @@ async def post_init(application):
         ("📷 /geelark_profile_ig_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
         ("📘 /geelark_profile_fb_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
         ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
+        ("🖼 /banner_gen",  ["WAVESPEED_API_KEY"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
@@ -330,6 +336,7 @@ def main():
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
+    application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
