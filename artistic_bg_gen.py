@@ -190,8 +190,13 @@ def _wavespeed_submit_multi_ref(images_data_uris, prompt=PROMPT,
     return rid
 
 
-def _wavespeed_wait(request_id, max_wait=180, poll_every=3):
-    """Poll until the task completes. Returns the output image URL or raises."""
+def _wavespeed_wait(request_id, max_wait=300, poll_every=3):
+    """Poll until the task completes. Returns the output image URL or raises.
+
+    Default max_wait bumped from 180s → 300s on 2026-06-08 after a real
+    production timeout: successful generations typically take 60-95s but
+    we saw one occasional outlier exceed 180s. 5 min absorbs that easily.
+    """
     deadline = time.time() + max_wait
     while time.time() < deadline:
         r = requests.get(f"{WAVESPEED_API_BASE}/predictions/{request_id}/result",
@@ -254,14 +259,28 @@ def generate_artistic_bg(profile_subfolder_name=None, send_progress=None):
         b64 = base64.b64encode(b).decode('ascii')
         data_uris.append(f"data:{mt};base64,{b64}")
 
-    # 4. Submit + wait
-    emit("🤖 submitting to WaveSpeed wan-2.7-pro (multi-ref)…")
-    try:
-        rid = _wavespeed_submit_multi_ref(data_uris)
-        emit(f"⏳ request {rid} — polling for result (max ~3 min)…")
-        out_url = _wavespeed_wait(rid)
-    except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}"
+    # 4. Submit + wait, with automatic retry on submit/poll failures.
+    # WaveSpeed occasionally times out (~5+ min on a stuck task) or returns
+    # a transient HTTP 5xx on submit. We retry up to 3 times total before
+    # giving up — burns at most ~15 min but salvages the run on a flake.
+    out_url = None
+    last_err = None
+    MAX_ATTEMPTS = 3
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            emit(f"🤖 submitting to WaveSpeed wan-2.7-pro (multi-ref, attempt {attempt}/{MAX_ATTEMPTS})…")
+            rid = _wavespeed_submit_multi_ref(data_uris)
+            emit(f"⏳ request {rid} — polling for result (max ~5 min)…")
+            out_url = _wavespeed_wait(rid)
+            break
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            emit(f"⚠️ attempt {attempt}/{MAX_ATTEMPTS} failed: {last_err}")
+            if attempt < MAX_ATTEMPTS:
+                emit(f"   → sleeping 10s before retry")
+                time.sleep(10)
+    if not out_url:
+        return None, None, f"all {MAX_ATTEMPTS} attempts failed; last err: {last_err}"
     emit(f"✅ generation complete — downloading output")
 
     # 5. Fetch the generated image
