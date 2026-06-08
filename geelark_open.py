@@ -183,6 +183,18 @@ def _geelark_create_phone(profile_name, proxy):
     proxy = dict with host, port, username, password, protocol.
     Returns (phone_id, err).
     """
+    # GeeLark caps profileName at 64 characters. Anything longer is rejected
+    # with "app name too long maximum 64 characters". Per user spec
+    # 2026-06-08: just take the first 64 chars of the GoLogin name and use
+    # those — no marker, no transformation, just a hard slice.
+    GEELARK_NAME_CAP = 64
+    if len(profile_name) > GEELARK_NAME_CAP:
+        original_len = len(profile_name)
+        profile_name = profile_name[:GEELARK_NAME_CAP]
+        logger.warning(
+            f"[geelark_create_phone] profile name was {original_len} chars; "
+            f"truncated to first {GEELARK_NAME_CAP} chars: {profile_name!r}")
+
     # GeeLark wants proxyInformation as a URL string: scheme://user:pass@host:port
     scheme = proxy['protocol'] if proxy['protocol'] in ('http', 'https', 'socks4', 'socks5') else 'http'
     if proxy['username'] or proxy['password']:
@@ -489,7 +501,13 @@ def _geelark_find_phone_by_name(profile_name):
     phone names actually found, so the user can see whether the issue is a
     typo / hidden whitespace / pagination cap.
     """
-    target = profile_name.strip().lower()
+    # Mirror the 64-char truncation applied at create time. If the original
+    # GoLogin name was >64 chars, the GeeLark phone's serialName is just the
+    # first 64 chars. The user is allowed to type the full GoLogin name and
+    # we still need to match the truncated GeeLark name.
+    target_full = profile_name.strip()
+    target_truncated = target_full[:64]
+    target = target_truncated.lower()
     target_first_word = target.split(' ', 1)[0]
     page = 1
     total_seen = 0
