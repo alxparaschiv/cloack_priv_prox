@@ -193,7 +193,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
         "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
         "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n"
-        "🎨 /artistic_bg — Generate a new background image from 6 random Drive refs\n"
+        "🎨 /artistic_bg — Batch-generate N artistic backgrounds (pick type → count → Drive folder link)\n"
         "🖼 /banner_gen — Upload a model photo → 21:9 banner image in bed pose (nano-banana-pro)\n",
         parse_mode='HTML')
 
@@ -218,7 +218,7 @@ async def post_init(application):
         BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
         BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
         BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
-        BotCommand("artistic_bg",       "Generate a new background image from 6 random Drive refs"),
+        BotCommand("artistic_bg",       "Batch-generate N artistic backgrounds — pick type, get Drive folder link"),
         BotCommand("banner_gen",        "Upload a model photo → 21:9 banner in bed pose (nano-banana-pro)"),
         BotCommand("start",         "Help"),
     ])
@@ -354,6 +354,8 @@ def main():
         drive_image_picker.drive_pick_callback, pattern=r'^drive_pick:'))
     application.add_handler(CallbackQueryHandler(
         geelark_image_wizard.imgwiz_callback, pattern=r'^imgwiz:'))
+    application.add_handler(CallbackQueryHandler(
+        artistic_bg_gen.artbg_callback, pattern=r'^artbg:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(

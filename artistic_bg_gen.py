@@ -1,40 +1,45 @@
-"""/artistic_bg — Generate a new unique image whose style matches a folder
+"""/artistic_bg — Generate unique image(s) whose style matches a folder
 of reference images in Drive.
 
 Engine: WaveSpeed `google/nano-banana-pro/edit` (Gemini 3 Pro Image,
 ~$0.07-0.20/img). The `images` array accepts multiple references — same
 pattern reel_bot uses when it sends a model+pose pair. Picks 6 random
-images from the reference folder, sends them all in the `images` array
-with a prompt that asks for a new visually-distinct image in the same
-aesthetic.
+images from the reference folder per generation, sends them all in the
+`images` array with a prompt that asks for a new visually-distinct
+image in the same aesthetic.
 
-Standalone Telegram command first (this commit). The image wizard
-integration lands next.
+Two flows:
+  1. Wizard-driven single shot: geelark_image_wizard calls
+     generate_artistic_bg(profile_subfolder_name) to drop ONE image into
+     that profile's Drive subfolder.
+  2. /artistic_bg Telegram command: inline-keyboard picker — choose
+     a type (any 'Images bg *' Drive folder, or Mixed across all),
+     choose a count, generate N images into a timestamped batch
+     subfolder under OUTPUT_ROOT_NAME, and DM back the Drive folder
+     link so the user can open + bulk-download.
 
 Output is saved to a single root Drive folder:
    `Images generated for account setup in GeeLark/`
    sub-folder per profile when invoked from the wizard;
-   the standalone command saves directly into the root with a timestamped name.
+   sub-folder per batch (`batch_<type>_<ts>/`) when invoked from /artistic_bg.
 
 Env deps:
   - WAVESPEED_API_KEY        — WaveSpeed AI bearer token
   - REEL_GOOGLE_TOKEN_PICKLE — Drive auth for reel-bot-Carolina's Drive (where
-                               'Images bg goth artistic' + the output root live).
-                               This is a SEPARATE pickle from GOOGLE_TOKEN_PICKLE
-                               (which points at cloak's own Drive for Meta blobs
-                               etc.) — we don't want the two getting tangled.
+                               the 'Images bg *' folders + the output root live).
+                               Separate from GOOGLE_TOKEN_PICKLE (cloak's Drive).
 """
 import os
 import io
 import base64
-import json
 import time
 import random
 import logging
 import pickle
+import asyncio
 
 import requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from googleapiclient.discovery import build
@@ -45,10 +50,15 @@ logger = logging.getLogger(__name__)
 WAVESPEED_API_BASE = 'https://api.wavespeed.ai/api/v3'
 WAVESPEED_API_KEY = os.environ.get('WAVESPEED_API_KEY', '')
 
-REF_FOLDER_NAME    = 'Images bg goth artistic'
+REF_FOLDER_NAME    = 'Images bg goth artistic'      # default / wizard path
+REF_FOLDER_PREFIX  = 'Images bg '                    # auto-discover all types matching this prefix
 OUTPUT_ROOT_NAME   = 'Images generated for account setup in GeeLark'
 REFS_PER_CALL      = 6
 ENGINE             = 'nano-banana-pro'  # Gemini 3 Pro Image; ~$0.07-0.20/img
+
+# Hard cap on how many backgrounds a single batch can request. Each image
+# costs $0.07-0.20 and burns ~60-120s, so a 50-img batch is ~$5-10 + ~1h.
+BATCH_MAX = 50
 
 # Prompt designed for no-people aesthetic-matching backgrounds. The model
 # tends to insert subjects unless explicitly told not to.
@@ -71,7 +81,7 @@ def _drive_service():
     """Build a Drive client using reel-bot-Carolina's pickle.
 
     REEL_GOOGLE_TOKEN_PICKLE is the SEPARATE pickle that authenticates against
-    the Drive holding 'Images bg goth artistic' + 'Images generated for account
+    the Drive holding 'Images bg *' folders + 'Images generated for account
     setup in GeeLark'. We deliberately don't use cloak's own GOOGLE_TOKEN_PICKLE
     here — those are different Drives.
     """
@@ -111,6 +121,39 @@ def _ensure_folder(svc, name, parent_id=None):
     f = svc.files().create(body=body, fields='id',
                            supportsAllDrives=True).execute()
     return f['id']
+
+
+def _list_art_type_folders(svc):
+    """Find every top-level 'Images bg *' folder. Returns list of {id,name}.
+
+    These are the discoverable 'types' the user can pick from in /artistic_bg.
+    Paginated to avoid the unscoped-single-page miss bug per
+    [[reference-drive-folder-pagination]].
+    """
+    out = []
+    page_token = None
+    while True:
+        q = (f"mimeType='application/vnd.google-apps.folder' and trashed=false "
+             f"and name contains '{REF_FOLDER_PREFIX}'")
+        res = svc.files().list(q=q,
+                               fields='nextPageToken, files(id,name)',
+                               pageSize=100,
+                               pageToken=page_token,
+                               supportsAllDrives=True,
+                               includeItemsFromAllDrives=True).execute()
+        for f in res.get('files') or []:
+            # Drive's `name contains` is a substring match — verify prefix.
+            if (f.get('name') or '').startswith(REF_FOLDER_PREFIX):
+                out.append({'id': f['id'], 'name': f['name']})
+        page_token = res.get('nextPageToken')
+        if not page_token: break
+    # De-duplicate by id (in case Drive returns the same folder twice).
+    seen = set(); uniq = []
+    for f in out:
+        if f['id'] in seen: continue
+        seen.add(f['id']); uniq.append(f)
+    uniq.sort(key=lambda x: x['name'].lower())
+    return uniq
 
 
 def _list_images_in_folder(svc, folder_id):
@@ -154,6 +197,10 @@ def _upload_bytes_to_drive(svc, parent_folder_id, file_name, content_bytes,
     return res['id']
 
 
+def _folder_drive_url(folder_id):
+    return f'https://drive.google.com/drive/folders/{folder_id}'
+
+
 # ─── WaveSpeed ─────────────────────────────────────────────────────────────
 
 def _wavespeed_submit_multi_ref(images_data_uris, prompt=PROMPT,
@@ -161,17 +208,13 @@ def _wavespeed_submit_multi_ref(images_data_uris, prompt=PROMPT,
                                   aspect_ratio='1:1', resolution='2k'):
     """Submit a multi-reference image-edit task to nano-banana-pro.
     Returns request_id or raises.
-
-    Body shape matches reel_bot.wavespeed_submit_image_edit's nano-banana
-    branch: aspect_ratio + resolution (NOT size). The images[] array can
-    hold multiple data-URI references; nano-banana-pro reads all of them.
     """
     if not WAVESPEED_API_KEY:
         raise RuntimeError("WAVESPEED_API_KEY not set in env")
     url = f"{WAVESPEED_API_BASE}/google/{engine}/edit"
     body = {
         'prompt': prompt,
-        'images': images_data_uris,   # list of data:image/jpeg;base64,... strings
+        'images': images_data_uris,
         'aspect_ratio': aspect_ratio,
         'resolution': resolution,
         'output_format': 'jpeg',
@@ -191,12 +234,7 @@ def _wavespeed_submit_multi_ref(images_data_uris, prompt=PROMPT,
 
 
 def _wavespeed_wait(request_id, max_wait=300, poll_every=3):
-    """Poll until the task completes. Returns the output image URL or raises.
-
-    Default max_wait bumped from 180s → 300s on 2026-06-08 after a real
-    production timeout: successful generations typically take 60-95s but
-    we saw one occasional outlier exceed 180s. 5 min absorbs that easily.
-    """
+    """Poll until the task completes. Returns the output image URL or raises."""
     deadline = time.time() + max_wait
     while time.time() < deadline:
         r = requests.get(f"{WAVESPEED_API_BASE}/predictions/{request_id}/result",
@@ -218,7 +256,83 @@ def _wavespeed_wait(request_id, max_wait=300, poll_every=3):
     raise RuntimeError(f"WaveSpeed timed out after {max_wait}s (request_id={request_id})")
 
 
-# ─── Main flow ─────────────────────────────────────────────────────────────
+# ─── Core single-image generator ───────────────────────────────────────────
+
+def _refs_pool(svc, ref_folder_ids):
+    """Build a single combined pool of refs from one or many folders.
+
+    For 'Mixed' mode we pass multiple folder ids and randomly sample REFS_PER_CALL
+    refs across the union — so a single generation can pull from several types
+    at once, biasing the output toward 'something in between'.
+    """
+    pool = []
+    for fid in ref_folder_ids:
+        pool.extend(_list_images_in_folder(svc, fid))
+    return pool
+
+
+def _generate_one(svc, ref_folder_ids, parent_folder_id, emit, file_prefix='artistic_bg'):
+    """Pick fresh random refs → submit → wait → download → upload to Drive.
+
+    ref_folder_ids: list of folder ids to pull refs from (1 for single-type,
+        N for Mixed).
+    parent_folder_id: where to drop the generated image.
+    Returns (drive_id, local_path, err).
+    """
+    pool = _refs_pool(svc, ref_folder_ids)
+    if len(pool) < REFS_PER_CALL:
+        return None, None, (f"ref pool has only {len(pool)} images, "
+                            f"need at least {REFS_PER_CALL}")
+    chosen = random.sample(pool, REFS_PER_CALL)
+    emit(f"🎲 picked {REFS_PER_CALL} random refs: {[c['name'] for c in chosen]}")
+
+    data_uris = []
+    for f in chosen:
+        b = _download_image_bytes(svc, f['id'])
+        mt = (f.get('mimeType') or '').lower()
+        if not mt.startswith('image/'):
+            mt = 'image/jpeg'
+        b64 = base64.b64encode(b).decode('ascii')
+        data_uris.append(f"data:{mt};base64,{b64}")
+
+    out_url = None
+    last_err = None
+    MAX_ATTEMPTS = 3
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            emit(f"🤖 submitting to WaveSpeed {ENGINE} (multi-ref, attempt {attempt}/{MAX_ATTEMPTS})…")
+            rid = _wavespeed_submit_multi_ref(data_uris)
+            emit(f"⏳ request {rid} — polling for result (max ~5 min)…")
+            out_url = _wavespeed_wait(rid)
+            break
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            emit(f"⚠️ attempt {attempt}/{MAX_ATTEMPTS} failed: {last_err}")
+            if attempt < MAX_ATTEMPTS:
+                emit(f"   → sleeping 10s before retry")
+                time.sleep(10)
+    if not out_url:
+        return None, None, f"all {MAX_ATTEMPTS} attempts failed; last err: {last_err}"
+    emit(f"✅ generation complete — downloading output")
+
+    try:
+        img_r = requests.get(out_url, timeout=60)
+        img_r.raise_for_status()
+        img_bytes = img_r.content
+    except Exception as e:
+        return None, None, f"output fetch err: {type(e).__name__}: {e}"
+
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    # Add random suffix so two images generated in the same second don't collide.
+    fname = f'{file_prefix}_{ts}_{random.randint(1000, 9999)}.jpg'
+    local_path = f'/tmp/{fname}'
+    with open(local_path, 'wb') as f: f.write(img_bytes)
+
+    drive_id = _upload_bytes_to_drive(svc, parent_folder_id, fname, img_bytes)
+    return drive_id, local_path, None
+
+
+# ─── Main flow (wizard path — single-shot, unchanged signature) ────────────
 
 def generate_artistic_bg(profile_subfolder_name=None, send_progress=None):
     """End-to-end: pick 6 refs → call WaveSpeed → download → save to Drive.
@@ -234,84 +348,116 @@ def generate_artistic_bg(profile_subfolder_name=None, send_progress=None):
             try: send_progress(msg)
             except Exception: pass
 
-    # 1. Find reference folder
     svc = _drive_service()
     ref_folder = _find_folder_by_name(svc, REF_FOLDER_NAME)
     if not ref_folder:
         return None, None, f"reference folder '{REF_FOLDER_NAME}' not found in Drive"
     emit(f"📁 ref folder: {REF_FOLDER_NAME} ({ref_folder['id']})")
 
-    # 2. List + sample
-    images = _list_images_in_folder(svc, ref_folder['id'])
-    if len(images) < REFS_PER_CALL:
-        return None, None, (f"reference folder has only {len(images)} images, "
-                            f"need at least {REFS_PER_CALL}")
-    chosen = random.sample(images, REFS_PER_CALL)
-    emit(f"🎲 picked {REFS_PER_CALL} random refs: {[c['name'] for c in chosen]}")
-
-    # 3. Download + encode as data URIs
-    data_uris = []
-    for f in chosen:
-        b = _download_image_bytes(svc, f['id'])
-        mt = (f.get('mimeType') or '').lower()
-        if not mt.startswith('image/'):
-            mt = 'image/jpeg'
-        b64 = base64.b64encode(b).decode('ascii')
-        data_uris.append(f"data:{mt};base64,{b64}")
-
-    # 4. Submit + wait, with automatic retry on submit/poll failures.
-    # WaveSpeed occasionally times out (~5+ min on a stuck task) or returns
-    # a transient HTTP 5xx on submit. We retry up to 3 times total before
-    # giving up — burns at most ~15 min but salvages the run on a flake.
-    out_url = None
-    last_err = None
-    MAX_ATTEMPTS = 3
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            emit(f"🤖 submitting to WaveSpeed wan-2.7-pro (multi-ref, attempt {attempt}/{MAX_ATTEMPTS})…")
-            rid = _wavespeed_submit_multi_ref(data_uris)
-            emit(f"⏳ request {rid} — polling for result (max ~5 min)…")
-            out_url = _wavespeed_wait(rid)
-            break
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-            emit(f"⚠️ attempt {attempt}/{MAX_ATTEMPTS} failed: {last_err}")
-            if attempt < MAX_ATTEMPTS:
-                emit(f"   → sleeping 10s before retry")
-                time.sleep(10)
-    if not out_url:
-        return None, None, f"all {MAX_ATTEMPTS} attempts failed; last err: {last_err}"
-    emit(f"✅ generation complete — downloading output")
-
-    # 5. Fetch the generated image
-    try:
-        img_r = requests.get(out_url, timeout=60)
-        img_r.raise_for_status()
-        img_bytes = img_r.content
-    except Exception as e:
-        return None, None, f"output fetch err: {type(e).__name__}: {e}"
-
-    # 6. Save locally + upload to Drive
-    ts = time.strftime('%Y%m%d_%H%M%S')
-    fname = f'artistic_bg_{ts}.jpg'
-    local_path = f'/tmp/{fname}'
-    with open(local_path, 'wb') as f: f.write(img_bytes)
-
     out_root_id = _ensure_folder(svc, OUTPUT_ROOT_NAME)
     parent_id = out_root_id
     if profile_subfolder_name:
         parent_id = _ensure_folder(svc, profile_subfolder_name, out_root_id)
 
-    drive_id = _upload_bytes_to_drive(svc, parent_id, fname, img_bytes)
-    emit(f"💾 saved to Drive: {OUTPUT_ROOT_NAME}/"
-         f"{profile_subfolder_name + '/' if profile_subfolder_name else ''}{fname}")
-    return drive_id, local_path, None
+    drive_id, local_path, err = _generate_one(svc, [ref_folder['id']], parent_id, emit)
+    if not err:
+        emit(f"💾 saved to Drive: {OUTPUT_ROOT_NAME}/"
+             f"{profile_subfolder_name + '/' if profile_subfolder_name else ''}"
+             f"{os.path.basename(local_path)}")
+    return drive_id, local_path, err
 
 
-# ─── Telegram command ───────────────────────────────────────────────────────
+# ─── Batch generator (new — /artistic_bg path) ─────────────────────────────
+
+def generate_artistic_bg_batch(type_label, ref_folder_ids, count, send_progress=None):
+    """Generate `count` images into a fresh batch subfolder under OUTPUT_ROOT.
+
+    type_label: short slug used in the batch folder name + filenames
+        (e.g. 'goth_artistic', 'mixed').
+    ref_folder_ids: list of folder ids to sample refs from.
+    Returns (batch_folder_id, batch_folder_url, successes, errors)
+        successes: list of (drive_id, local_path) for images that landed.
+        errors: list of error strings for images that failed.
+    """
+    def emit(msg):
+        logger.info(f"[artistic_bg_batch] {msg}")
+        if send_progress:
+            try: send_progress(msg)
+            except Exception: pass
+
+    svc = _drive_service()
+    out_root_id = _ensure_folder(svc, OUTPUT_ROOT_NAME)
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    batch_name = f'batch_{type_label}_{ts}'
+    batch_id = _ensure_folder(svc, batch_name, out_root_id)
+    batch_url = _folder_drive_url(batch_id)
+    emit(f"📁 batch folder: `{OUTPUT_ROOT_NAME}/{batch_name}`")
+    emit(f"🔗 {batch_url}")
+
+    successes = []
+    errors = []
+    for i in range(1, count + 1):
+        emit(f"\n── 🖼 image {i}/{count} ──")
+        try:
+            drive_id, local_path, err = _generate_one(
+                svc, ref_folder_ids, batch_id, emit,
+                file_prefix=f'artistic_{type_label}')
+            if err:
+                emit(f"❌ image {i} failed: {err}")
+                errors.append(f"{i}: {err}")
+            else:
+                successes.append((drive_id, local_path))
+                emit(f"💾 image {i} saved (drive id {drive_id})")
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            emit(f"❌ image {i} crashed: {err}")
+            errors.append(f"{i}: {err}")
+    return batch_id, batch_url, successes, errors
+
+
+# ─── Telegram command + callbacks ──────────────────────────────────────────
+
+# Count options shown in the count picker.
+COUNT_OPTIONS = [1, 3, 5, 10, 20]
+
+
+def _type_slug(name):
+    """'Images bg goth artistic' → 'goth_artistic'."""
+    base = name[len(REF_FOLDER_PREFIX):] if name.startswith(REF_FOLDER_PREFIX) else name
+    return base.strip().lower().replace(' ', '_').replace('-', '_')
+
+
+def _type_picker_keyboard(types):
+    """One button per discovered type + a 'Mixed (all)' button + Cancel.
+
+    Type ids are cached in user_data['artbg_types'] keyed by index so the
+    callback data stays well under the 64B Telegram cap.
+    """
+    rows = []
+    for idx, t in enumerate(types):
+        label = f"🎨 {t['name'].replace(REF_FOLDER_PREFIX, '')}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"artbg:t:{idx}")])
+    rows.append([InlineKeyboardButton("🎲 Mixed (random across all types)",
+                                       callback_data="artbg:t:mix")])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="artbg:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _count_picker_keyboard(idx_token):
+    rows = []
+    row = []
+    for n in COUNT_OPTIONS:
+        row.append(InlineKeyboardButton(f"{n}", callback_data=f"artbg:n:{idx_token}:{n}"))
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="artbg:back")])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="artbg:cancel")])
+    return InlineKeyboardMarkup(rows)
+
 
 async def artistic_bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """One-shot: pick 6 random refs from Drive folder, generate, save, send."""
+    """Entrypoint — discover type folders + show the type picker."""
     msg = update.message
     if not WAVESPEED_API_KEY:
         await msg.reply_text(
@@ -319,41 +465,160 @@ async def artistic_bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode='Markdown')
         return
 
-    await msg.reply_text(
-        "🎨 *Artistic background generator*\n\n"
-        f"Reference folder: `{REF_FOLDER_NAME}`\n"
-        f"Engine: `{ENGINE}` (~$0.07-0.20/img)\n"
-        f"Picking {REFS_PER_CALL} random refs + generating…",
-        parse_mode='Markdown')
-
-    sent_updates = []  # collect progress messages locally; reply each to user
-
-    async def progress_async(text):
-        await msg.reply_text(text, parse_mode='Markdown')
-
-    def sync_progress(text):
-        # Schedule the async TG send from a thread-safe boundary.
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(progress_async(text), loop)
-        except Exception: pass
-
-    import asyncio
-    drive_id, local_path, err = await asyncio.to_thread(
-        generate_artistic_bg, None, sync_progress)
-    if err:
-        await msg.reply_text(f"❌ `{err}`", parse_mode='Markdown')
+    # Discover types in a worker thread (Drive call).
+    try:
+        types = await asyncio.to_thread(lambda: _list_art_type_folders(_drive_service()))
+    except Exception as e:
+        await msg.reply_text(f"❌ Drive list err: `{type(e).__name__}: {e}`",
+                              parse_mode='Markdown')
         return
 
-    # Send the generated image back so the user can see it
-    try:
-        with open(local_path, 'rb') as f:
-            await msg.reply_photo(
-                photo=f,
-                caption=(f"✅ generated\n"
-                         f"Drive id: `{drive_id}`\n"
-                         f"Saved to: `{OUTPUT_ROOT_NAME}/`"),
-                parse_mode='Markdown')
-    except Exception as e:
-        await msg.reply_text(f"⚠️ generated but TG photo send failed: {e}")
+    if not types:
+        await msg.reply_text(
+            f"❌ no `{REF_FOLDER_PREFIX}*` folders found in Drive.\n"
+            f"Create one (e.g. `{REF_FOLDER_NAME}`) and drop your refs in it.",
+            parse_mode='Markdown')
+        return
+
+    context.user_data['artbg_types'] = types
+    lines = "\n".join(f"• `{t['name']}`" for t in types)
+    await msg.reply_text(
+        "🎨 *Artistic background generator — batch*\n\n"
+        f"Engine: `{ENGINE}` (~$0.07-0.20/img)\n"
+        f"Each image picks {REFS_PER_CALL} random refs from the chosen type.\n\n"
+        f"*Available types:*\n{lines}\n\n"
+        "Pick a type 👇",
+        parse_mode='Markdown',
+        reply_markup=_type_picker_keyboard(types))
+
+
+async def artbg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle artbg:* inline buttons (type picker → count picker → run)."""
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+
+    if data == 'artbg:cancel':
+        await q.edit_message_text("❌ cancelled.")
+        return
+
+    if data == 'artbg:back':
+        types = context.user_data.get('artbg_types') or []
+        if not types:
+            await q.edit_message_text("⚠️ session expired — run /artistic_bg again.")
+            return
+        await q.edit_message_text(
+            "🎨 *Artistic background generator — batch*\n\nPick a type 👇",
+            parse_mode='Markdown',
+            reply_markup=_type_picker_keyboard(types))
+        return
+
+    if data.startswith('artbg:t:'):
+        token = data.split(':', 2)[2]
+        types = context.user_data.get('artbg_types') or []
+        if not types:
+            await q.edit_message_text("⚠️ session expired — run /artistic_bg again.")
+            return
+        if token == 'mix':
+            label = '🎲 Mixed (random across all types)'
+        else:
+            try: i = int(token)
+            except ValueError:
+                await q.edit_message_text("⚠️ bad selection — run /artistic_bg again.")
+                return
+            if i < 0 or i >= len(types):
+                await q.edit_message_text("⚠️ stale selection — run /artistic_bg again.")
+                return
+            label = f"🎨 {types[i]['name'].replace(REF_FOLDER_PREFIX, '')}"
+        await q.edit_message_text(
+            f"*Type:* {label}\n\nHow many backgrounds? (each takes ~60-120s)",
+            parse_mode='Markdown',
+            reply_markup=_count_picker_keyboard(token))
+        return
+
+    if data.startswith('artbg:n:'):
+        # artbg:n:<token>:<count>
+        parts = data.split(':')
+        if len(parts) != 4:
+            await q.edit_message_text("⚠️ bad callback — run /artistic_bg again.")
+            return
+        _, _, token, count_s = parts
+        try: count = int(count_s)
+        except ValueError:
+            await q.edit_message_text("⚠️ bad count — run /artistic_bg again.")
+            return
+        if count < 1 or count > BATCH_MAX:
+            await q.edit_message_text(f"⚠️ count must be 1–{BATCH_MAX}.")
+            return
+        await _kickoff_batch(update, context, token, count)
+        return
+
+
+async def _kickoff_batch(update, context, token, count):
+    """Resolve the type token → list of ref folder ids → start batch in a
+    worker thread. Streams progress + the final folder link back to TG."""
+    q = update.callback_query
+    chat_id = q.message.chat_id
+    types = context.user_data.get('artbg_types') or []
+    if not types:
+        await q.edit_message_text("⚠️ session expired — run /artistic_bg again.")
+        return
+
+    if token == 'mix':
+        ref_ids = [t['id'] for t in types]
+        type_label = 'mixed'
+        pretty = 'Mixed (random across all types)'
+    else:
+        try: i = int(token)
+        except ValueError:
+            await q.edit_message_text("⚠️ bad selection.")
+            return
+        if i < 0 or i >= len(types):
+            await q.edit_message_text("⚠️ stale selection.")
+            return
+        ref_ids = [types[i]['id']]
+        type_label = _type_slug(types[i]['name'])
+        pretty = types[i]['name']
+
+    await q.edit_message_text(
+        f"🎨 *Batch started*\n\n"
+        f"Type: `{pretty}`\n"
+        f"Count: *{count}*\n"
+        f"Engine: `{ENGINE}`\n\n"
+        f"Streaming progress below — final Drive folder link at the end.",
+        parse_mode='Markdown')
+
+    loop = asyncio.get_event_loop()
+
+    async def send_async(text):
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text,
+                                            parse_mode='Markdown',
+                                            disable_web_page_preview=True)
+        except Exception:
+            # Markdown can fail on stray refs filenames — retry plain.
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text,
+                                                disable_web_page_preview=True)
+            except Exception: pass
+
+    def sync_progress(text):
+        try:
+            asyncio.run_coroutine_threadsafe(send_async(text), loop)
+        except Exception: pass
+
+    batch_id, batch_url, successes, errors = await asyncio.to_thread(
+        generate_artistic_bg_batch, type_label, ref_ids, count, sync_progress)
+
+    ok_n, fail_n = len(successes), len(errors)
+    summary = (
+        f"🎉 *Batch complete*\n\n"
+        f"✅ {ok_n}/{count} images generated\n"
+        + (f"❌ {fail_n} failed\n" if fail_n else '')
+        + f"\n📂 *Drive folder:* [open]({batch_url})\n"
+        f"`{batch_url}`\n\n"
+        f"Open the link, select all + download to grab them in one go."
+    )
+    await context.bot.send_message(chat_id=chat_id, text=summary,
+                                    parse_mode='Markdown',
+                                    disable_web_page_preview=False)
