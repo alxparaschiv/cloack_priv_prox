@@ -136,7 +136,7 @@ async def safe_screenshot(page, retries=3, timeout_s=15):
             await _a.sleep(2)
     hb('❌ direct-CDP screenshot exhausted all retries — returning empty bytes')
     return b''
-def vision(png, q, model='gpt-4o', max_tok=500):
+def vision(png, q, model='gpt-4o-mini', max_tok=500):
     """Vision call with retry (5 attempts, 3s+exp backoff) — a single transient
     OpenAI hiccup must NOT crash the pipeline. VP1 burn 2026-06-02 traced to
     one empty response body during AC bind → JSONDecodeError → pipeline died

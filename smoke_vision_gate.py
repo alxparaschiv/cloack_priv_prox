@@ -34,7 +34,7 @@ def gate(png_bytes, question):
     )
     r = requests.post('https://api.openai.com/v1/chat/completions',
         headers={'Authorization': f'Bearer {OAI}'},
-        json={'model': 'gpt-4o',
+        json={'model': 'gpt-4o-mini',
               'messages': [{'role': 'user', 'content': [
                   {'type': 'text', 'text': prompt},
                   {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{b64}'}}]}],
