@@ -31,7 +31,7 @@ import hashlib
 import logging
 
 import requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,16 @@ GEELARK_OPENAPI_BASE = 'https://openapi.geelark.com/open/v1'
 
 # Sentinels that end batch collection
 DONE_WORDS = {'no', 'done', 'finish', 'finished', 'stop', 'end', 'cancel', 'that\'s it', "that's it"}
+
+
+def _done_kb(flow):
+    """Inline keyboard with a single 'Done — start' button per batch-collection
+    prompt. flow ∈ {'ig','fb','stop'} routes to the matching callback handler.
+    """
+    label = '🛑 Stop them now' if flow == 'stop' else '✅ Done — start batch'
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(label, callback_data=f"geelark_done:{flow}")
+    ]])
 
 
 # ─── GoLogin ────────────────────────────────────────────────────────────────
@@ -337,8 +347,9 @@ async def geelark_profile_open_command_legacy_entry(msg, context):
         "Send the *GoLogin profile name* for the first GeeLark phone "
         "(e.g. `Caroline Goni 5`).\n\n"
         "I'll validate the name against GoLogin first. After each one, "
-        "you can add more — or type `done` to start the batch.",
-        parse_mode='Markdown')
+        "you can add more — tap *Done* or type `done` to start the batch.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('ig'))
 
 
 async def geelark_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -364,8 +375,9 @@ async def geelark_text_received(update: Update, context: ContextTypes.DEFAULT_TY
     profile_id, err = _gologin_find_profile_by_name(text)
     if err or not profile_id:
         await update.message.reply_text(
-            f"❌ {err or 'profile not found'}\n\nTry another name, or type `done` to stop.",
-            parse_mode='Markdown')
+            f"❌ {err or 'profile not found'}\n\nTry another name, or tap *Done* / type `done` to stop.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('ig'))
         return
 
     batch = context.user_data.setdefault('geelark_batch', [])
@@ -373,15 +385,17 @@ async def geelark_text_received(update: Update, context: ContextTypes.DEFAULT_TY
     if any(b['name'].lower() == text.lower() for b in batch):
         await update.message.reply_text(
             f"⚠️ `{text}` already in this batch — skipping. "
-            f"Send another name or `done`.",
-            parse_mode='Markdown')
+            f"Send another name or tap *Done*.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('ig'))
         return
     batch.append({'name': text, 'gologin_id': profile_id})
     queue = '\n'.join(f"  {i+1}. `{b['name']}`" for i, b in enumerate(batch))
     await update.message.reply_text(
         f"✅ added `{text}` ({profile_id}). Batch so far ({len(batch)}):\n{queue}\n\n"
-        f"Send another GoLogin name to add more, or type `done` to start.",
-        parse_mode='Markdown')
+        f"Send another GoLogin name to add more, or tap *Done* / type `done` to start.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('ig'))
 
 
 async def _run_geelark_batch(update, context, batch):
@@ -513,8 +527,9 @@ async def geelark_stop_phone_command(update: Update, context: ContextTypes.DEFAU
         "Send the *GoLogin profile name* of the GeeLark phone to stop "
         "(e.g. `Caroline Goni 5`). I'll look up the corresponding GeeLark "
         "phone by profile-name match and queue it for stop.\n\n"
-        "After each one you can add more — or type `done` to stop them all.",
-        parse_mode='Markdown')
+        "After each one you can add more — tap *Stop them now* or type `done`.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('stop'))
 
 
 def _geelark_find_phone_by_name(profile_name):
@@ -590,20 +605,24 @@ async def geelark_stop_text_received(update: Update, context: ContextTypes.DEFAU
     phone_id, err = _geelark_find_phone_by_name(text)
     if err or not phone_id:
         await update.message.reply_text(
-            f"❌ {err or 'no match'}\n\nTry another name or type `done` to stop the queued ones.",
-            parse_mode='Markdown')
+            f"❌ {err or 'no match'}\n\nTry another name or tap *Stop them now* / type `done`.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('stop'))
         return
     batch = context.user_data.setdefault('geelark_stop_batch', [])
     if any(b['name'].lower() == text.lower() for b in batch):
         await update.message.reply_text(
-            f"⚠️ `{text}` already queued — skipping.", parse_mode='Markdown')
+            f"⚠️ `{text}` already queued — skipping.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('stop'))
         return
     batch.append({'name': text, 'phone_id': phone_id})
     queue = '\n'.join(f"  {i+1}. `{b['name']}` ({b['phone_id']})" for i, b in enumerate(batch))
     await update.message.reply_text(
         f"✅ queued `{text}` ({phone_id}). Stop queue ({len(batch)}):\n{queue}\n\n"
-        f"Send another name to add, or `done` to stop them.",
-        parse_mode='Markdown')
+        f"Send another name to add, or tap *Stop them now* / type `done`.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('stop'))
 
 
 async def _run_geelark_stop_batch(update, context, batch):
@@ -644,8 +663,9 @@ async def geelark_profile_fb_open_command(update: Update, context: ContextTypes.
         "(e.g. `Caroline Goni 5`). I'll validate against GoLogin first.\n\n"
         "Each phone will be created + Facebook installed + stopped. "
         "No images, no mode select — just pure create-and-install.\n\n"
-        "After each name you can add more, or type `done` to start the batch.",
-        parse_mode='Markdown')
+        "After each name you can add more — tap *Done* or type `done` to start the batch.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('fb'))
 
 
 async def geelark_fb_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -669,23 +689,26 @@ async def geelark_fb_text_received(update: Update, context: ContextTypes.DEFAULT
     profile_id, err = _gologin_find_profile_by_name(text)
     if err or not profile_id:
         await update.message.reply_text(
-            f"❌ {err or 'profile not found'}\n\nTry another name, or type `done` to stop.",
-            parse_mode='Markdown')
+            f"❌ {err or 'profile not found'}\n\nTry another name, or tap *Done* / type `done` to stop.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('fb'))
         return
 
     batch = context.user_data.setdefault('geelark_fb_batch', [])
     if any(b['name'].lower() == text.lower() for b in batch):
         await update.message.reply_text(
             f"⚠️ `{text}` already in this batch — skipping. "
-            f"Send another name or `done`.",
-            parse_mode='Markdown')
+            f"Send another name or tap *Done*.",
+            parse_mode='Markdown',
+            reply_markup=_done_kb('fb'))
         return
     batch.append({'name': text, 'gologin_id': profile_id})
     queue = '\n'.join(f"  {i+1}. `{b['name']}`" for i, b in enumerate(batch))
     await update.message.reply_text(
         f"✅ added `{text}` ({profile_id}). Batch so far ({len(batch)}):\n{queue}\n\n"
-        f"Send another GoLogin name to add more, or type `done` to start.",
-        parse_mode='Markdown')
+        f"Send another GoLogin name to add more, or tap *Done* / type `done` to start.",
+        parse_mode='Markdown',
+        reply_markup=_done_kb('fb'))
 
 
 async def _run_geelark_fb_batch(update, context, batch):
@@ -780,3 +803,68 @@ async def _run_geelark_fb_batch(update, context, batch):
         for r in failed:
             lines.append(f"  • `{r['name']}` — stage `{r['stage']}` — {r['err']}")
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+
+
+# ─── Done-button callback ──────────────────────────────────────────────────
+
+class _CallbackUpdateShim:
+    """Wraps a callback Update so existing _run_*_batch functions — which
+    only ever read update.message.reply_text — keep working when triggered
+    by an inline button (where update.message is None and the message lives
+    under update.callback_query.message instead).
+    """
+    def __init__(self, callback_msg):
+        self.message = callback_msg
+
+
+async def geelark_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle taps on the inline 'Done' button. Routes to the matching
+    batch-runner based on `geelark_done:<flow>` payload.
+    """
+    q = update.callback_query
+    await q.answer()
+    try:
+        flow = q.data.split(':', 1)[1]
+    except IndexError:
+        return
+
+    shim = _CallbackUpdateShim(q.message)
+
+    if flow == 'ig':
+        if not context.user_data.get('expecting_geelark_name'):
+            await q.message.reply_text("⚠️ no active batch — run /geelark_profile_ig_open again.")
+            return
+        batch = context.user_data.get('geelark_batch') or []
+        context.user_data.pop('expecting_geelark_name', None)
+        if not batch:
+            await q.message.reply_text("⚠️ batch is empty — nothing to do. Run /geelark_profile_ig_open again.")
+            return
+        await _run_geelark_batch(shim, context, batch)
+        context.user_data.pop('geelark_batch', None)
+        return
+
+    if flow == 'fb':
+        if not context.user_data.get('expecting_geelark_fb_name'):
+            await q.message.reply_text("⚠️ no active batch — run /geelark_profile_fb_open again.")
+            return
+        batch = context.user_data.get('geelark_fb_batch') or []
+        context.user_data.pop('expecting_geelark_fb_name', None)
+        if not batch:
+            await q.message.reply_text("⚠️ batch is empty — nothing to do. Run /geelark_profile_fb_open again.")
+            return
+        await _run_geelark_fb_batch(shim, context, batch)
+        context.user_data.pop('geelark_fb_batch', None)
+        return
+
+    if flow == 'stop':
+        if not context.user_data.get('expecting_geelark_stop_name'):
+            await q.message.reply_text("⚠️ no active stop queue — run /geelark_stop_phone again.")
+            return
+        batch = context.user_data.get('geelark_stop_batch') or []
+        context.user_data.pop('expecting_geelark_stop_name', None)
+        if not batch:
+            await q.message.reply_text("⚠️ no phones queued — nothing to stop.")
+            return
+        await _run_geelark_stop_batch(shim, context, batch)
+        context.user_data.pop('geelark_stop_batch', None)
+        return

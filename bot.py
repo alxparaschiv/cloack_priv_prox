@@ -356,6 +356,8 @@ def main():
         geelark_image_wizard.imgwiz_callback, pattern=r'^imgwiz:'))
     application.add_handler(CallbackQueryHandler(
         artistic_bg_gen.artbg_callback, pattern=r'^artbg:'))
+    application.add_handler(CallbackQueryHandler(
+        geelark_open.geelark_done_callback, pattern=r'^geelark_done:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
