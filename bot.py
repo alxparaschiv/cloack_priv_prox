@@ -53,6 +53,7 @@ import rental
 import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
+import bio_gen
 
 
 logging.basicConfig(
@@ -194,7 +195,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
         "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n"
         "🎨 /artistic_bg — Batch-generate N artistic backgrounds (pick type → count → Drive folder link)\n"
-        "🖼 /banner_gen — Upload a model photo → 21:9 banner image in bed pose (nano-banana-pro)\n",
+        "🖼 /banner_gen — Upload a model photo → 21:9 banner image in bed pose (nano-banana-pro)\n"
+        "🤖 /bio_gen — 2-step wizard: niche → model → 8 AI bios with refresh (gpt-4o-mini)\n",
         parse_mode='HTML')
 
 
@@ -220,6 +222,7 @@ async def post_init(application):
         BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
         BotCommand("artistic_bg",       "Batch-generate N artistic backgrounds — pick type, get Drive folder link"),
         BotCommand("banner_gen",        "Upload a model photo → 21:9 banner in bed pose (nano-banana-pro)"),
+        BotCommand("bio_gen",           "AI bio generator — niche → model → 8 bios w/ refresh"),
         BotCommand("start",         "Help"),
     ])
     logger.info("Bot commands menu set")
@@ -248,6 +251,7 @@ async def post_init(application):
         ("📘 /geelark_profile_fb_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
         ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
         ("🖼 /banner_gen",  ["WAVESPEED_API_KEY"]),
+        ("🤖 /bio_gen",     ["OPENAI_API_KEY"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
@@ -337,6 +341,7 @@ def main():
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
+    application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
@@ -360,6 +365,8 @@ def main():
         geelark_open.geelark_done_callback, pattern=r'^geelark_done:'))
     application.add_handler(CallbackQueryHandler(
         geelark_open.geelark_pre_fb_callback, pattern=r'^gp:fb:'))
+    application.add_handler(CallbackQueryHandler(
+        bio_gen.bio_gen_callback, pattern=r'^biogen:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
