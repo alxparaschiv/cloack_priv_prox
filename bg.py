@@ -375,7 +375,119 @@ def _mode_menu_kb():
     for key, label in MODES_ALL:
         rows.append([InlineKeyboardButton(label,
             callback_data=f"bg_gen:mode:{key}")])
+    rows.append([InlineKeyboardButton(
+        "📦 Batch — generate N + save to Drive",
+        callback_data="bg_gen:batch:menu")])
     return InlineKeyboardMarkup(rows)
+
+
+# ─── Batch flow (Drive-saved) ───────────────────────────────────────────────
+# Mirrors /artistic_bg's batch flow — style picker → count picker → drop all
+# generated PNGs into a fresh `bg_batch_<style>_<ts>/` subfolder under the
+# OUTPUT_ROOT used by artistic_bg, then DM back the Drive folder link.
+
+BATCH_MAX = 50
+BATCH_COUNTS = [1, 3, 5, 10, 20]
+
+
+def _batch_style_kb():
+    rows = []
+    for key, label in MODES_ALL:
+        rows.append([InlineKeyboardButton(label,
+            callback_data=f"bg_gen:batch:style:{key}")])
+    rows.append([InlineKeyboardButton(
+        "🎲 Mixed (random style per image)",
+        callback_data="bg_gen:batch:style:mixed")])
+    rows.append([InlineKeyboardButton("⬅ Back",
+                                       callback_data="bg_gen:menu"),
+                 InlineKeyboardButton("✖ Cancel",
+                                       callback_data="bg_gen:batch:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _batch_count_kb(style_key):
+    row = [InlineKeyboardButton(str(n),
+                                  callback_data=f"bg_gen:batch:n:{style_key}:{n}")
+           for n in BATCH_COUNTS]
+    return InlineKeyboardMarkup([
+        row,
+        [InlineKeyboardButton("⬅ Back to style picker",
+                              callback_data="bg_gen:batch:menu")],
+        [InlineKeyboardButton("✖ Cancel",
+                              callback_data="bg_gen:batch:cancel")],
+    ])
+
+
+def _generate_one_png(mode):
+    """Render a single PNG (bytes) in the given mode using a random palette
+    color. Returns (png_bytes, filename).
+    """
+    _label, hex_color = random.choice(PROFILE_COLOR_PALETTE)
+    if mode == 'gradient':
+        choices = [h for l, h in PROFILE_COLOR_PALETTE if h != hex_color]
+        hex_color_b = random.choice(choices) if choices else hex_color
+        direction = random.choice(['vertical', 'horizontal', 'diagonal'])
+        png, _ = gradient_png(hex_color, hex_color_b, direction=direction)
+    elif mode == 'radial':
+        png, _ = radial_burst_png(hex_color)
+    elif mode == 'impressionist':
+        png, _ = impressionist_png(hex_color)
+    elif mode == 'splatter':
+        png, _ = splatter_png(hex_color)
+    elif mode == 'watercolor':
+        png, _ = watercolor_png(hex_color)
+    elif mode == 'geometric':
+        png, _ = geometric_png(hex_color)
+    elif mode == 'voronoi':
+        png, _ = voronoi_png(hex_color)
+    elif mode == 'color_field':
+        png, _ = color_field_png(hex_color)
+    else:  # solid (default fallback)
+        png, _ = solid_color_png(hex_color)
+    suffix = random.randint(1000, 9999)
+    fname = f'bg_{mode}_{hex_color.lstrip("#")}_{suffix}.png'
+    return png, fname
+
+
+def generate_bg_batch(style_key, count, send_progress=None):
+    """Sequential batch generator. style_key ∈ {<MODE>, 'mixed'}.
+    Saves to <OUTPUT_ROOT>/bg_batch_<style>_<ts>/ on Drive (same root the
+    artistic_bg batches use). Returns (batch_id, batch_url, successes, errors).
+    """
+    import time as _t
+    import artistic_bg_gen as _ag
+
+    def emit(m):
+        logger.info(f"[bg_batch] {m}")
+        if send_progress:
+            try: send_progress(m)
+            except Exception: pass
+
+    svc = _ag._drive_service()
+    out_root_id = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
+    ts = _t.strftime('%Y%m%d_%H%M%S')
+    batch_name = f'bg_batch_{style_key}_{ts}'
+    batch_id = _ag._ensure_folder(svc, batch_name, out_root_id)
+    batch_url = _ag._folder_drive_url(batch_id)
+    emit(f"📁 batch folder: `{_ag.OUTPUT_ROOT_NAME}/{batch_name}`")
+    emit(f"🔗 {batch_url}")
+
+    valid_modes = [k for k, _ in MODES_ALL]
+    successes, errors = [], []
+    for i in range(1, count + 1):
+        mode = (random.choice(valid_modes)
+                if style_key == 'mixed' else style_key)
+        try:
+            png, fname = _generate_one_png(mode)
+            drive_id = _ag._upload_bytes_to_drive(
+                svc, batch_id, fname, png, mime='image/png')
+            successes.append((drive_id, fname))
+            emit(f"  ✅ {i}/{count} `{fname}` → drive id `{drive_id}`")
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            errors.append(f"{i}: {err}")
+            emit(f"  ❌ {i}/{count} failed: {err}")
+    return batch_id, batch_url, successes, errors
 
 
 async def _emit(target, mode='solid', hex_color=None, hex_color_b=None,
@@ -504,6 +616,49 @@ async def bg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML', reply_markup=_mode_menu_kb())
         return
 
+    # ─── Batch dispatch ────────────────────────────────────────────────────
+    if data == 'bg_gen:batch:menu':
+        await query.message.reply_text(
+            "📦 <b>Batch generate</b>\n\n"
+            "Pick a style for the batch — or <b>Mixed</b> for a random "
+            "style per image. Each image uses a random palette color "
+            "(jittered ±12 RGB so none are pixel-identical).",
+            parse_mode='HTML', reply_markup=_batch_style_kb())
+        return
+
+    if data == 'bg_gen:batch:cancel':
+        await query.edit_message_text("✖ cancelled.")
+        return
+
+    if data.startswith('bg_gen:batch:style:'):
+        style_key = data.split(':', 3)[3]
+        valid = {k for k, _ in MODES_ALL} | {'mixed'}
+        if style_key not in valid:
+            await query.edit_message_text("⚠️ stale selection — run /bg_generator again.")
+            return
+        await query.message.reply_text(
+            f"<b>Style:</b> <code>{style_key}</code>\n\n"
+            f"How many backgrounds? (each ~1–2s, hard cap {BATCH_MAX})",
+            parse_mode='HTML',
+            reply_markup=_batch_count_kb(style_key))
+        return
+
+    if data.startswith('bg_gen:batch:n:'):
+        # bg_gen:batch:n:<style>:<count>
+        parts = data.split(':')
+        if len(parts) != 5:
+            return
+        style_key, count_s = parts[3], parts[4]
+        try: count = int(count_s)
+        except ValueError:
+            await query.message.reply_text("⚠️ bad count.")
+            return
+        if count < 1 or count > BATCH_MAX:
+            await query.message.reply_text(f"⚠️ count must be 1–{BATCH_MAX}.")
+            return
+        await _kickoff_bg_batch(query.message, context, style_key, count)
+        return
+
     if data.startswith('bg_gen:mode:'):
         mode = data.split(':', 2)[2]
         await _emit(query.message, mode=mode)
@@ -560,3 +715,55 @@ async def bg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎨 <b>Pick a palette color</b>",
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(rows))
         return
+
+
+# ─── Batch kickoff (worker-thread runner) ─────────────────────────────────
+
+async def _kickoff_bg_batch(target_msg, context, style_key, count):
+    """Run generate_bg_batch in a worker thread, stream progress to TG, then
+    DM the Drive folder link when finished."""
+    import asyncio
+    chat_id = target_msg.chat_id
+    pretty = (style_key if style_key != 'mixed' else 'Mixed (random per image)')
+    await target_msg.reply_text(
+        f"📦 <b>Batch started</b>\n\n"
+        f"Style: <code>{pretty}</code>\n"
+        f"Count: <b>{count}</b>\n"
+        f"Saving to Drive — link at the end.",
+        parse_mode='HTML')
+
+    loop = asyncio.get_event_loop()
+
+    async def send_async(text):
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text,
+                                            parse_mode='Markdown',
+                                            disable_web_page_preview=True)
+        except Exception:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text,
+                                                disable_web_page_preview=True)
+            except Exception:
+                pass
+
+    def sync_progress(text):
+        try:
+            asyncio.run_coroutine_threadsafe(send_async(text), loop)
+        except Exception:
+            pass
+
+    batch_id, batch_url, successes, errors = await asyncio.to_thread(
+        generate_bg_batch, style_key, count, sync_progress)
+
+    ok_n, fail_n = len(successes), len(errors)
+    summary = (
+        f"🎉 *Batch complete*\n\n"
+        f"✅ {ok_n}/{count} backgrounds generated\n"
+        + (f"❌ {fail_n} failed\n" if fail_n else '')
+        + f"\n📂 *Drive folder:* [open]({batch_url})\n"
+        f"`{batch_url}`\n\n"
+        f"Open the link, select all + download to grab them in one go."
+    )
+    await context.bot.send_message(chat_id=chat_id, text=summary,
+                                    parse_mode='Markdown',
+                                    disable_web_page_preview=False)

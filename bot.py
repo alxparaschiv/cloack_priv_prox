@@ -172,58 +172,100 @@ async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ─── /start /help ─────────────────────────────────────────────────────
+# ─── /start /info — grouped command guide ─────────────────────────────
+
+COMMANDS_TEXT = (
+    "⚡ <b>Commands</b>\n\n"
+
+    "👤 <b>Account creation</b>\n"
+    "/meta_dev_setup — Full Meta-Dev account setup (stages 0-12)\n"
+    "/ig_setup_private — IG wizard: login + bio + link + pic + Private toggle\n\n"
+
+    "📱 <b>GeeLark phones</b>\n"
+    "/geelark_profile_ig_open — Mirror GoLogin → GeeLark + install IG (+ images)\n"
+    "/geelark_profile_fb_open — Mirror GoLogin → GeeLark + install Facebook\n"
+    "/geelark_stop_phone — Batch-stop GeeLark phones once setup is done\n\n"
+
+    "🔐 <b>Verification &amp; SMS</b>\n"
+    "/rambler — Latest FB/IG code from a Rambler inbox\n"
+    "/rambler_microsoft — Latest Microsoft code from a Rambler inbox\n"
+    "/sms — Latest SMS code from a TextVerified rental\n"
+    "/rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
+    "/rental_facebook — Rent a fresh 7-day Facebook SMS number\n\n"
+
+    "🎨 <b>Content tools</b>\n"
+    "/bg_generator — Solid / gradient / artistic abstract PNG (single OR batch → Drive)\n"
+    "/artistic_bg — AI artistic backgrounds from Drive refs — batch → Drive folder link\n"
+    "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
+    "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n\n"
+
+    "🔗 <b>Cloak &amp; privacy</b>\n"
+    "/cloak — Cloaking link manager (Cloudflare)\n"
+    "/privacy — Privacy policy generator (Telegra.ph)\n\n"
+
+    "🧪 <b>Proxies &amp; account data</b>\n"
+    "/blob — FB account blob → Cookie-Editor JSON\n"
+    "/proxy — Batch validate proxies + create GoLogin profiles\n"
+    "/proxy_status — Last /proxy batch result\n\n"
+
+    "ℹ️ <b>Help</b>\n"
+    "/start — Show this menu\n"
+    "/info — Same as /start (full guide)\n"
+)
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 <b>Cloack-Priv-Prox</b> — standalone utility bot.\n\n"
-        "<b>Commands:</b>\n"
-        "🔗 /cloak — Cloaking link manager\n"
-        "📜 /privacy — Privacy policy generator\n"
-        "🍪 /blob — FB account blob → Cookie-Editor JSON\n"
-        "🎨 /bg_generator — Solid-color background PNG\n"
-        "🧪 /proxy — Batch validate proxies + create GoLogin profiles\n"
-        "📬 /rambler — Fetch latest FB/IG code from a Rambler inbox\n"
-        "🪟 /rambler_microsoft — Fetch latest Microsoft code from a Rambler inbox\n"
-        "📱 /sms — Fetch latest SMS code from a TextVerified rental\n"
-        "📊 /proxy_status — Last batch result\n"
-        "🛠 /meta_dev_setup — Full Meta Dev account setup (stages 0-12)\n"
-        "📷 /geelark_profile_ig_open — Batch-mirror GoLogin → GeeLark + install Instagram (+ images)\n"
-        "📘 /geelark_profile_fb_open — Batch-mirror GoLogin → GeeLark + install Facebook (no images)\n"
-        "🛑 /geelark_stop_phone — Batch-stop GeeLark phones once IG setup is done\n"
-        "🔒 /ig_setup_private — Wizard: login to IG + bio + link + pic + set Private\n"
-        "📸 /rental_instagram — Rent a fresh 7-day Instagram SMS number\n"
-        "📘 /rental_facebook — Rent a fresh 7-day Facebook SMS number\n"
-        "🎨 /artistic_bg — Batch-generate N artistic backgrounds (pick type → count → Drive folder link)\n"
-        "🖼 /banner_gen — Upload a model photo → 21:9 banner image in bed pose (nano-banana-pro)\n"
-        "🤖 /bio_gen — 2-step wizard: niche → model → 8 AI bios with refresh (gpt-4o-mini)\n",
+        "👋 <b>acc-setup-bot</b> — account-farming control plane.\n\n"
+        + COMMANDS_TEXT,
         parse_mode='HTML')
+
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias for /start so the user can pull up the full guide any time."""
+    await update.message.reply_text(COMMANDS_TEXT, parse_mode='HTML')
 
 
 async def post_init(application):
     """Set bot commands menu + DM the admin a startup message so they know
     the bot is alive and which features are configured."""
+    # Telegram renders this in the order we set it; mirror /start's groups so
+    # the typeahead picker reads top-to-bottom like the docs.
     await application.bot.set_my_commands([
-        BotCommand("cloak",         "Cloaking link manager"),
-        BotCommand("privacy",       "Privacy policy generator"),
-        BotCommand("blob",          "FB blob → Cookie-Editor JSON"),
-        BotCommand("bg_generator",  "Solid-color background PNG"),
-        BotCommand("proxy",         "Batch validate + create GoLogin profiles"),
-        BotCommand("proxy_status",  "Last /proxy batch result"),
-        BotCommand("rambler",       "Fetch latest FB/IG code from a Rambler inbox"),
-        BotCommand("rambler_microsoft", "Fetch latest Microsoft code from a Rambler inbox"),
-        BotCommand("sms",           "Fetch latest SMS code from a TextVerified rental"),
-        BotCommand("meta_dev_setup","Full Meta Dev account setup (stages 0-12)"),
-        BotCommand("geelark_profile_ig_open", "Batch-mirror GoLogin → GeeLark + install IG (+ images)"),
-        BotCommand("geelark_profile_fb_open", "Batch-mirror GoLogin → GeeLark + install Facebook"),
-        BotCommand("geelark_stop_phone", "Batch-stop GeeLark phones when IG setup is done"),
-        BotCommand("ig_setup_private",  "Wizard: login + bio + link + pic + Private toggle"),
-        BotCommand("rental_instagram",  "Rent a fresh 7-day Instagram SMS number"),
-        BotCommand("rental_facebook",   "Rent a fresh 7-day Facebook SMS number"),
-        BotCommand("artistic_bg",       "Batch-generate N artistic backgrounds — pick type, get Drive folder link"),
-        BotCommand("banner_gen",        "Upload a model photo → 21:9 banner in bed pose (nano-banana-pro)"),
-        BotCommand("bio_gen",           "AI bio generator — niche → model → 8 bios w/ refresh"),
-        BotCommand("start",         "Help"),
+        # 👤 Account creation
+        BotCommand("meta_dev_setup",       "👤 Full Meta-Dev account setup (stages 0-12)"),
+        BotCommand("ig_setup_private",     "👤 IG wizard — login + bio + link + pic + Private"),
+
+        # 📱 GeeLark phones
+        BotCommand("geelark_profile_ig_open", "📱 Mirror GoLogin → GeeLark + install IG (+ images)"),
+        BotCommand("geelark_profile_fb_open", "📱 Mirror GoLogin → GeeLark + install Facebook"),
+        BotCommand("geelark_stop_phone",      "📱 Batch-stop GeeLark phones"),
+
+        # 🔐 Verification & SMS
+        BotCommand("rambler",            "🔐 Latest FB/IG code from a Rambler inbox"),
+        BotCommand("rambler_microsoft",  "🔐 Latest Microsoft code from a Rambler inbox"),
+        BotCommand("sms",                "🔐 Latest SMS code from a TextVerified rental"),
+        BotCommand("rental_instagram",   "🔐 Rent a fresh 7-day Instagram SMS number"),
+        BotCommand("rental_facebook",    "🔐 Rent a fresh 7-day Facebook SMS number"),
+
+        # 🎨 Content tools
+        BotCommand("bg_generator",  "🎨 Background PNGs — single OR batch → Drive"),
+        BotCommand("artistic_bg",   "🎨 AI artistic backgrounds — batch → Drive folder link"),
+        BotCommand("banner_gen",    "🎨 Model photo → 21:9 cinematic banner (nano-banana-pro)"),
+        BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
+
+        # 🔗 Cloak & privacy
+        BotCommand("cloak",    "🔗 Cloaking link manager (Cloudflare)"),
+        BotCommand("privacy",  "🔗 Privacy policy generator"),
+
+        # 🧪 Proxies & account data
+        BotCommand("blob",          "🧪 FB blob → Cookie-Editor JSON"),
+        BotCommand("proxy",         "🧪 Batch validate + create GoLogin profiles"),
+        BotCommand("proxy_status",  "🧪 Last /proxy batch result"),
+
+        # ℹ️ Help
+        BotCommand("start", "ℹ️ Show grouped command guide"),
+        BotCommand("info",  "ℹ️ Same as /start (full guide)"),
     ])
     logger.info("Bot commands menu set")
 
@@ -316,6 +358,7 @@ def main():
     # Commands
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", start_command))
+    application.add_handler(CommandHandler("info", info_command))
     application.add_handler(CommandHandler("cloak", cloak.cloak_command))
     application.add_handler(CommandHandler("privacy", privacy.privacy_command))
     application.add_handler(CommandHandler("blob", cookies.blob_command))
