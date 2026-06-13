@@ -507,6 +507,12 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data or ''
     state = context.user_data.get('imgwiz')
 
+    # Done-button + preflight UI dispatched first — share the imgwiz: prefix.
+    if (data == 'imgwiz:done_collect'
+            or data.startswith('imgwiz:pre:')):
+        await _handle_done_or_preflight(query, context, data, state)
+        return
+
     if data == 'imgwiz:cancel':
         context.user_data.pop('imgwiz', None)
         context.user_data.pop('expecting_imgwiz_phone_name', None)
@@ -533,20 +539,18 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Send the *GoLogin profile name* of the first GeeLark phone "
                 "to create (e.g. `Caroline Goni 5`). I'll validate against "
                 "GoLogin + grab the proxy.\n\n"
-                "After each one you can add more, or type `done` to start "
-                "the image-selection wizard. NOTHING gets created until "
-                "ALL selections are done — then the bot executes everything "
-                "in one batch (create phones, install IG, generate images, "
-                "push to phones, stop).",
-                parse_mode='Markdown')
+                "After each one you can add more — tap *Done* or type `done` "
+                "to start. NOTHING gets created until ALL selections are done.",
+                parse_mode='Markdown',
+                reply_markup=_imgwiz_done_kb())
         else:
             await query.edit_message_text(
                 "🖼 *Add images to existing GeeLark profiles*\n\n"
                 "Send the GeeLark profile name of the first phone "
-                "(e.g. `caro motorcycle`). After each one you can add more, "
-                "or type `done` to start the selection wizard. Phones are "
-                "booted only at execution time, after all selections are done.",
-                parse_mode='Markdown')
+                "(e.g. `caro motorcycle`). After each one you can add more — "
+                "tap *Done* or type `done` to start the selection wizard.",
+                parse_mode='Markdown',
+                reply_markup=_imgwiz_done_kb())
         return
 
     if not state:
@@ -767,20 +771,48 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
     # reuse it instead of creating a duplicate. Mirrors the IG / FB batches
     # in geelark_open.py.
     if mode == 'create_plus_images' and not entry.get('phone_id'):
-        from geelark_open import _geelark_find_phone_by_name
-        existing_id, _ = await asyncio.to_thread(
-            _geelark_find_phone_by_name, entry['name'])
-        if existing_id:
+        from geelark_open import (_geelark_find_phone_by_name,
+                                   _geelark_delete_phone)
+        pre_action = entry.get('preflight_action')
+
+        # Path A — user explicitly chose Skip in preflight: reuse existing.
+        if pre_action == 'skip' and entry.get('preflight_existing_phone_id'):
+            existing_id = entry['preflight_existing_phone_id']
             await msg.reply_text(
-                f"   ♻️ existing GeeLark phone for `{entry['name']}` found "
-                f"(`{existing_id}`) — reusing instead of creating a duplicate. "
-                f"Skipping create + IG install; image push (if any) will boot "
-                f"the phone itself.",
+                f"   ⏭ keeping existing GeeLark phone for `{entry['name']}` "
+                f"(`{existing_id}`) per your preflight choice. Skipping "
+                f"create + IG install; image push will boot the phone.",
                 parse_mode='Markdown')
             entry['phone_id'] = existing_id
-            # Don't touch _already_running — the phone is currently stopped,
-            # so the image-push branch below will boot it.
-        else:
+
+        # Path B — user chose Recreate (or didn't preflight but a duplicate
+        # exists): delete the existing phone first, then create fresh.
+        elif pre_action == 'recreate' or pre_action is None:
+            existing_id = entry.get('preflight_existing_phone_id')
+            if existing_id is None:
+                # Preflight wasn't run (edge case) — fall back to live lookup
+                # so we never silently double-create.
+                existing_id, _ = await asyncio.to_thread(
+                    _geelark_find_phone_by_name, entry['name'])
+            if existing_id:
+                await msg.reply_text(
+                    f"   🗑 deleting existing GeeLark phone `{existing_id}` "
+                    f"for `{entry['name']}` before recreating…",
+                    parse_mode='Markdown')
+                ok, dm = await asyncio.to_thread(_geelark_delete_phone, existing_id)
+                if not ok:
+                    per_profile_err = f'phone delete (before recreate): {dm}'
+                    await msg.reply_text(f"   ❌ delete failed: `{dm}`",
+                                          parse_mode='Markdown')
+                    results.append({'name': entry['name'], 'phone_id': None,
+                                     'images_pushed': 0, 'err': per_profile_err})
+                    return
+                await msg.reply_text(f"   ✅ deleted. Creating fresh…",
+                                      parse_mode='Markdown')
+
+        # Path C — fresh create (was new in preflight, OR after delete above).
+        # Skip-path already returned above; recreate-path falls through here.
+        if not entry.get('phone_id'):
             await msg.reply_text(
                 f"   🆕 creating GeeLark phone for `{entry['name']}` with GoLogin proxy…",
                 parse_mode='Markdown')
@@ -935,13 +967,7 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data.pop('imgwiz', None)
             await update.message.reply_text("⚠️ batch empty — nothing to do.")
             return True
-        first = state['batch'][0]
-        await update.message.reply_text(
-            f"🚀 *Starting selection for {len(state['batch'])} profile(s).*\n\n"
-            f"➡️ first: `{first['name']}` (1/{len(state['batch'])})\n\n"
-            f"*Step 1 — Standard background.* Pick a style:",
-            parse_mode='Markdown',
-            reply_markup=_bg_pick_style_kb())
+        await _wiz_done_kickoff(update.message, context, state)
         return True
     # Mode-dependent name lookup:
     #   create_plus_images → validate GoLogin profile + grab proxy (phone
@@ -954,8 +980,9 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
         gologin_id, err = await asyncio.to_thread(_gologin_find_profile_by_name, text)
         if err or not gologin_id:
             await update.message.reply_text(
-                f"❌ {err or 'not found'}\nTry another name, or `done`.",
-                parse_mode='Markdown')
+                f"❌ {err or 'not found'}\nTry another name, or tap *Done* / type `done`.",
+                parse_mode='Markdown',
+                reply_markup=_imgwiz_done_kb())
             return True
         proxy, err = await asyncio.to_thread(_gologin_get_proxy, gologin_id)
         if err or not proxy:
@@ -982,8 +1009,9 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
         phone_id, err = await asyncio.to_thread(_find_geelark_phone_by_name, text)
         if err or not phone_id:
             await update.message.reply_text(
-                f"❌ {err or 'not found'}\nTry another name, or `done`.",
-                parse_mode='Markdown')
+                f"❌ {err or 'not found'}\nTry another name, or tap *Done* / type `done`.",
+                parse_mode='Markdown',
+                reply_markup=_imgwiz_done_kb())
             return True
         if any(e['name'].lower() == text.lower() for e in state['batch']):
             await update.message.reply_text(f"⚠️ `{text}` already queued — skipping.",
@@ -1000,11 +1028,187 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
     queue = '\n'.join(f"  {i+1}. `{e['name']}`" for i, e in enumerate(state['batch']))
     await update.message.reply_text(
         f"✅ added `{text}`. Queue ({len(state['batch'])}):\n{queue}\n\n"
-        f"Send another name, or `done`.",
-        parse_mode='Markdown')
+        f"Send another name, or tap *Done* / type `done`.",
+        parse_mode='Markdown',
+        reply_markup=_imgwiz_done_kb())
     return True
 
 
 def _find_geelark_phone_by_name(name):
     from geelark_open import _geelark_find_phone_by_name as _f
     return _f(name)
+
+
+# ─── Done button + preflight existence check (IG / create_plus_images) ─────
+
+def _imgwiz_done_kb():
+    """Inline button used on every prompt that previously told the user to
+    'type done'. Tap-to-finish, additive to the typed sentinel."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Done — start", callback_data="imgwiz:done_collect")
+    ]])
+
+
+async def _wiz_done_kickoff(target_msg, context, state):
+    """Called when the user finishes adding profiles (typed `done` or tapped
+    the Done button). For 'create_plus_images' mode, runs a pre-flight check
+    against GeeLark for each name; on collisions, shows a per-profile
+    Recreate/Skip decision UI. For 'images_only' mode (intentionally
+    operating on existing phones), goes straight to the bg-style picker.
+    """
+    mode = state.get('mode', 'images_only')
+    if mode != 'create_plus_images':
+        await _wiz_proceed_to_selection(target_msg, state)
+        return
+
+    await target_msg.reply_text(
+        f"🔎 checking GeeLark for existing phones in your batch of "
+        f"{len(state['batch'])}…",
+        parse_mode='Markdown')
+    from geelark_open import _preflight_partition
+    new_indices, existing = await asyncio.to_thread(_preflight_partition, state['batch'])
+
+    if not existing:
+        await target_msg.reply_text(
+            f"✅ no existing phones found — every entry is new. Continuing.",
+            parse_mode='Markdown')
+        await _wiz_proceed_to_selection(target_msg, state)
+        return
+
+    # Default decision: recreate (matches "I wanted a NEW profile" intent).
+    # User can flip each one to Skip via the inline buttons.
+    state['preflight'] = {
+        'new_indices': new_indices,
+        'existing': [{'idx': e['idx'], 'name': e['name'],
+                      'phone_id': e['phone_id'], 'action': 'recreate'}
+                     for e in existing],
+    }
+    await _wiz_render_preflight(target_msg, state)
+
+
+def _wiz_preflight_kb(state):
+    rows = []
+    pre = state['preflight']
+    for j, e in enumerate(pre['existing']):
+        rec_lbl = ('🗑 RECREATE' if e['action'] == 'recreate' else '   recreate')
+        skp_lbl = ('   skip'    if e['action'] == 'recreate' else '⏭ SKIP')
+        rows.append([
+            InlineKeyboardButton(rec_lbl, callback_data=f"imgwiz:pre:tog:{j}:r"),
+            InlineKeyboardButton(skp_lbl, callback_data=f"imgwiz:pre:tog:{j}:s"),
+        ])
+    rows.append([
+        InlineKeyboardButton("✅ Proceed with selections", callback_data="imgwiz:pre:go"),
+    ])
+    rows.append([
+        InlineKeyboardButton("❌ Cancel batch", callback_data="imgwiz:pre:cancel"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _wiz_preflight_text(state):
+    pre = state['preflight']
+    new_count = len(pre['new_indices'])
+    lines = [
+        f"⚠️ *{len(pre['existing'])} of {len(state['batch'])} profiles already "
+        f"exist on GeeLark.*",
+        "",
+        "Per existing profile, pick *Recreate* (delete + create fresh with your "
+        "GoLogin proxy) or *Skip* (keep it as-is, push images on top):",
+        "",
+    ]
+    for j, e in enumerate(pre['existing']):
+        marker = "🗑 will RECREATE" if e['action'] == 'recreate' else "⏭ will SKIP"
+        lines.append(f"{j+1}. `{e['name']}` (phone id `{e['phone_id']}`) — {marker}")
+    if new_count:
+        lines.append("")
+        lines.append(f"*Plus {new_count} new profile(s) that will be created normally:*")
+        for i in pre['new_indices']:
+            lines.append(f"  • `{state['batch'][i]['name']}`")
+    lines.append("")
+    lines.append("Tap *Proceed* once your decisions are set.")
+    return '\n'.join(lines)
+
+
+async def _wiz_render_preflight(target_msg, state):
+    await target_msg.reply_text(_wiz_preflight_text(state),
+                                 parse_mode='Markdown',
+                                 reply_markup=_wiz_preflight_kb(state))
+
+
+async def _wiz_proceed_to_selection(target_msg, state):
+    """Continue into the existing bg-style picker step."""
+    first = state['batch'][0]
+    await target_msg.reply_text(
+        f"🚀 *Starting selection for {len(state['batch'])} profile(s).*\n\n"
+        f"➡️ first: `{first['name']}` (1/{len(state['batch'])})\n\n"
+        f"*Step 1 — Standard background.* Pick a style:",
+        parse_mode='Markdown',
+        reply_markup=_bg_pick_style_kb())
+
+
+async def _handle_done_or_preflight(q, context, data, state):
+    """Done-button taps + preflight decision callbacks for the wizard.
+    Dispatched from imgwiz_callback (which already called q.answer()).
+    Patterns:
+      imgwiz:done_collect          — same as typing 'done'
+      imgwiz:pre:tog:{j}:{r|s}     — flip existing entry #j to recreate/skip
+      imgwiz:pre:go                — finish preflight, continue to bg picker
+      imgwiz:pre:cancel            — cancel batch
+    """
+    if data == 'imgwiz:done_collect':
+        if not state or not state.get('batch'):
+            await q.message.reply_text("⚠️ no active batch.")
+            return
+        context.user_data.pop('expecting_imgwiz_phone_name', None)
+        await _wiz_done_kickoff(q.message, context, state)
+        return
+
+    if not state or not state.get('preflight'):
+        await q.message.reply_text("⚠️ wizard state expired — run the command again.")
+        return
+
+    if data == 'imgwiz:pre:cancel':
+        context.user_data.pop('imgwiz', None)
+        await q.edit_message_text("❌ batch cancelled. Nothing was created.")
+        return
+
+    if data.startswith('imgwiz:pre:tog:'):
+        parts = data.split(':')
+        if len(parts) != 5:
+            return
+        try:
+            j = int(parts[3])
+        except ValueError:
+            return
+        action = 'recreate' if parts[4] == 'r' else 'skip'
+        pre = state['preflight']
+        if 0 <= j < len(pre['existing']):
+            pre['existing'][j]['action'] = action
+        try:
+            await q.edit_message_text(_wiz_preflight_text(state),
+                                       parse_mode='Markdown',
+                                       reply_markup=_wiz_preflight_kb(state))
+        except Exception:
+            pass
+        return
+
+    if data == 'imgwiz:pre:go':
+        pre = state['preflight']
+        # Write decisions back to each batch entry so _run_one_entry can honor them.
+        for e in pre['existing']:
+            entry = state['batch'][e['idx']]
+            entry['preflight_action'] = e['action']
+            entry['preflight_existing_phone_id'] = e['phone_id']
+        # New entries get a no-op marker so the executor can branch cleanly.
+        for i in pre['new_indices']:
+            state['batch'][i]['preflight_action'] = 'create_new'
+        state.pop('preflight', None)
+        n_rec = sum(1 for e in pre['existing'] if e['action'] == 'recreate')
+        n_skp = sum(1 for e in pre['existing'] if e['action'] == 'skip')
+        n_new = len(pre['new_indices'])
+        await q.edit_message_text(
+            f"✅ decisions saved: *{n_rec}* recreate, *{n_skp}* skip, "
+            f"*{n_new}* new.\n\nContinuing to image selection…",
+            parse_mode='Markdown')
+        await _wiz_proceed_to_selection(q.message, state)
+        return

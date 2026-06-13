@@ -244,6 +244,40 @@ def _geelark_create_phone(profile_name, proxy):
     return None, "all language candidates rejected"
 
 
+def _geelark_delete_phone(phone_id):
+    """Delete a GeeLark cloud phone. Mirrors reel_bot.geelark_delete_phone.
+    Returns (ok_bool, msg). msg=='OK' (or empty) on success.
+    """
+    data, err = _geelark_post('/phone/delete', {'ids': [phone_id]})
+    if err:
+        return False, err
+    # GeeLark returns details[] like /phone/addNew; treat presence of code!=0
+    # in any detail as failure.
+    details = (data or {}).get('failedDetails') or []
+    if details:
+        first = details[0]
+        return False, f"code={first.get('code')} msg={first.get('msg')}"
+    return True, 'OK'
+
+
+def _preflight_partition(batch):
+    """Given a batch of entries with `name` keys, look up each in GeeLark.
+    Returns (new_indices, existing) where:
+      new_indices: list[int] — indices of entries with NO existing phone
+      existing:    list[dict] — [{'idx': i, 'name': str, 'phone_id': str}]
+    """
+    new_indices = []
+    existing = []
+    for i, entry in enumerate(batch):
+        name = entry.get('name') if isinstance(entry, dict) else str(entry)
+        existing_id, _ = _geelark_find_phone_by_name(name)
+        if existing_id:
+            existing.append({'idx': i, 'name': name, 'phone_id': existing_id})
+        else:
+            new_indices.append(i)
+    return new_indices, existing
+
+
 def _geelark_boot_wait(phone_id, sleep_s=60):
     """Trust /phone/start's success + sleep for boot. Mirrors reel_bot.py which
     has been running this exact pattern in production for months.
@@ -681,8 +715,7 @@ async def geelark_fb_text_received(update: Update, context: ContextTypes.DEFAULT
         if not batch:
             await update.message.reply_text("⚠️ batch is empty — nothing to do. Run /geelark_profile_fb_open again.")
             return
-        await _run_geelark_fb_batch(update, context, batch)
-        context.user_data.pop('geelark_fb_batch', None)
+        await _start_fb_preflight(update.message, context, batch)
         return
 
     await update.message.reply_text(f"🔍 Looking up `{text}` in GoLogin…", parse_mode='Markdown')
@@ -852,8 +885,7 @@ async def geelark_done_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if not batch:
             await q.message.reply_text("⚠️ batch is empty — nothing to do. Run /geelark_profile_fb_open again.")
             return
-        await _run_geelark_fb_batch(shim, context, batch)
-        context.user_data.pop('geelark_fb_batch', None)
+        await _start_fb_preflight(q.message, context, batch)
         return
 
     if flow == 'stop':
@@ -868,3 +900,86 @@ async def geelark_done_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await _run_geelark_stop_batch(shim, context, batch)
         context.user_data.pop('geelark_stop_batch', None)
         return
+
+
+# ─── FB preflight: warn on existing, skip them, require confirm ────────────
+
+async def _start_fb_preflight(target_msg, context, batch):
+    """Look up each FB-batch name on GeeLark, then either:
+      - no collisions → run the batch immediately
+      - any collisions → render a warning UI listing existing (will be skipped)
+        + new (will be created), with Proceed / Cancel buttons.
+    """
+    await target_msg.reply_text(
+        f"🔎 checking GeeLark for existing phones in your batch of {len(batch)}…",
+        parse_mode='Markdown')
+    import asyncio
+    new_indices, existing = await asyncio.to_thread(_preflight_partition, batch)
+
+    if not existing:
+        # Clean path — no collisions, just run it.
+        await target_msg.reply_text(
+            f"✅ no existing phones found — starting batch of {len(batch)}.",
+            parse_mode='Markdown')
+        shim = _CallbackUpdateShim(target_msg)
+        await _run_geelark_fb_batch(shim, context, batch)
+        context.user_data.pop('geelark_fb_batch', None)
+        return
+
+    # Stash batch + partition so the callback can finish the work.
+    context.user_data['geelark_pre_fb'] = {
+        'batch': batch,
+        'new_indices': new_indices,
+        'existing': existing,
+    }
+    existing_lines = '\n'.join(
+        f"  • `{e['name']}` (phone id `{e['phone_id']}`)" for e in existing)
+    new_lines = '\n'.join(
+        f"  • `{batch[i]['name']}`" for i in new_indices) or "  (none)"
+    txt = (
+        f"⚠️ *{len(existing)} of {len(batch)} profiles already exist on GeeLark.*\n\n"
+        f"Per Facebook policy here, existing FB phones are *never deleted* — "
+        f"they'll be *skipped* and you should use those existing ones.\n\n"
+        f"*Will SKIP (already exist):*\n{existing_lines}\n\n"
+        f"*Will CREATE (new):*\n{new_lines}\n\n"
+        f"Confirm to proceed with creating just the new ones."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Proceed — create {len(new_indices)} new",
+                              callback_data="gp:fb:go")],
+        [InlineKeyboardButton("❌ Cancel batch",
+                              callback_data="gp:fb:cancel")],
+    ])
+    await target_msg.reply_text(txt, parse_mode='Markdown', reply_markup=kb)
+
+
+async def geelark_pre_fb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle taps on the FB preflight confirm/cancel buttons (gp:fb:*)."""
+    q = update.callback_query
+    await q.answer()
+    action = q.data.split(':', 2)[2] if q.data.count(':') >= 2 else ''
+    state = context.user_data.get('geelark_pre_fb')
+    if not state:
+        await q.edit_message_text("⚠️ session expired — run /geelark_profile_fb_open again.")
+        return
+    if action == 'cancel':
+        context.user_data.pop('geelark_pre_fb', None)
+        await q.edit_message_text("❌ batch cancelled. Nothing was created.")
+        return
+    if action != 'go':
+        return
+    context.user_data.pop('geelark_pre_fb', None)
+    batch = state['batch']
+    new_only = [batch[i] for i in state['new_indices']]
+    if not new_only:
+        await q.edit_message_text(
+            "⚠️ every name in your batch already exists — nothing new to create.",
+            parse_mode='Markdown')
+        return
+    await q.edit_message_text(
+        f"✅ creating *{len(new_only)}* new Facebook phone(s); "
+        f"{len(state['existing'])} existing one(s) skipped.",
+        parse_mode='Markdown')
+    shim = _CallbackUpdateShim(q.message)
+    await _run_geelark_fb_batch(shim, context, new_only)
+    context.user_data.pop('geelark_fb_batch', None)
