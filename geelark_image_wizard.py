@@ -93,7 +93,7 @@ async def show_mode_select(update_or_msg):
         "🖼 *Add images to existing profiles* — skip the create step and just "
         "push images to phones you already have\n\n"
         "_For fully-automated image generation (no manual picking), use "
-        "/geelark_profile_ig_open_automated instead._"
+        "/geelark_profile_ig_auto instead._"
     )
     msg = update_or_msg.message if hasattr(update_or_msg, 'message') else update_or_msg
     await msg.reply_text(text, reply_markup=mode_select_keyboard(),
@@ -101,7 +101,7 @@ async def show_mode_select(update_or_msg):
 
 
 async def automated_create_command(update, context):
-    """Entry point for /geelark_profile_ig_open_automated — same name-collection
+    """Entry point for /geelark_profile_ig_auto — same name-collection
     + preflight as the wizard's create_plus_images mode, but skips the bg /
     artistic / Drive selection step entirely. After Done, each profile gets
     one auto-generated normal bg (random style + random palette) and one

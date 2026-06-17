@@ -339,7 +339,7 @@ def generate_artistic_bg_random_type(profile_subfolder_name=None,
     """Like generate_artistic_bg but picks a RANDOM `Images bg *` folder
     as the reference instead of the default REF_FOLDER_NAME.
 
-    Used by /geelark_profile_ig_open_automated so each profile in a batch
+    Used by /geelark_profile_ig_auto so each profile in a batch
     gets a different artistic flavor without the user having to choose.
     Returns (drive_file_id, local_temp_path, error_or_None).
     """
