@@ -91,11 +91,43 @@ async def show_mode_select(update_or_msg):
         "🆕 *Create + add images* — make new GeeLark phones from existing "
         "GoLogin profiles AND seed each with images afterward\n\n"
         "🖼 *Add images to existing profiles* — skip the create step and just "
-        "push images to phones you already have"
+        "push images to phones you already have\n\n"
+        "_For fully-automated image generation (no manual picking), use "
+        "/geelark_profile_ig_open_automated instead._"
     )
     msg = update_or_msg.message if hasattr(update_or_msg, 'message') else update_or_msg
     await msg.reply_text(text, reply_markup=mode_select_keyboard(),
                          parse_mode='Markdown')
+
+
+async def automated_create_command(update, context):
+    """Entry point for /geelark_profile_ig_open_automated — same name-collection
+    + preflight as the wizard's create_plus_images mode, but skips the bg /
+    artistic / Drive selection step entirely. After Done, each profile gets
+    one auto-generated normal bg (random style + random palette) and one
+    auto-generated artistic bg (random Drive type), both pushed to the phone."""
+    context.user_data['imgwiz'] = {
+        'mode': 'create_plus_images_automated',
+        'batch': [],
+        'idx': 0,
+        'sub_step': 'pick_profile',
+        'last_bg_mode': None,
+        'last_bg_path': None,
+        'drive_nav_stack': [],
+    }
+    context.user_data['expecting_imgwiz_phone_name'] = True
+    await update.message.reply_text(
+        "🤖 *Automated IG profile setup*\n\n"
+        "Send the *GoLogin profile name* of the first GeeLark phone to "
+        "create (e.g. `Caroline Goni 5`). I'll validate against GoLogin + "
+        "grab the proxy.\n\n"
+        "After each one you can add more — tap *Done* or type `done` to "
+        "start. NOTHING gets created until ALL names are collected.\n\n"
+        "*Per profile* the bot will then automatically: create the phone, "
+        "install Instagram, generate 1 random normal bg + 1 random artistic "
+        "bg, push both to the phone gallery, stop the phone.",
+        parse_mode='Markdown',
+        reply_markup=_imgwiz_done_kb())
 
 
 # ─── bg_generator integration ───────────────────────────────────────────────
@@ -521,7 +553,8 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith('imgwiz:mode:'):
         mode = data.split(':', 2)[2]
-        if mode not in ('create_plus_images', 'images_only'):
+        if mode not in ('create_plus_images', 'create_plus_images_automated',
+                         'images_only'):
             await query.edit_message_text("⚠️ unknown mode."); return
         context.user_data['imgwiz'] = {
             'mode': mode,
@@ -770,7 +803,8 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
     # Duplicate guard: if a GeeLark phone with this name already exists,
     # reuse it instead of creating a duplicate. Mirrors the IG / FB batches
     # in geelark_open.py.
-    if mode == 'create_plus_images' and not entry.get('phone_id'):
+    if mode in ('create_plus_images', 'create_plus_images_automated') \
+            and not entry.get('phone_id'):
         from geelark_open import (_geelark_find_phone_by_name,
                                    _geelark_delete_phone)
         pre_action = entry.get('preflight_action')
@@ -853,6 +887,47 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
             # (Skip this flag in the existing-reuse branch — the existing
             # phone is currently stopped and the push step boots it itself.)
             entry['_already_running'] = True
+
+    # 0.5 Automated mode: auto-generate 1 normal bg + 1 random-type artistic
+    # bg BEFORE the manual-flagged blocks below. The manual blocks remain
+    # no-ops for this mode (we never set artistic_yes / drive_folder_id).
+    if mode == 'create_plus_images_automated':
+        import random as _r, time as _t
+        BG_MODES = ['solid', 'gradient', 'radial', 'impressionist', 'splatter',
+                    'watercolor', 'geometric', 'voronoi', 'color_field']
+        bg_mode = _r.choice(BG_MODES)
+        try:
+            png, caption = _generate_bg_png(bg_mode)
+            safe_name = entry['name'].replace(' ', '_').replace('/', '_')
+            bg_path = f'/tmp/auto_bg_{safe_name}_{int(_t.time()*1000)}.png'
+            with open(bg_path, 'wb') as f: f.write(png)
+            all_paths.append(bg_path)
+            await msg.reply_text(
+                f"   🎨 auto normal bg: *{caption}* → queued",
+                parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(
+                f"   ⚠️ auto normal bg err: `{type(e).__name__}: {e}`",
+                parse_mode='Markdown')
+        await msg.reply_text(
+            f"   🎨 auto artistic bg (random type) for `{entry['name']}`…",
+            parse_mode='Markdown')
+        try:
+            _drive_id, local_path, err = await asyncio.to_thread(
+                artistic_bg_gen.generate_artistic_bg_random_type,
+                entry['name'], None)
+            if err:
+                await msg.reply_text(f"   ⚠️ auto artistic err: `{err}`",
+                                      parse_mode='Markdown')
+            elif local_path:
+                all_paths.append(local_path)
+                await msg.reply_text(
+                    f"   ✅ auto artistic generated + saved to Drive",
+                    parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(
+                f"   ⚠️ auto artistic crashed: `{type(e).__name__}: {e}`",
+                parse_mode='Markdown')
 
     # 1. Artistic generation (if flagged)
     if entry.get('artistic_yes'):
@@ -974,7 +1049,7 @@ async def imgwiz_text_received(update: Update, context: ContextTypes.DEFAULT_TYP
     #                        will be created at execution time)
     #   images_only        → validate existing GeeLark phone
     mode = state.get('mode', 'images_only')
-    if mode == 'create_plus_images':
+    if mode in ('create_plus_images', 'create_plus_images_automated'):
         await update.message.reply_text(
             f"🔍 finding GoLogin profile `{text}`…", parse_mode='Markdown')
         gologin_id, err = await asyncio.to_thread(_gologin_find_profile_by_name, text)
@@ -1057,8 +1132,8 @@ async def _wiz_done_kickoff(target_msg, context, state):
     operating on existing phones), goes straight to the bg-style picker.
     """
     mode = state.get('mode', 'images_only')
-    if mode != 'create_plus_images':
-        await _wiz_proceed_to_selection(target_msg, state)
+    if mode not in ('create_plus_images', 'create_plus_images_automated'):
+        await _wiz_proceed_to_selection(target_msg, context, state)
         return
 
     await target_msg.reply_text(
@@ -1072,7 +1147,7 @@ async def _wiz_done_kickoff(target_msg, context, state):
         await target_msg.reply_text(
             f"✅ no existing phones found — every entry is new. Continuing.",
             parse_mode='Markdown')
-        await _wiz_proceed_to_selection(target_msg, state)
+        await _wiz_proceed_to_selection(target_msg, context, state)
         return
 
     # Default decision: recreate (matches "I wanted a NEW profile" intent).
@@ -1135,8 +1210,20 @@ async def _wiz_render_preflight(target_msg, state):
                                  reply_markup=_wiz_preflight_kb(state))
 
 
-async def _wiz_proceed_to_selection(target_msg, state):
-    """Continue into the existing bg-style picker step."""
+async def _wiz_proceed_to_selection(target_msg, context, state):
+    """For manual modes: enter the bg-style picker for the first profile.
+    For 'create_plus_images_automated': skip selection entirely and dispatch
+    straight to the execution phase — each profile gets one auto-generated
+    normal bg + one auto-generated artistic bg from a random Drive type."""
+    if state.get('mode') == 'create_plus_images_automated':
+        await target_msg.reply_text(
+            f"🤖 *Automated mode — kicking off execution on "
+            f"{len(state['batch'])} profile(s).*\n\n"
+            f"Per profile: 1 random normal bg (jittered palette) + 1 random "
+            f"artistic bg (random Drive type) → pushed to phone gallery.",
+            parse_mode='Markdown')
+        await _execute_batch(target_msg, context)
+        return
     first = state['batch'][0]
     await target_msg.reply_text(
         f"🚀 *Starting selection for {len(state['batch'])} profile(s).*\n\n"
@@ -1210,5 +1297,5 @@ async def _handle_done_or_preflight(q, context, data, state):
             f"✅ decisions saved: *{n_rec}* recreate, *{n_skp}* skip, "
             f"*{n_new}* new.\n\nContinuing to image selection…",
             parse_mode='Markdown')
-        await _wiz_proceed_to_selection(q.message, state)
+        await _wiz_proceed_to_selection(q.message, context, state)
         return

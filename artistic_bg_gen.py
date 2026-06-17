@@ -334,6 +334,43 @@ def _generate_one(svc, ref_folder_ids, parent_folder_id, emit, file_prefix='arti
 
 # ─── Main flow (wizard path — single-shot, unchanged signature) ────────────
 
+def generate_artistic_bg_random_type(profile_subfolder_name=None,
+                                       send_progress=None):
+    """Like generate_artistic_bg but picks a RANDOM `Images bg *` folder
+    as the reference instead of the default REF_FOLDER_NAME.
+
+    Used by /geelark_profile_ig_open_automated so each profile in a batch
+    gets a different artistic flavor without the user having to choose.
+    Returns (drive_file_id, local_temp_path, error_or_None).
+    """
+    def emit(m):
+        logger.info(f"[artistic_bg/rand] {m}")
+        if send_progress:
+            try: send_progress(m)
+            except Exception: pass
+
+    svc = _drive_service()
+    types = _list_art_type_folders(svc)
+    if not types:
+        return None, None, (f"no '{REF_FOLDER_PREFIX}*' folders found in Drive — "
+                            f"can't pick a random artistic type")
+    pick = random.choice(types)
+    emit(f"🎲 random artistic type: {pick['name']}")
+
+    out_root_id = _ensure_folder(svc, OUTPUT_ROOT_NAME)
+    parent_id = (_ensure_folder(svc, profile_subfolder_name, out_root_id)
+                 if profile_subfolder_name else out_root_id)
+
+    drive_id, local_path, err = _generate_one(
+        svc, [pick['id']], parent_id, emit,
+        file_prefix=f"artistic_{_type_slug(pick['name'])}")
+    if not err:
+        emit(f"💾 saved to Drive: {OUTPUT_ROOT_NAME}/"
+             f"{profile_subfolder_name + '/' if profile_subfolder_name else ''}"
+             f"{os.path.basename(local_path)}")
+    return drive_id, local_path, err
+
+
 def generate_artistic_bg(profile_subfolder_name=None, send_progress=None):
     """End-to-end: pick 6 refs → call WaveSpeed → download → save to Drive.
 

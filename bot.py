@@ -182,7 +182,8 @@ COMMANDS_TEXT = (
     "/ig_setup_private — IG wizard: login + bio + link + pic + Private toggle\n\n"
 
     "📱 <b>GeeLark phones</b>\n"
-    "/geelark_profile_ig_open — Mirror GoLogin → GeeLark + install IG (+ images)\n"
+    "/geelark_profile_ig_open — Mirror GoLogin → GeeLark + install IG (+ MANUAL image selection)\n"
+    "/geelark_profile_ig_open_automated — Same as above but AUTO 1 normal + 1 artistic bg per profile\n"
     "/geelark_profile_fb_open — Mirror GoLogin → GeeLark + install Facebook\n"
     "/geelark_stop_phone — Batch-stop GeeLark phones once setup is done\n\n"
 
@@ -237,7 +238,8 @@ async def post_init(application):
         BotCommand("ig_setup_private",     "👤 IG wizard — login + bio + link + pic + Private"),
 
         # 📱 GeeLark phones
-        BotCommand("geelark_profile_ig_open", "📱 Mirror GoLogin → GeeLark + install IG (+ images)"),
+        BotCommand("geelark_profile_ig_open", "📱 Mirror GoLogin → GeeLark + IG (manual image picking)"),
+        BotCommand("geelark_profile_ig_open_automated", "📱 Same — but auto 1 normal + 1 artistic bg per profile"),
         BotCommand("geelark_profile_fb_open", "📱 Mirror GoLogin → GeeLark + install Facebook"),
         BotCommand("geelark_stop_phone",      "📱 Batch-stop GeeLark phones"),
 
@@ -376,6 +378,8 @@ def main():
     # user-facing canonical name as of 2026-06-08.
     application.add_handler(CommandHandler("geelark_profile_open", geelark_open.geelark_profile_open_command))
     application.add_handler(CommandHandler("geelark_profile_ig_open", geelark_open.geelark_profile_open_command))
+    application.add_handler(CommandHandler("geelark_profile_ig_open_automated",
+                                            geelark_image_wizard.automated_create_command))
     # FB flow — create phone + install Facebook, no images, no mode select
     application.add_handler(CommandHandler("geelark_profile_fb_open", geelark_open.geelark_profile_fb_open_command))
     application.add_handler(CommandHandler("geelark_stop_phone", geelark_open.geelark_stop_phone_command))
