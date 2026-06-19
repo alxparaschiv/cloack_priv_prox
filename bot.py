@@ -54,6 +54,7 @@ import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
 import bio_gen
+import blocked_words
 
 
 logging.basicConfig(
@@ -198,7 +199,8 @@ COMMANDS_TEXT = (
     "/bg_generator — Solid / gradient / artistic abstract PNG (single OR batch → Drive)\n"
     "/artistic_bg — AI artistic backgrounds from Drive refs — batch → Drive folder link\n"
     "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
-    "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n\n"
+    "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
+    "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
 
     "🔗 <b>Cloak &amp; privacy</b>\n"
     "/cloak — Cloaking link manager (Cloudflare)\n"
@@ -255,6 +257,7 @@ async def post_init(application):
         BotCommand("artistic_bg",   "🎨 AI artistic backgrounds — batch → Drive folder link"),
         BotCommand("banner_gen",    "🎨 Model photo → 21:9 cinematic banner (nano-banana-pro)"),
         BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
+        BotCommand("blocklist",     "🎨 IG blocked-words — anchored + anti-cluster guard"),
 
         # 🔗 Cloak & privacy
         BotCommand("cloak",    "🔗 Cloaking link manager (Cloudflare)"),
@@ -389,6 +392,7 @@ def main():
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
+    application.add_handler(CommandHandler("blocklist", blocked_words.blocklist_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
     # Callback handlers — pattern-based
