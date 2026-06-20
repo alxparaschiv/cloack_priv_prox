@@ -555,14 +555,14 @@ function geoLandingHTMLNew(model, incomingUtm) {
   .stage::after{content:"";position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.04) 35%,rgba(0,0,0,.22) 72%,rgba(0,0,0,.40) 100%)}
   .panel{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);width:calc(100% - 28px);max-width:430px;z-index:2;background:rgba(12,12,16,.60);border:1px solid rgba(255,255,255,.10);border-radius:22px;backdrop-filter:saturate(112%);-webkit-backdrop-filter:saturate(112%);padding:20px 18px 18px;text-align:center;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.95),0 0 8px rgba(0,0,0,.85),0 0 22px rgba(0,0,0,.6);box-shadow:0 12px 40px rgba(0,0,0,.45)}
   .name{font-size:30px;font-weight:800;margin:0 0 6px;letter-spacing:.2px}
-  .bio-tag{font-size:15px;font-weight:500;font-style:italic;line-height:1.32;margin:0 auto 12px;max-width:320px;opacity:.95}
+  .bio-tag{font-size:15px;font-weight:500;font-style:italic;line-height:1.32;margin:0 auto 18px;max-width:320px;opacity:.95}
   .loc{font-size:17px;font-weight:600;margin:0 0 11px;opacity:.97}
   .status{font-size:15px;font-weight:600;margin:0 0 12px}
   .status .dot{font-size:11px;vertical-align:middle}
   .blurb{font-size:16px;line-height:1.35;margin:0 auto 16px;max-width:330px;opacity:.97}
   .blurb b{font-weight:700}
   @keyframes heartbeat{0%,30%,70%,100%{transform:scale(1)}15%,45%{transform:scale(1.04)}}
-  .cta{display:block;width:100%;background:var(--accent);color:#fff;border:none;border-radius:14px;padding:16px 18px;font-size:18px;font-weight:800;letter-spacing:.3px;text-decoration:none;cursor:pointer;box-shadow:0 10px 38px 2px rgba(255,45,143,.45);animation:heartbeat 1.8s ease-in-out infinite;transform-origin:center center}
+  .cta{display:block;width:100%;background:linear-gradient(100deg,#f5359b 0%,#b740c9 52%,#9a43dd 100%);color:#fff;border:none;border-radius:14px;padding:16px 18px;font-size:18px;font-weight:800;letter-spacing:.3px;text-decoration:none;cursor:pointer;box-shadow:0 10px 38px 2px rgba(190,60,190,.45);animation:heartbeat 1.8s ease-in-out infinite;transform-origin:center center}
   .cta:hover{animation-play-state:paused}
   .cta:active{transform:scale(.98);filter:brightness(1.06)}
   /* ── In-app-browser escape (SAME mechanic as the old links) ── */
