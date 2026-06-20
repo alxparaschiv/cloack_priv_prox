@@ -54,6 +54,7 @@ import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
 import bio_gen
+import looksmax
 import blocked_words
 
 
@@ -171,6 +172,8 @@ async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await banner_gen.banner_photo_received(update, context):
         return
+    if await looksmax.looksmax_photo_received(update, context):
+        return
 
 
 # ─── /start /info — grouped command guide ─────────────────────────────
@@ -200,6 +203,7 @@ COMMANDS_TEXT = (
     "/artistic_bg — AI artistic backgrounds from Drive refs — batch → Drive folder link\n"
     "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
     "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
+    "/looksmax — Send a model photo → controlled attractiveness variations (skin glow, femininity, lips/eyes, brighter, glam) → Drive folder link\n"
     "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
 
     "🔗 <b>Cloak &amp; privacy</b>\n"
@@ -392,6 +396,7 @@ def main():
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
+    application.add_handler(CommandHandler("looksmax", looksmax.looksmax_command))
     application.add_handler(CommandHandler("blocklist", blocked_words.blocklist_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
 
