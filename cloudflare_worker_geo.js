@@ -512,6 +512,218 @@ function geoLandingHTML(model, incomingUtm) {
 </html>`;
 }
 
+// ─── GEO landing page — FORMAT C / "new design" (2026-06-20) ────────────────
+// A contained A/B variant of geoLandingHTML, selected per-slug via
+// slugConfig.layout === 'new'. Existing geo links (no layout flag) keep
+// serving geoLandingHTML byte-for-byte. Format C is a BLEND:
+//   • KEEP: full-bleed image, name, the geo "I live near {city}" line,
+//     "Available now · Responds in 2 minutes", the heartbeat
+//     "SEND ME A MESSAGE" CTA, and the SAME /r→/v→/go cloak chain +
+//     in-app-browser escape.
+//   • ADD: a short funny LLM-generated bio tagline under the name
+//     (model.bio — the bot writes an audited one into the slug config).
+//   • REMOVE: the "FREE TRIAL TODAY ends in 14:59" countdown timer
+//     (research: fake countdowns now read as manipulative → trust hit).
+function geoLandingHTMLNew(model, incomingUtm) {
+  const utmQS   = buildUtmQueryString(incomingUtm, model.slug);
+  const name    = escapeHTML((model.display || model.handle || 'me').trim());
+  const bio     = escapeHTML((model.bio || '').trim());
+  const city    = escapeHTML((model.city || '').trim());
+  const _ccode  = (model.country || '').trim().toUpperCase();
+  const country = escapeHTML(COUNTRY_NAMES[_ccode] || _ccode);
+  const img     = escapeAttr(model.geoImg || model.ofPhotoUrl || model.photoUrl || '');
+  const here    = city || country || 'you';
+  const locLine = city ? ('📍 ' + city + (country ? ', ' + country : ''))
+                       : (country ? '📍 ' + country : '');
+  const initialChar = ((model.display || 'P').trim()[0] || 'P').toUpperCase();
+  const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="#1d9bf0"/><text x="32" y="44" font-family="Helvetica,Arial,sans-serif" font-size="36" font-weight="700" fill="white" text-anchor="middle">${initialChar}</text></svg>`;
+  const faviconUri = `data:image/svg+xml,${encodeURIComponent(faviconSvg)}`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>${name}</title>
+<link rel="icon" type="image/svg+xml" href="${faviconUri}">
+<meta name="theme-color" content="#000000">
+<style>
+  :root { --accent:#1d9bf0; --img:url('${img}'); }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#0b0b0d}
+  .bg-blur{position:fixed;inset:0;background-image:var(--img);background-size:cover;background-position:center;filter:blur(34px) brightness(.55) saturate(1.25);transform:scale(1.15);z-index:0}
+  .stage{position:relative;z-index:1;height:100dvh;aspect-ratio:9/16;max-width:100vw;margin:0 auto;background-image:var(--img);background-size:cover;background-position:center 22%;overflow:hidden;box-shadow:0 0 60px rgba(0,0,0,.55)}
+  .stage::after{content:"";position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.04) 35%,rgba(0,0,0,.22) 72%,rgba(0,0,0,.40) 100%)}
+  .panel{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);width:calc(100% - 28px);max-width:430px;z-index:2;background:rgba(12,12,16,.60);border:1px solid rgba(255,255,255,.10);border-radius:22px;backdrop-filter:saturate(112%);-webkit-backdrop-filter:saturate(112%);padding:20px 18px 18px;text-align:center;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.95),0 0 8px rgba(0,0,0,.85),0 0 22px rgba(0,0,0,.6);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+  .name{font-size:30px;font-weight:800;margin:0 0 4px;letter-spacing:.2px}
+  .bio-tag{font-size:15px;font-weight:500;font-style:italic;line-height:1.32;margin:0 auto 10px;max-width:320px;opacity:.95}
+  .loc{font-size:17px;font-weight:600;margin:0 0 11px;opacity:.97}
+  .status{font-size:15px;font-weight:600;margin:0 0 9px}
+  .status .dot{font-size:11px;vertical-align:middle}
+  .blurb{font-size:16px;line-height:1.35;margin:0 auto 16px;max-width:330px;opacity:.97}
+  .blurb b{font-weight:700}
+  @keyframes heartbeat{0%,30%,70%,100%{transform:scale(1)}15%,45%{transform:scale(1.04)}}
+  .cta{display:block;width:100%;background:var(--accent);color:#fff;border:none;border-radius:14px;padding:16px 18px;font-size:18px;font-weight:800;letter-spacing:.3px;text-decoration:none;cursor:pointer;box-shadow:0 10px 38px 2px rgba(29,155,240,.45);animation:heartbeat 1.8s ease-in-out infinite;transform-origin:center center}
+  .cta:hover{animation-play-state:paused}
+  .cta:active{transform:scale(.98);filter:brightness(1.06)}
+  /* ── In-app-browser escape (SAME mechanic as the old links) ── */
+  #ext-tip{display:none;position:fixed;top:14px;right:14px;z-index:9998;
+           max-width:220px;padding:10px 14px;
+           background:#fff;color:#111;border-radius:14px;
+           font-size:13px;font-weight:600;line-height:1.35;
+           box-shadow:0 6px 28px rgba(0,0,0,.55);text-align:center}
+  #ext-tip:after{content:"";position:absolute;top:-9px;right:18px;
+                 width:0;height:0;border:9px solid transparent;
+                 border-top:none;border-bottom-color:#fff}
+  #ext-overlay{display:none;position:fixed;inset:0;z-index:10000;
+               background:rgba(0,0,0,.92);backdrop-filter:blur(8px);
+               -webkit-backdrop-filter:blur(8px);
+               flex-direction:column;align-items:center;justify-content:center;
+               padding:32px 28px;color:#fff;text-align:center}
+  #ext-overlay.show{display:flex}
+  #ext-overlay .x{position:absolute;top:22px;left:22px;
+                  width:38px;height:38px;border-radius:50%;
+                  background:rgba(255,255,255,.1);
+                  display:flex;align-items:center;justify-content:center;
+                  font-size:22px;cursor:pointer;color:#fff}
+  #ext-overlay .ext-eye{width:72px;height:72px;margin-bottom:32px;opacity:.95}
+  #ext-overlay h2{font-size:24px;font-weight:800;margin-bottom:20px;
+                  letter-spacing:.3px}
+  #ext-overlay p{font-size:15px;color:#ccc;margin-bottom:26px;line-height:1.5;
+                 max-width:340px}
+  #ext-overlay .ext-instr{font-size:14px;color:#aaa;margin:0 0 36px;
+                          padding:0 16px;line-height:1.5;max-width:340px}
+  #ext-overlay .ext-instr b{color:#fff;font-weight:700}
+  #ext-overlay #ext-go{appearance:none;border:none;cursor:pointer;
+                       display:inline-block;text-decoration:none;
+                       padding:18px 34px;border-radius:16px;
+                       background:linear-gradient(135deg,#e8458f,#9c27b0);
+                       color:#fff;font-size:17px;font-weight:700;
+                       letter-spacing:.3px;
+                       box-shadow:0 10px 36px rgba(225,70,175,.55);
+                       transition:transform .15s ease}
+  #ext-overlay #ext-go:active{transform:scale(.97)}
+</style>
+</head>
+<body>
+  <div id="ext-tip">Tap <b>⋯</b> → <b>Open in external browser</b></div>
+  <div id="ext-overlay" role="dialog" aria-modal="true">
+    <span class="x" onclick="document.getElementById('ext-overlay').classList.remove('show')">×</span>
+    <svg class="ext-eye" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 17.94 17.94 A 10.07 10.07 0 0 1 12 20 c-7 0-11-8-11-8 a 18.45 18.45 0 0 1 5.06-5.94 M 9.9 4.24 A 9.12 9.12 0 0 1 12 4 c 7 0 11 8 11 8 a 18.5 18.5 0 0 1-2.16 3.19 m-6.72-1.07 a 3 3 0 1 1-4.24-4.24"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+    <h2>18+ Content Warning</h2>
+    <p>This link may contain graphic or adult content.</p>
+    <div class="ext-instr">Tap the <b>⋯</b> in the top right, then choose <b>Open in external browser</b></div>
+    <a id="ext-go" href="#" target="_blank" rel="noopener">Open in external browser</a>
+    <div id="ext-hold-hint" style="display:none;margin-top:14px;font-size:13px;color:rgba(255,255,255,.78);max-width:300px;line-height:1.5">☝️ <b>Hold</b> the pink button for a moment, then tap <b>Open</b></div>
+  </div>
+  <div class="bg-blur"></div>
+  <div class="stage">
+    <div class="panel">
+      <h1 class="name">${name} ❣️</h1>
+      ${bio ? `<p class="bio-tag">${bio}</p>` : ''}
+      ${locLine ? `<div class="loc">${locLine}</div>` : ''}
+      <div class="status"><span class="dot">🟢</span> Available now · Responds in 2 minutes</div>
+      <p class="blurb">I live near <b>${here}</b>, let's get to know each other 🥰</p>
+      <a class="cta" id="cta" href="/r?${utmQS}" rel="noopener">SEND ME A MESSAGE ❤️</a>
+    </div>
+  </div>
+<script>
+(function(){
+  // ── In-app-browser escape — SAME mechanic as the old links (verbatim) ──
+  var ua = navigator.userAgent || '';
+  var inApp = /Instagram|FBAN|FBAV|FB_IAB|FB4A|FBIOS|MessengerForiOS|TikTok|musical_ly|Bytedance|Twitter|TwitterAndroid|Snapchat|MicroMessenger|WeChat|Pinterest|YJApp|KAKAOTALK|NAVER/i.test(ua)
+              || /Line\\//i.test(ua)
+              || /\\bFacebook\\b/i.test(ua);
+  if (!inApp) {
+    var isIOSua = /iPhone|iPad|iPod/i.test(ua);
+    var isAndroidUa = /Android/i.test(ua);
+    if (isIOSua) {
+      var hasRealBrowserTok = /Safari\\//i.test(ua) || /CriOS\\//i.test(ua) ||
+                              /FxiOS\\//i.test(ua) || /EdgiOS\\//i.test(ua);
+      if (!hasRealBrowserTok) inApp = true;
+    } else if (isAndroidUa) {
+      if (/;\\s*wv\\)/i.test(ua)) inApp = true;
+    }
+  }
+  if (!inApp) return;  // real browser — let the CTA navigate naturally
+
+  var tip = document.getElementById('ext-tip');
+  if (tip) tip.style.display = 'block';
+
+  var cta = document.getElementById('cta');
+  var overlay = document.getElementById('ext-overlay');
+  var goBtn = document.getElementById('ext-go');
+  if (cta && overlay) {
+    cta.addEventListener('click', function(e){
+      e.preventDefault();
+      overlay.classList.add('show');
+    }, false);
+  }
+  if (goBtn && cta) {
+    var rawHref = cta.getAttribute('href') || '/r';
+    var href = new URL(rawHref, location.href).href;
+    var isIOS = /iPhone|iPad|iPod/i.test(ua);
+    var isAndroid = /Android/i.test(ua);
+    if (isIOS) {
+      var iosPlatform = /Barcelona/i.test(ua) ? 'threads'
+                      : /FBAN|FBAV|FB_IAB|FB4A|FBIOS/i.test(ua) ? 'facebook'
+                      : /Instagram/i.test(ua) ? 'instagram'
+                      : 'other';
+      if (iosPlatform === 'instagram' || iosPlatform === 'threads') {
+        var metaScheme = iosPlatform === 'instagram'
+          ? 'instagram://extbrowser/?url='
+          : 'barcelona://extbrowser/?url=';
+        goBtn.setAttribute('href', '#');
+        goBtn.addEventListener('click', function(e){
+          e.preventDefault();
+          try { window.location.replace(metaScheme + encodeURIComponent(href)); }
+          catch (_e) { window.location.href = metaScheme + encodeURIComponent(href); }
+        }, false);
+      } else {
+        goBtn.setAttribute('href', '#');
+        var transformed = false;
+        goBtn.addEventListener('click', function(e){
+          if (transformed) { e.preventDefault(); return; }
+          e.preventDefault();
+          try {
+            window.location.href = 'googlechrome://' + href.replace(/^https?:\\/\\//, '');
+          } catch (_e) {}
+          setTimeout(function(){
+            if (document.hidden) return;
+            try { window.location.href = 'x-safari-' + href; } catch (_e) {}
+          }, 500);
+          setTimeout(function(){
+            if (document.hidden) return;
+            try { window.open(href, '_blank'); } catch (_e) {}
+          }, 1000);
+          setTimeout(function(){
+            if (document.hidden) return;
+            transformed = true;
+            goBtn.setAttribute('href', href);
+            goBtn.setAttribute('target', '_blank');
+            var hint = document.getElementById('ext-hold-hint');
+            if (hint) hint.style.display = 'block';
+          }, 1500);
+        }, false);
+      }
+    } else if (isAndroid) {
+      var stripped = href.replace(/^https?:\\/\\//, '');
+      goBtn.href = 'intent://' + stripped + '#Intent;scheme=https;'
+                 + 'S.browser_fallback_url=' + encodeURIComponent(href)
+                 + ';end';
+    } else {
+      goBtn.href = href;
+      goBtn.target = '_blank';
+    }
+  }
+})();
+</script>
+</body>
+</html>`;
+}
+
 function landingHTML(model, incomingUtm) {
   const utmQS = buildUtmQueryString(incomingUtm, model.slug);
   const ofUrl = appendQS(model.ofLink, utmQS);
@@ -1348,6 +1560,9 @@ export default {
         xLink:      slugConfig.x          || modelConfig.x          || env[`MODEL_${modelNameUpper}_X`]          || '',
         igLink:     slugConfig.ig         || modelConfig.ig         || env[`MODEL_${modelNameUpper}_IG`]         || '',
         ofLink:     slugConfig.of         || modelConfig.of         || env[`OF_LINK_${modelNameUpper}`]          || '',
+        // 2026-06-20: per-slug landing layout. 'new' → format C (bio tagline,
+        // no countdown). Anything else (incl. unset) → the unchanged geo page.
+        layout:     (slugConfig.layout || '').toString().toLowerCase(),
       };
       if (!model.ofLink) {
         return new Response(benignHTML(), {
@@ -1385,7 +1600,9 @@ export default {
         model.geoImg = `/img/${_sl}/${Math.floor(Math.random() * _imgN)}`;
       }
 
-      const html = geoLandingHTML(model, incomingUtm);
+      const html = (model.layout === 'new')
+        ? geoLandingHTMLNew(model, incomingUtm)
+        : geoLandingHTML(model, incomingUtm);
       // Analytics: landing page hit. route='landing' distinguishes it
       // from /r, /v, /go in the per-route breakdown. Counts as a view.
       if (ctx) {

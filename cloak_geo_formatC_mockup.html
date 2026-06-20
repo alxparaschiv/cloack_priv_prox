@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     CLOAK GEO — FORMAT C ("new design") REVIEW MOCKUP  2026-06-20
+     Open this file in any browser. NOTHING here is live — it is a
+     static side-by-side so you can compare the CURRENT geo page
+     (format B, left) with the NEW design (format C, right).
+
+     Format C = a BLEND:
+       KEEP   · full-bleed photo + name
+       KEEP   · 📍 city/country geo line
+       KEEP   · 🟢 Available now · Responds in 2 minutes
+       KEEP   · "I live near {city}, let's get to know each other"
+       KEEP   · heartbeat "SEND ME A MESSAGE" button (same cloak chain)
+       ADD    · funny LLM bio tagline under the name  (you audit it)
+       REMOVE · "FREE TRIAL TODAY ends in 14:59" countdown
+
+     The photo is a placeholder gradient here so it renders offline;
+     on the live page it is the real full-bleed model image.
+     ============================================================ -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Format C — cloak geo new design (mockup)</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#15151a;color:#eee;padding:24px 16px 60px}
+  h1{text-align:center;font-size:22px;font-weight:800;margin:4px 0 4px}
+  .sub{text-align:center;color:#9aa;font-size:14px;margin:0 0 26px;line-height:1.5}
+  .row{display:flex;gap:34px;justify-content:center;flex-wrap:wrap;align-items:flex-start}
+  .col{width:300px}
+  .col > .cap{text-align:center;font-weight:700;font-size:15px;margin:0 0 4px}
+  .col > .cap.b{color:#ff8a8a}
+  .col > .cap.c{color:#7ce0a0}
+  .col > .note{text-align:center;color:#889;font-size:12.5px;margin:0 0 12px;min-height:32px;line-height:1.4}
+
+  /* ---- phone frame (replicates the live panel styling) ---- */
+  .phone{position:relative;width:300px;height:533px;border-radius:30px;overflow:hidden;box-shadow:0 14px 50px rgba(0,0,0,.55);border:1px solid #2a2a32}
+  /* placeholder "photo" — gradient stand-in for the real full-bleed image */
+  .photo{position:absolute;inset:0;background:
+     radial-gradient(120% 80% at 50% 18%, #6d3b86 0%, #3a1f53 42%, #160c24 100%);}
+  .photo::after{content:"";position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.04) 35%,rgba(0,0,0,.22) 72%,rgba(0,0,0,.55) 100%)}
+  .silh{position:absolute;left:50%;top:20%;transform:translateX(-50%);font-size:120px;opacity:.30}
+
+  .panel{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);width:calc(100% - 22px);
+         background:rgba(12,12,16,.60);border:1px solid rgba(255,255,255,.10);border-radius:20px;
+         backdrop-filter:saturate(112%);padding:16px 14px 14px;text-align:center;color:#fff;
+         text-shadow:0 1px 4px rgba(0,0,0,.95),0 0 8px rgba(0,0,0,.85);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+  .name{font-size:25px;font-weight:800;margin:0 0 5px;letter-spacing:.2px}
+  .bio-tag{font-size:13.5px;font-weight:500;font-style:italic;line-height:1.3;margin:0 auto 9px;max-width:250px;opacity:.95}
+  .loc{font-size:15px;font-weight:600;margin:0 0 9px;opacity:.97}
+  .status{font-size:13px;font-weight:600;margin:0 0 8px}
+  .status .dot{font-size:10px;vertical-align:middle}
+  .blurb{font-size:14px;line-height:1.35;margin:0 auto 14px;max-width:250px;opacity:.97}
+  .blurb b{font-weight:700}
+  @keyframes hb{0%,30%,70%,100%{transform:scale(1)}15%,45%{transform:scale(1.04)}}
+  .cta{display:block;width:100%;background:#1d9bf0;color:#fff;border:none;border-radius:13px;padding:14px 16px;
+       font-size:16px;font-weight:800;letter-spacing:.3px;text-decoration:none;
+       box-shadow:0 10px 30px 2px rgba(29,155,240,.45);animation:hb 1.8s ease-in-out infinite}
+  .timer{margin:11px 0 2px;font-size:13px;font-weight:600;opacity:.96}
+  .timer .count{color:#ff4d4f;font-variant-numeric:tabular-nums;font-weight:800}
+
+  .diff{max-width:660px;margin:34px auto 0;background:#1c1c22;border:1px solid #2a2a32;border-radius:14px;padding:18px 22px;font-size:14px;line-height:1.7}
+  .diff h3{margin:0 0 8px;font-size:15px}
+  .diff .keep{color:#7ce0a0}.diff .add{color:#8ab4ff}.diff .rm{color:#ff8a8a}
+  .pool{max-width:660px;margin:18px auto 0;background:#1c1c22;border:1px solid #2a2a32;border-radius:14px;padding:14px 22px;font-size:13.5px;color:#bcc;line-height:1.7}
+  .pool b{color:#eee}
+  .pool .ex{color:#cdd;font-style:italic}
+</style>
+</head>
+<body>
+  <h1>🌍 Cloak geo — “new design” (Format C) review</h1>
+  <p class="sub">Same link / same cloak chain / same geo personalization.<br>
+     Difference: a funny bio tagline replaces the fake countdown.</p>
+
+  <div class="row">
+    <!-- ===== CURRENT (format B) ===== -->
+    <div class="col">
+      <div class="cap b">CURRENT  (Format B)</div>
+      <div class="note">what every geo link serves today</div>
+      <div class="phone">
+        <div class="photo"><div class="silh">👩🏻‍🎤</div></div>
+        <div class="panel">
+          <div class="name">Carolina ❣️</div>
+          <div class="loc">📍 Manchester, United Kingdom</div>
+          <div class="status"><span class="dot">🟢</span> Available now · Responds in 2 minutes</div>
+          <p class="blurb">I live near <b>Manchester</b>, let's get to know each other 🥰</p>
+          <a class="cta">SEND ME A MESSAGE ❤️</a>
+          <div class="timer">FREE TRIAL TODAY ends in <span class="count">14:59</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== NEW (format C) ===== -->
+    <div class="col">
+      <div class="cap c">NEW  (Format C)</div>
+      <div class="note">only the new-design links serve this<br>(existing links unchanged)</div>
+      <div class="phone">
+        <div class="photo"><div class="silh">👩🏻‍🎤</div></div>
+        <div class="panel">
+          <div class="name">Carolina ❣️</div>
+          <p class="bio-tag">probably texting you back before my coffee gets cold ☕️🖤</p>
+          <div class="loc">📍 Manchester, United Kingdom</div>
+          <div class="status"><span class="dot">🟢</span> Available now · Responds in 2 minutes</div>
+          <p class="blurb">I live near <b>Manchester</b>, let's get to know each other 🥰</p>
+          <a class="cta">SEND ME A MESSAGE ❤️</a>
+          <!-- no countdown -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="diff">
+    <h3>What changed</h3>
+    <span class="keep">KEEP</span> &nbsp;photo · name · 📍 city/country · 🟢 Available now · “I live near …” · SEND ME A MESSAGE (same /r→/v→/go cloak chain + in-app-browser escape)<br>
+    <span class="add">ADD</span> &nbsp;&nbsp;&nbsp;a short funny <b>bio tagline</b> under the name — LLM-generated, <b>you audit each one</b><br>
+    <span class="rm">REMOVE</span> the “FREE TRIAL TODAY ends in 14:59” countdown (research: fake timers now read as manipulative → trust hit)
+  </div>
+
+  <div class="pool">
+    <b>Sample bio taglines</b> (the generator produces a batch per link; you pick/edit before publish):<br>
+    <span class="ex">· “probably texting you back before my coffee gets cold ☕️🖤”</span><br>
+    <span class="ex">· “black lipstick, soft heart, terrible at waiting for replies 🖤”</span><br>
+    <span class="ex">· “your favourite bad decision, but make it goth 🦇”</span><br>
+    <span class="ex">· “8pm: cute. 2am: a whole different girl 🌙”</span>
+  </div>
+</body>
+</html>
