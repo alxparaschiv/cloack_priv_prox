@@ -57,6 +57,8 @@
   .cta{display:block;width:100%;background:#1d9bf0;color:#fff;border:none;border-radius:13px;padding:14px 16px;
        font-size:16px;font-weight:800;letter-spacing:.3px;text-decoration:none;
        box-shadow:0 10px 30px 2px rgba(29,155,240,.45);animation:hb 1.8s ease-in-out infinite}
+  .cta.mag{background:#ff2d8f;box-shadow:0 10px 30px 2px rgba(255,45,143,.45)}
+  .cta.grn{background:#16c060;box-shadow:0 10px 30px 2px rgba(22,192,96,.45)}
   .timer{margin:11px 0 2px;font-size:13px;font-weight:600;opacity:.96}
   .timer .count{color:#ff4d4f;font-variant-numeric:tabular-nums;font-weight:800}
 
@@ -100,21 +102,46 @@
         <div class="panel">
           <div class="name">Carolina ❣️</div>
           <p class="bio-tag">probably texting you back before my coffee gets cold ☕️🖤</p>
-          <div class="loc">📍 Manchester, United Kingdom</div>
-          <div class="status"><span class="dot">🟢</span> Available now · Responds in 2 minutes</div>
+          <div class="status"><span class="dot">🟢</span> Available now</div>
           <p class="blurb">I live near <b>Manchester</b>, let's get to know each other 🥰</p>
-          <a class="cta">SEND ME A MESSAGE ❤️</a>
-          <!-- no countdown -->
+          <a class="cta mag">SEND ME A MESSAGE ❤️</a>
+          <!-- no location, no countdown, no "responds in 2 min" -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== NEW (format C) — GREEN button variant for comparison ===== -->
+    <div class="col">
+      <div class="cap c">NEW (C) — green button</div>
+      <div class="note">identical to the middle —<br>only the button colour differs</div>
+      <div class="phone">
+        <div class="photo"><div class="silh">👩🏻‍🎤</div></div>
+        <div class="panel">
+          <div class="name">Carolina ❣️</div>
+          <p class="bio-tag">probably texting you back before my coffee gets cold ☕️🖤</p>
+          <div class="status"><span class="dot">🟢</span> Available now</div>
+          <p class="blurb">I live near <b>Manchester</b>, let's get to know each other 🥰</p>
+          <a class="cta grn">SEND ME A MESSAGE ❤️</a>
         </div>
       </div>
     </div>
   </div>
 
   <div class="diff">
-    <h3>What changed</h3>
-    <span class="keep">KEEP</span> &nbsp;photo · name · 📍 city/country · 🟢 Available now · “I live near …” · SEND ME A MESSAGE (same /r→/v→/go cloak chain + in-app-browser escape)<br>
-    <span class="add">ADD</span> &nbsp;&nbsp;&nbsp;a short funny <b>bio tagline</b> under the name — LLM-generated, <b>you audit each one</b><br>
-    <span class="rm">REMOVE</span> the “FREE TRIAL TODAY ends in 14:59” countdown (research: fake timers now read as manipulative → trust hit)
+    <h3>What changed (v2 — your markup applied)</h3>
+    <span class="keep">KEEP</span> &nbsp;photo · name · funny <b>LLM bio tagline</b> · 🟢 <b>Available now</b> · “I live near {city} …” · SEND ME A MESSAGE (same /r→/v→/go cloak chain + in-app escape)<br>
+    <span class="rm">REMOVE</span> the 📍 <b>location line</b> (redundant — “I live near {city}” already says it)<br>
+    <span class="rm">REMOVE</span> “<b>· Responds in 2 minutes</b>” (kept “Available now” — not click-baity)<br>
+    <span class="rm">REMOVE</span> the “FREE TRIAL TODAY ends in 14:59” countdown (fake timers read as manipulative → trust hit)<br>
+    <span class="add">CHANGE</span> button <b>blue → magenta</b> (bouncy.ai-style) · green shown right for comparison
+  </div>
+  <div class="pool">
+    <b>Button colour — what the research says:</b> there is no universal winner; the driver is
+    <b>contrast + context</b>. Blue wins most <i>general</i> A/B tests (trust), but on this
+    <b>dark</b> page it half-blends into the brand palette. <b>Red/magenta</b> drive urgency &amp; action
+    (T-Mobile, bouncy.ai); <b>green</b> reads “go / positive”. For a flirty OF funnel on a dark bg,
+    a high-contrast <b>magenta</b> is the strongest single pick — with <b>green</b> the best thing to
+    A/B against it. (Recommendation: ship magenta, test green next.)
   </div>
 
   <div class="pool">
