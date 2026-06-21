@@ -535,15 +535,17 @@ def _download_drive_folder_images(folder_id, dest_dir='/tmp'):
 
 async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data or ''
     state = context.user_data.get('imgwiz')
 
-    # Done-button + preflight UI dispatched first — share the imgwiz: prefix.
+    # Done-button + preflight UI need to call query.answer() themselves with
+    # contextual popup text, so DON'T auto-answer for those branches.
     if (data == 'imgwiz:done_collect'
             or data.startswith('imgwiz:pre:')):
         await _handle_done_or_preflight(query, context, data, state)
         return
+
+    await query.answer()
 
     # 50/50 batch flow theme picker (create_plus_images mode only).
     if data.startswith('imgwiz:theme:'):
@@ -1223,11 +1225,14 @@ async def _wiz_done_kickoff(target_msg, context, state):
 
 
 def _wiz_preflight_kb(state):
+    """Radio-style: a ✅ prefix marks the currently-selected option. Easier
+    to spot on mobile than the prior uppercase-vs-lowercase styling."""
     rows = []
     pre = state['preflight']
     for j, e in enumerate(pre['existing']):
-        rec_lbl = ('🗑 RECREATE' if e['action'] == 'recreate' else '   recreate')
-        skp_lbl = ('   skip'    if e['action'] == 'recreate' else '⏭ SKIP')
+        is_rec = e['action'] == 'recreate'
+        rec_lbl = '✅ 🗑 Recreate' if is_rec else '🗑 Recreate'
+        skp_lbl = '✅ ⏭ Skip'      if not is_rec else '⏭ Skip'
         rows.append([
             InlineKeyboardButton(rec_lbl, callback_data=f"imgwiz:pre:tog:{j}:r"),
             InlineKeyboardButton(skp_lbl, callback_data=f"imgwiz:pre:tog:{j}:s"),
@@ -1445,7 +1450,11 @@ async def _handle_theme_pick(q, context, state, token):
 
 async def _handle_done_or_preflight(q, context, data, state):
     """Done-button taps + preflight decision callbacks for the wizard.
-    Dispatched from imgwiz_callback (which already called q.answer()).
+    This handler owns query.answer() because the toggle branch wants to
+    show a contextual popup ("Kami: Recreate selected") — that gives the
+    user click feedback even on re-clicks where the keyboard would render
+    identically and Telegram silently rejects the edit with "message is
+    not modified".
     Patterns:
       imgwiz:done_collect          — same as typing 'done'
       imgwiz:pre:tog:{j}:{r|s}     — flip existing entry #j to recreate/skip
@@ -1453,6 +1462,7 @@ async def _handle_done_or_preflight(q, context, data, state):
       imgwiz:pre:cancel            — cancel batch
     """
     if data == 'imgwiz:done_collect':
+        await q.answer()
         if not state or not state.get('batch'):
             await q.message.reply_text("⚠️ no active batch.")
             return
@@ -1461,10 +1471,12 @@ async def _handle_done_or_preflight(q, context, data, state):
         return
 
     if not state or not state.get('preflight'):
+        await q.answer("⚠️ session expired")
         await q.message.reply_text("⚠️ wizard state expired — run the command again.")
         return
 
     if data == 'imgwiz:pre:cancel':
+        await q.answer("❌ cancelled")
         context.user_data.pop('imgwiz', None)
         await q.edit_message_text("❌ batch cancelled. Nothing was created.")
         return
@@ -1472,24 +1484,34 @@ async def _handle_done_or_preflight(q, context, data, state):
     if data.startswith('imgwiz:pre:tog:'):
         parts = data.split(':')
         if len(parts) != 5:
+            await q.answer()
             return
         try:
             j = int(parts[3])
         except ValueError:
+            await q.answer()
             return
         action = 'recreate' if parts[4] == 'r' else 'skip'
         pre = state['preflight']
         if 0 <= j < len(pre['existing']):
             pre['existing'][j]['action'] = action
+            entry_name = pre['existing'][j].get('name', f"#{j+1}")
+            label = '🗑 Recreate' if action == 'recreate' else '⏭ Skip'
+            await q.answer(f"{label}: {entry_name[:40]}", show_alert=False)
+        else:
+            await q.answer()
         try:
             await q.edit_message_text(_wiz_preflight_text(state),
                                        parse_mode='Markdown',
                                        reply_markup=_wiz_preflight_kb(state))
         except Exception:
+            # 400 "message is not modified" if user re-clicked same option.
+            # That's fine — popup already gave feedback.
             pass
         return
 
     if data == 'imgwiz:pre:go':
+        await q.answer("✅ Proceeding…")
         pre = state['preflight']
         # Write decisions back to each batch entry so _run_one_entry can honor them.
         for e in pre['existing']:
