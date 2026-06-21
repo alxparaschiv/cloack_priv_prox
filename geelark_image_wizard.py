@@ -1291,7 +1291,29 @@ async def _wiz_proceed_to_selection(target_msg, context, state):
         await _execute_batch(target_msg, context)
         return
     if state.get('mode') == 'create_plus_images':
-        await _ask_artistic_theme(target_msg, context, state)
+        # No more intermediate questions after preflight: theme is always
+        # 'random per artistic profile', the 50/50 split happens here, and
+        # we go straight to execution. Per user spec — every additional
+        # question between Done and execute is friction.
+        state['artistic_theme'] = {'kind': 'random'}
+        _assign_5050_to_batch(state)
+        n_art = sum(1 for e in state['batch']
+                    if e.get('auto_bg_role') == 'artistic')
+        n_std = len(state['batch']) - n_art
+        lines = [
+            f"🚀 *Kicking off — {len(state['batch'])} profile(s).*",
+            f"📊 Split: {n_art} artistic (random theme/profile) · "
+            f"{n_std} standard (random style/profile)",
+            '',
+        ]
+        for e in state['batch']:
+            if e.get('auto_bg_role') == 'artistic':
+                lines.append(f"  • `{e['name']}` → 🎨 artistic")
+            else:
+                lines.append(f"  • `{e['name']}` → 🎲 standard "
+                              f"(`{e.get('auto_bg_mode')}`)")
+        await target_msg.reply_text('\n'.join(lines), parse_mode='Markdown')
+        await _execute_batch(target_msg, context)
         return
     first = state['batch'][0]
     await target_msg.reply_text(
