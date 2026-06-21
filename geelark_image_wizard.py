@@ -92,8 +92,8 @@ async def show_mode_select(update_or_msg):
         "GoLogin profiles AND seed each with images afterward\n\n"
         "🖼 *Add images to existing profiles* — skip the create step and just "
         "push images to phones you already have\n\n"
-        "_For fully-automated image generation (no manual picking), use "
-        "/geelark_profile_ig_auto instead._"
+        "_For fully-automated image generation (no manual picking), use_ "
+        "`/geelark_profile_ig_auto` _instead._"
     )
     msg = update_or_msg.message if hasattr(update_or_msg, 'message') else update_or_msg
     await msg.reply_text(text, reply_markup=mode_select_keyboard(),
