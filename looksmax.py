@@ -60,7 +60,10 @@ def _base_prompt(hair=None):
         "make her skin DRAMATICALLY paler and flawless — luminous porcelain-white, "
         "even and glowing; make her eyes noticeably LARGER, ROUNDER and more OPEN "
         "with a defined upper-eyelid crease and a more Western, less-monolid shape, "
-        "a brighter light iris and big lashes; fuller lips; a slim, snatched waist. "
+        "a brighter light iris and big lashes; fuller lips. "
+        # NOTE: do NOT add bust/waist/body language here — nano-banana-pro's
+        # safety filter flags body modification on revealing photos and the whole
+        # run fails. Keep it FACE/skin/hair only.
         "Photorealistic, real skin texture, natural smartphone photo, NO bokeh, not "
         "plastic, not AI-looking. Makeup style: ")
 
@@ -80,23 +83,33 @@ _STYLES = [
 MODEL_PROFILES = {}
 
 
-def _dials_for(model=None, hair=None):
+_STYLE_NAMES = {lbl for lbl, _ in _STYLES}   # {'natural','goth','max'}
+
+
+def _dials_for(model=None, hair=None, style=None):
     key = (model or '').strip().lower()
     if key and key in MODEL_PROFILES:
-        return MODEL_PROFILES[key]
-    base = _base_prompt(hair)
-    return [(lbl, base + tail) for lbl, tail in _STYLES]
+        dials = MODEL_PROFILES[key]
+    else:
+        base = _base_prompt(hair)
+        dials = [(lbl, base + tail) for lbl, tail in _STYLES]
+    if style:   # pick ONE style (e.g. /looksmax goth) — else all
+        dials = [d for d in dials if d[0] == style] or dials
+    return dials
 
 
 def _parse_args(args):
-    """`/looksmax [model] [hair=<colour>]` → (model, hair)."""
-    model, hair = '', None
+    """`/looksmax [model] [natural|goth|max] [hair=<colour>]` → (model, hair, style)."""
+    model, hair, style = '', None, None
     for a in (args or []):
-        if a.lower().startswith('hair='):
+        al = (a or '').lower().strip()
+        if al.startswith('hair='):
             hair = a.split('=', 1)[1].strip() or None
+        elif al in _STYLE_NAMES and not style:
+            style = al
         elif not model:
             model = a.strip()
-    return model, hair
+    return model, hair, style
 
 
 def _generate_one(data_uri, prompt):
@@ -110,21 +123,24 @@ def _generate_one(data_uri, prompt):
 
 async def looksmax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/looksmax [model] [hair=<colour>] — arm the photo prompt."""
-    model, hair = _parse_args(context.args)
+    model, hair, style = _parse_args(context.args)
     context.user_data['expecting_looksmax_photo'] = True
     context.user_data['looksmax_model'] = model
     context.user_data['looksmax_hair'] = hair
-    dials = _dials_for(model, hair)
+    context.user_data['looksmax_style'] = style
+    dials = _dials_for(model, hair, style)
     await update.message.reply_text(
         "🧬 <b>Looksmax glow-up</b>"
         + (f" — <b>{model}</b>" if model else "")
         + (f" · hair → <b>{hair}</b>" if hair else " · keeping hair")
+        + (f" · style <b>{style}</b>" if style else "")
         + "\n\nSend me <b>one reference photo</b> of the model now. I'll generate "
-        f"<b>{len(dials)}</b> styles — <i>{', '.join(l for l, _ in dials)}</i> — a "
-        "strong, visible glow-up (paler porcelain skin, bigger rounder eyes, fuller "
-        "lips, glam), save them to a fresh Drive folder (with the original for A/B) "
-        "and send the link.\n\n"
-        "<i>Tip: add <code>hair=blonde</code> to recolour the hair.</i>\n"
+        f"<b>{len(dials)}</b> style{'s' if len(dials) != 1 else ''} — "
+        f"<i>{', '.join(l for l, _ in dials)}</i> — a strong, visible glow-up "
+        "(paler porcelain skin, bigger rounder eyes, fuller lips, glam), save them "
+        "to a fresh Drive folder (with the original for A/B) and send the link.\n\n"
+        "<i>Pick one: <code>/looksmax goth</code> or <code>/looksmax natural</code>. "
+        "Recolour hair: <code>hair=blonde</code>.</i>\n"
         "Send /cancel to abort.",
         parse_mode='HTML')
 
@@ -137,6 +153,7 @@ async def looksmax_photo_received(update: Update,
     context.user_data.pop('expecting_looksmax_photo', None)
     model = (context.user_data.pop('looksmax_model', '') or '').strip()
     hair = context.user_data.pop('looksmax_hair', None)
+    style = context.user_data.pop('looksmax_style', None)
 
     photos = getattr(update.message, 'photo', None)
     if not photos:
@@ -154,7 +171,7 @@ async def looksmax_photo_received(update: Update,
         return True
     data_uri = "data:image/jpeg;base64," + base64.b64encode(ref_bytes).decode('ascii')
 
-    dials = _dials_for(model, hair)
+    dials = _dials_for(model, hair, style)
     await update.message.reply_text(
         f"🧬 Generating <b>{len(dials)}</b> looksmax styles"
         + (f" for <b>{model}</b>" if model else "")

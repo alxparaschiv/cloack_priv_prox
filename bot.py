@@ -260,6 +260,7 @@ async def post_init(application):
         BotCommand("bg_generator",  "🎨 Background PNGs — single OR batch → Drive"),
         BotCommand("artistic_bg",   "🎨 AI artistic backgrounds — batch → Drive folder link"),
         BotCommand("banner_gen",    "🎨 Model photo → 21:9 cinematic banner (nano-banana-pro)"),
+        BotCommand("looksmax",      "🧬 Model photo → glow-up styles (paler/eyes/lips/glam) → Drive link"),
         BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
         BotCommand("blocklist",     "🎨 IG blocked-words — anchored + anti-cluster guard"),
 
