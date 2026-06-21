@@ -334,6 +334,39 @@ def _generate_one(svc, ref_folder_ids, parent_folder_id, emit, file_prefix='arti
 
 # ─── Main flow (wizard path — single-shot, unchanged signature) ────────────
 
+def generate_artistic_bg_from_folder(folder_id, folder_name=None,
+                                       profile_subfolder_name=None,
+                                       send_progress=None):
+    """Like generate_artistic_bg_random_type but uses a SPECIFIC `Images bg *`
+    folder (the user chose its theme up-front instead of letting the bot
+    randomize). folder_name is optional and only used for the filename prefix
+    + log line; folder_id is the source of truth.
+    Returns (drive_file_id, local_temp_path, error_or_None).
+    """
+    def emit(m):
+        logger.info(f"[artistic_bg/folder] {m}")
+        if send_progress:
+            try: send_progress(m)
+            except Exception: pass
+
+    svc = _drive_service()
+    emit(f"📁 artistic theme: {folder_name or folder_id}")
+
+    out_root_id = _ensure_folder(svc, OUTPUT_ROOT_NAME)
+    parent_id = (_ensure_folder(svc, profile_subfolder_name, out_root_id)
+                 if profile_subfolder_name else out_root_id)
+
+    slug = _type_slug(folder_name) if folder_name else 'artistic'
+    drive_id, local_path, err = _generate_one(
+        svc, [folder_id], parent_id, emit,
+        file_prefix=f"artistic_{slug}")
+    if not err:
+        emit(f"💾 saved to Drive: {OUTPUT_ROOT_NAME}/"
+             f"{profile_subfolder_name + '/' if profile_subfolder_name else ''}"
+             f"{os.path.basename(local_path)}")
+    return drive_id, local_path, err
+
+
 def generate_artistic_bg_random_type(profile_subfolder_name=None,
                                        send_progress=None):
     """Like generate_artistic_bg but picks a RANDOM `Images bg *` folder

@@ -545,6 +545,15 @@ async def imgwiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_done_or_preflight(query, context, data, state)
         return
 
+    # 50/50 batch flow theme picker (create_plus_images mode only).
+    if data.startswith('imgwiz:theme:'):
+        if not state:
+            await query.edit_message_text("⚠️ wizard state expired — run /geelark_profile_ig_open again.")
+            return
+        token = data.split(':', 2)[2]
+        await _handle_theme_pick(query, context, state, token)
+        return
+
     if data == 'imgwiz:cancel':
         context.user_data.pop('imgwiz', None)
         context.user_data.pop('expecting_imgwiz_phone_name', None)
@@ -929,6 +938,58 @@ async def _process_one_profile(msg, mode, i, total, entry, results):
                 f"   ⚠️ auto artistic crashed: `{type(e).__name__}: {e}`",
                 parse_mode='Markdown')
 
+    # 0.7 create_plus_images 50/50 split: honor the auto-assigned role.
+    # 'standard' → one PNG from the restricted 5-mode palette pushed to phone
+    # 'artistic' → one image from the chosen Drive theme (or random if user
+    #             picked 'random per artistic profile')
+    if mode == 'create_plus_images' and entry.get('auto_bg_role') == 'standard':
+        import random as _r, time as _t
+        bg_mode = entry.get('auto_bg_mode') or _r.choice(AUTO_STANDARD_BG_MODES)
+        try:
+            png, caption = _generate_bg_png(bg_mode)
+            safe_name = entry['name'].replace(' ', '_').replace('/', '_')
+            bg_path = f'/tmp/auto_bg_{safe_name}_{int(_t.time()*1000)}.png'
+            with open(bg_path, 'wb') as f: f.write(png)
+            all_paths.append(bg_path)
+            await msg.reply_text(
+                f"   🎲 standard bg ({bg_mode}): *{caption}* → queued",
+                parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(
+                f"   ⚠️ standard bg err: `{type(e).__name__}: {e}`",
+                parse_mode='Markdown')
+
+    if mode == 'create_plus_images' and entry.get('auto_bg_role') == 'artistic':
+        theme = entry.get('_artistic_theme') or {}
+        kind = theme.get('kind', 'random')
+        await msg.reply_text(
+            f"   🎨 artistic bg for `{entry['name']}`"
+            + (f" (theme: `{theme.get('folder_name')}`)"
+               if kind == 'folder' else " (theme: 🎲 random)") + "…",
+            parse_mode='Markdown')
+        try:
+            if kind == 'folder':
+                _drive_id, local_path, err = await asyncio.to_thread(
+                    artistic_bg_gen.generate_artistic_bg_from_folder,
+                    theme['folder_id'], theme.get('folder_name'),
+                    entry['name'], None)
+            else:
+                _drive_id, local_path, err = await asyncio.to_thread(
+                    artistic_bg_gen.generate_artistic_bg_random_type,
+                    entry['name'], None)
+            if err:
+                await msg.reply_text(f"   ⚠️ artistic err: `{err}`",
+                                      parse_mode='Markdown')
+            elif local_path:
+                all_paths.append(local_path)
+                await msg.reply_text(
+                    f"   ✅ artistic generated + saved to Drive",
+                    parse_mode='Markdown')
+        except Exception as e:
+            await msg.reply_text(
+                f"   ⚠️ artistic crashed: `{type(e).__name__}: {e}`",
+                parse_mode='Markdown')
+
     # 1. Artistic generation (if flagged)
     if entry.get('artistic_yes'):
         await msg.reply_text(
@@ -1211,10 +1272,15 @@ async def _wiz_render_preflight(target_msg, state):
 
 
 async def _wiz_proceed_to_selection(target_msg, context, state):
-    """For manual modes: enter the bg-style picker for the first profile.
-    For 'create_plus_images_automated': skip selection entirely and dispatch
-    straight to the execution phase — each profile gets one auto-generated
-    normal bg + one auto-generated artistic bg from a random Drive type."""
+    """Three branches based on mode:
+      - create_plus_images_automated → skip everything, _execute_batch
+        (each profile gets normal AND artistic, fully random)
+      - create_plus_images → ask once for the artistic theme, then auto
+        50/50 split (half profiles standard bg from a restricted 5-mode
+        palette, half artistic from chosen theme), then _execute_batch.
+        No more per-profile manual picker, no Drive-folder step.
+      - images_only → existing per-profile manual bg picker.
+    """
     if state.get('mode') == 'create_plus_images_automated':
         await target_msg.reply_text(
             f"🤖 *Automated mode — kicking off execution on "
@@ -1224,6 +1290,9 @@ async def _wiz_proceed_to_selection(target_msg, context, state):
             parse_mode='Markdown')
         await _execute_batch(target_msg, context)
         return
+    if state.get('mode') == 'create_plus_images':
+        await _ask_artistic_theme(target_msg, context, state)
+        return
     first = state['batch'][0]
     await target_msg.reply_text(
         f"🚀 *Starting selection for {len(state['batch'])} profile(s).*\n\n"
@@ -1231,6 +1300,125 @@ async def _wiz_proceed_to_selection(target_msg, context, state):
         f"*Step 1 — Standard background.* Pick a style:",
         parse_mode='Markdown',
         reply_markup=_bg_pick_style_kb())
+
+
+# ─── 50/50 batch flow for create_plus_images ───────────────────────────────
+
+# Standard-bg modes the user accepts for the automated split. The other
+# four modes (impressionist, splatter, geometric, voronoi) are intentionally
+# excluded — they were too noisy in the user's prior runs.
+AUTO_STANDARD_BG_MODES = ['color_field', 'watercolor', 'radial',
+                           'gradient', 'solid']
+
+
+async def _ask_artistic_theme(target_msg, context, state):
+    """List every `Images bg *` folder on Drive + a 'Random per artistic
+    profile' option. After the pick, auto-assign 50/50 and execute."""
+    import asyncio
+    try:
+        types = await asyncio.to_thread(
+            lambda: artistic_bg_gen._list_art_type_folders(
+                artistic_bg_gen._drive_service()))
+    except Exception as e:
+        await target_msg.reply_text(
+            f"⚠️ couldn't list artistic themes from Drive: "
+            f"`{type(e).__name__}: {e}`. Cancelling — run the command again.",
+            parse_mode='Markdown')
+        return
+    if not types:
+        await target_msg.reply_text(
+            f"⚠️ no `Images bg *` folders on Drive — can't pick an artistic "
+            f"theme. Add at least one folder (e.g. `Images bg goth artistic`) "
+            f"and rerun.",
+            parse_mode='Markdown')
+        return
+
+    state['_theme_options'] = types
+    rows = []
+    for idx, t in enumerate(types):
+        label = t['name'].replace('Images bg ', '🎨 ')
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"imgwiz:theme:{idx}")])
+    rows.append([InlineKeyboardButton(
+        "🎲 Random per artistic profile",
+        callback_data="imgwiz:theme:random")])
+    rows.append([InlineKeyboardButton("❌ Cancel",
+                                       callback_data="imgwiz:cancel")])
+
+    await target_msg.reply_text(
+        f"🎨 *Pick an artistic theme for this batch* "
+        f"({len(state['batch'])} profile(s))\n\n"
+        f"After this, the bot auto-assigns 50/50: half the profiles get a "
+        f"standard bg from "
+        f"`{', '.join(AUTO_STANDARD_BG_MODES)}`, the other half get an "
+        f"artistic bg from the theme you pick below.",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+def _assign_5050_to_batch(state):
+    """Mutate state['batch']: assign auto_bg_role ('standard' or 'artistic')
+    to each entry, even split (artistic wins the odd one out). Standard
+    entries also get a randomly-chosen auto_bg_mode; artistic entries get
+    a copy of the chosen theme so _process_one_profile can read it
+    directly off the entry."""
+    import random
+    n = len(state['batch'])
+    indices = list(range(n))
+    random.shuffle(indices)
+    n_artistic = (n + 1) // 2          # artistic wins ties
+    artistic_ids = set(indices[:n_artistic])
+    theme = state.get('artistic_theme') or {'kind': 'random'}
+    for i, entry in enumerate(state['batch']):
+        if i in artistic_ids:
+            entry['auto_bg_role'] = 'artistic'
+            entry['_artistic_theme'] = dict(theme)
+        else:
+            entry['auto_bg_role'] = 'standard'
+            entry['auto_bg_mode'] = random.choice(AUTO_STANDARD_BG_MODES)
+
+
+async def _handle_theme_pick(q, context, state, token):
+    """Capture the artistic theme choice + run the 50/50 split + execute."""
+    types = state.get('_theme_options') or []
+    if token == 'random':
+        state['artistic_theme'] = {'kind': 'random'}
+        pretty = '🎲 Random per artistic profile'
+    else:
+        try:
+            i = int(token)
+        except ValueError:
+            await q.edit_message_text("⚠️ stale theme pick — run the command again.")
+            return
+        if i < 0 or i >= len(types):
+            await q.edit_message_text("⚠️ stale theme pick — run the command again.")
+            return
+        state['artistic_theme'] = {'kind': 'folder',
+                                    'folder_id': types[i]['id'],
+                                    'folder_name': types[i]['name']}
+        pretty = f"🎨 {types[i]['name']}"
+    state.pop('_theme_options', None)
+
+    _assign_5050_to_batch(state)
+    n_artistic = sum(1 for e in state['batch']
+                      if e.get('auto_bg_role') == 'artistic')
+    n_standard = len(state['batch']) - n_artistic
+    lines = [
+        f"✅ *Theme:* {pretty}",
+        f"📊 *Split:* {n_artistic} artistic · {n_standard} standard",
+        '',
+        '*Per-profile assignment:*',
+    ]
+    for e in state['batch']:
+        if e.get('auto_bg_role') == 'artistic':
+            lines.append(f"  • `{e['name']}` → 🎨 artistic")
+        else:
+            lines.append(f"  • `{e['name']}` → 🎲 standard "
+                          f"(`{e.get('auto_bg_mode')}`)")
+    lines.append('')
+    lines.append('Kicking off execution now…')
+    await q.edit_message_text('\n'.join(lines), parse_mode='Markdown')
+    await _execute_batch(q.message, context)
 
 
 async def _handle_done_or_preflight(q, context, data, state):
