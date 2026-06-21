@@ -203,7 +203,7 @@ COMMANDS_TEXT = (
     "/artistic_bg — AI artistic backgrounds from Drive refs — batch → Drive folder link\n"
     "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
     "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
-    "/looksmax — Send a model photo → controlled attractiveness variations (skin glow, femininity, lips/eyes, brighter, glam) → Drive folder link\n"
+    "/looksmax [model] [hair=blonde] — Send a model photo → 3 glow-up styles (natural/goth/max): paler porcelain skin, bigger rounder eyes, fuller lips, glam → Drive folder link\n"
     "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
 
     "🔗 <b>Cloak &amp; privacy</b>\n"
