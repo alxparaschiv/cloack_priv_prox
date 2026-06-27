@@ -299,6 +299,7 @@ async def post_init(application):
                             "FB_PROXY_TEST_PHONE", "FB_PROXY_TEST_PASSWORD"]),
         ("📬 /rambler",     []),  # zero env deps — user provides creds per-call
         ("🪟 /rambler_microsoft", []),  # zero env deps — user provides creds per-call
+        ("🔑 /password",    []),  # zero env deps — local CSPRNG generator
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
