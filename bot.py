@@ -56,6 +56,7 @@ import banner_gen
 import bio_gen
 import looksmax
 import blocked_words
+import password_gen
 
 
 logging.basicConfig(
@@ -192,6 +193,7 @@ COMMANDS_TEXT = (
     "/geelark_stop_phone — Batch-stop GeeLark phones once setup is done\n\n"
 
     "🔐 <b>Verification &amp; SMS</b>\n"
+    "/password — Strong passwords for new accounts ([count] [length], e.g. /password 8 20)\n"
     "/rambler — Latest FB/IG code from a Rambler inbox\n"
     "/rambler_microsoft — Latest Microsoft code from a Rambler inbox\n"
     "/sms — Latest SMS code from a TextVerified rental\n"
@@ -250,6 +252,7 @@ async def post_init(application):
         BotCommand("geelark_stop_phone",      "📱 Batch-stop GeeLark phones"),
 
         # 🔐 Verification & SMS
+        BotCommand("password",           "🔑 Strong passwords for new accounts (batch)"),
         BotCommand("rambler",            "🔐 Latest FB/IG code from a Rambler inbox"),
         BotCommand("rambler_microsoft",  "🔐 Latest Microsoft code from a Rambler inbox"),
         BotCommand("sms",                "🔐 Latest SMS code from a TextVerified rental"),
@@ -381,6 +384,7 @@ def main():
     application.add_handler(CommandHandler("rambler", rambler.rambler_command))
     application.add_handler(CommandHandler("rambler_microsoft", rambler.rambler_microsoft_command))
     application.add_handler(CommandHandler("sms", sms_verified.sms_command))
+    application.add_handler(CommandHandler("password", password_gen.password_command))
     # IG flow — keep both old + new names registered for in-flight runs.
     # geelark_profile_open is the legacy alias; geelark_profile_ig_open is the
     # user-facing canonical name as of 2026-06-08.
