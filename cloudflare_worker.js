@@ -72,33 +72,6 @@ const BOT_UA_PATTERNS = [
 //   AS149835  — Facebook Asia (APAC infra)
 const META_ASNS = new Set([32934, 54115, 63293, 149642, 149835]);
 
-// ─── Geo-gate (2026-06-27) ────────────────────────────────────────────────
-// Optimize fleet traffic toward US/UK/AU/CA. For the slugs in GEO_GATED_SLUGS,
-// visitors whose cf.country is NOT in GEO_ALLOW_COUNTRIES get the benign page
-// instead of the cloak funnel — and the hit is NOT logged, so it drops out of
-// the stats and lifts the slug's (and fleet's) target share.
-//
-// This list = the 32 highest non-target-volume links from the geo audit
-// (cloak_geo_audit.py --optimize). Gating these brings the fleet 79% → ~92%.
-// Re-run the audit periodically and refresh this set as traffic shifts.
-const GEO_ALLOW_COUNTRIES = new Set(['US', 'GB', 'AU', 'CA']);
-const GEO_GATED_SLUGS = new Set([
-  'astravyn', 'cemeterymilkshake', 'darklingdoll', 'darkbloomqueen',
-  'all-my-links', 'crypticcaro', 'coffinbunny', 'fairee', 'heyitscaelisse',
-  'darkroseslayer', 'kamigothbb', 'shadowglimmer', 'grimeyrose', 'caroo',
-  'getmylink', 'duskshadowbabez', 'shadowcharm', 'nocturnalkitty',
-  'gothcosplayss', 'caroly', 'kirascreams', 'serpentstylee', 'gloomyplum',
-  'caroluune', 'coffindust', 'blackrosedream', 'noctivelle', 'myhangouts',
-  'darklullaby', 'duskdollie', 'caroluunegothy', 'darklilith',
-]);
-
-// True if this slug+visitor should be blocked from the cloak funnel.
-function geoBlocked(request, slug) {
-  if (!slug || !GEO_GATED_SLUGS.has(slug)) return false;
-  const cc = (request.cf && request.cf.country) || 'XX';
-  return !GEO_ALLOW_COUNTRIES.has(cc);
-}
-
 function isBot(request) {
   const ua = request.headers.get('User-Agent') || '';
   if (!ua) return true;
@@ -907,13 +880,6 @@ export default {
         // Analytics: log the /r or /v hit under the slug derived from
         // the subdomain. waitUntil keeps the redirect path fast.
         const _slugForLog = url.hostname.toLowerCase().split('.')[0];
-        // Geo-gate: off-target visitor on a gated slug → benign, unlogged.
-        if (geoBlocked(request, _slugForLog)) {
-          return new Response(benignHTML(), {
-            status: 200,
-            headers: {'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store'}
-          });
-        }
         if (ctx && _slugForLog && /^[a-z0-9_-]{2,40}$/.test(_slugForLog)
             && _slugForLog !== 'www') {
           ctx.waitUntil(_logCloakEvent(env, _slugForLog,
@@ -966,13 +932,6 @@ export default {
           // Path-mode fallback: /go could be /go/<slug>... not common,
           // but here so legacy path-mode slugs still work. For now
           // /go alone implies subdomain.
-          return new Response(benignHTML(), {
-            status: 200,
-            headers: {'Content-Type':'text/html;charset=utf-8'}
-          });
-        }
-        // Geo-gate: off-target visitor on a gated slug → benign, unlogged.
-        if (geoBlocked(request, _slug)) {
           return new Response(benignHTML(), {
             status: 200,
             headers: {'Content-Type':'text/html;charset=utf-8'}
@@ -1073,14 +1032,6 @@ export default {
         return new Response(benignHTML(), {
           status: 200,
           headers: {'Content-Type':'text/html;charset=utf-8','Cache-Control':'public, max-age=300'}
-        });
-      }
-
-      // Geo-gate: off-target visitor on a gated slug → benign, unlogged.
-      if (geoBlocked(request, slug)) {
-        return new Response(benignHTML(), {
-          status: 200,
-          headers: {'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store'}
         });
       }
 
