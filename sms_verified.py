@@ -102,6 +102,25 @@ def _find_rental_by_phone(phone10):
         return None, None, None, f"TextVerified rental lookup failed: {type(e).__name__}: {e}"
 
 
+def _extract_code(content):
+    """Extract a numeric verification code from SMS text.
+    Handles codes split by a space or hyphen (e.g. "123 456" -> "123456"),
+    which Meta/Instagram commonly use. Returns the code string or None.
+    """
+    # 1) Contiguous run of 4-8 digits (the common case).
+    m_code = re.search(r'\b(\d{4,8})\b', content)
+    if m_code:
+        return m_code.group(1)
+    # 2) Split form: two short digit groups separated by a single space/hyphen.
+    #    e.g. "123 456", "123-456" -> "123456". Meta/Instagram commonly do this.
+    m_split = re.search(r'\b(\d{2,4})[ \-](\d{2,4})\b', content)
+    if m_split:
+        joined = m_split.group(1) + m_split.group(2)
+        if 4 <= len(joined) <= 8:
+            return joined
+    return None
+
+
 def _fetch_latest_sms(rental_id):
     """Get newest SMS for the rental + extract numeric code.
     Returns (code, content, sender, created_at, error)."""
@@ -124,11 +143,10 @@ def _fetch_latest_sms(rental_id):
     created_at = sms.get('createdAt', '')
     if not content:
         return None, None, sender, created_at, "latest SMS has no content"
-    # Most FB / IG / Meta codes are 4-8 digits. Match the first run.
-    m_code = re.search(r'\b(\d{4,8})\b', content)
-    if not m_code:
+    code = _extract_code(content)
+    if not code:
         return None, content, sender, created_at, "no numeric code pattern in SMS"
-    return m_code.group(1), content, sender, created_at, None
+    return code, content, sender, created_at, None
 
 
 async def sms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
