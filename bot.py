@@ -55,6 +55,7 @@ import artistic_bg_gen
 import banner_gen
 import portrait_gen
 import nsfw_banner
+import bikini_gen
 import bio_gen
 import looksmax
 import blocked_words
@@ -215,6 +216,7 @@ COMMANDS_TEXT = (
     "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
     "/portrait_gen — Send an image → crop to 3:4 + AI upscale to 2K\n"
     "/nsfw_banner — Model photo → OF-style lingerie banner, soft expression (nano-banana-pro)\n"
+    "/bikini_gen — Pick a model → batch of bikini IG-story images → Drive link (no upload)\n"
     "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
     "/looksmax [model] [hair=blonde] — Send a model photo → 3 glow-up styles (natural/goth/max): paler porcelain skin, bigger rounder eyes, fuller lips, glam → Drive folder link\n"
     "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
@@ -276,6 +278,7 @@ async def post_init(application):
         BotCommand("banner_gen",    "🎨 Model photo → 21:9 cinematic banner (nano-banana-pro)"),
         BotCommand("portrait_gen",  "🖼 Resize image to 3:4 @ 2K (AI upscale)"),
         BotCommand("nsfw_banner",   "🔥 Model photo → OF-style lingerie banner (nano-banana-pro)"),
+        BotCommand("bikini_gen",    "👙 Pick a model → batch bikini IG-story images → Drive"),
         BotCommand("looksmax",      "🧬 Model photo → glow-up styles (paler/eyes/lips/glam) → Drive link"),
         BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
         BotCommand("blocklist",     "🎨 IG blocked-words — anchored + anti-cluster guard"),
@@ -322,6 +325,7 @@ async def post_init(application):
         ("🖼 /banner_gen",  ["WAVESPEED_API_KEY"]),
         ("🖼 /portrait_gen", ["WAVESPEED_API_KEY"]),  # crop + AI 2K upscale
         ("🔥 /nsfw_banner", ["WAVESPEED_API_KEY"]),
+        ("👙 /bikini_gen", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
         ("🤖 /bio_gen",     ["OPENAI_API_KEY"]),
     ]
     feature_lines = []
@@ -418,6 +422,7 @@ def main():
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("portrait_gen", portrait_gen.portrait_gen_command))
     application.add_handler(CommandHandler("nsfw_banner", nsfw_banner.nsfw_banner_command))
+    application.add_handler(CommandHandler("bikini_gen", bikini_gen.bikini_gen_command))
     application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
     application.add_handler(CommandHandler("looksmax", looksmax.looksmax_command))
     application.add_handler(CommandHandler("blocklist", blocked_words.blocklist_command))
@@ -446,6 +451,8 @@ def main():
         geelark_open.geelark_pre_fb_callback, pattern=r'^gp:fb:'))
     application.add_handler(CallbackQueryHandler(
         bio_gen.bio_gen_callback, pattern=r'^biogen:'))
+    application.add_handler(CallbackQueryHandler(
+        bikini_gen.bikini_callback, pattern=r'^bikini:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
