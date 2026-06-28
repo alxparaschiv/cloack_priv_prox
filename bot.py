@@ -166,6 +166,9 @@ async def _document_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /meta_dev_setup step 1 also accepts a .txt document upload
     if await setup_pipeline.setup_full_document_received(update, context):
         return
+    # /portrait_gen accepts an image sent as a file (uncompressed)
+    if await portrait_gen.portrait_photo_received(update, context):
+        return
 
 
 async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):

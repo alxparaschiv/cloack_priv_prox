@@ -26,11 +26,16 @@ logger = logging.getLogger(__name__)
 TARGET_W, TARGET_H = 3, 4          # aspect ratio
 MAX_H = 1440                       # cap output height (1080×1440 = IG portrait)
 JPEG_QUALITY = 92
+# When trimming height (input taller than 3:4), take this fraction of the
+# excess off the TOP and the rest off the bottom. 0.25 → keep the head/upper
+# body, drop more of the lower frame (legs/feet). Center for width crops.
+TOP_BIAS = 0.25
 
 
 def resize_to_34(src_path, dst_path):
-    """Center-crop `src_path` to a 3:4 portrait and save to `dst_path`.
-    Returns (out_w, out_h). No distortion, no bars; trims the long edge."""
+    """Crop `src_path` to a 3:4 portrait and save to `dst_path`. Returns
+    (out_w, out_h). No distortion, no bars; trims the overflowing edge.
+    Vertical crops are biased toward the top (TOP_BIAS) to keep the face."""
     with Image.open(src_path) as im:
         # Respect EXIF orientation (phone photos) then drop alpha for JPEG.
         im = ImageOps.exif_transpose(im)
@@ -47,8 +52,8 @@ def resize_to_34(src_path, dst_path):
             # Image is taller than 3:4 → full width, crop height.
             crop_w = w
             crop_h = round(w * TARGET_H / TARGET_W)
-        left = (w - crop_w) // 2
-        top = (h - crop_h) // 2
+        left = (w - crop_w) // 2                 # width crop stays centered
+        top = round((h - crop_h) * TOP_BIAS)     # height crop biased to top
         im = im.crop((left, top, left + crop_w, top + crop_h))
 
         # Downscale only — never upscale (would just blur a small input).
@@ -72,24 +77,44 @@ async def portrait_gen_command(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='Markdown')
 
 
+def _image_source(message):
+    """Return (file_id, unique_id) for an image sent either as a Telegram
+    photo (compressed) OR as a document/file (uncompressed image). None if
+    the message carries no usable image."""
+    if message.photo:
+        p = message.photo[-1]          # highest-res variant
+        return p.file_id, p.file_unique_id
+    doc = message.document
+    if doc:
+        mt = (doc.mime_type or '').lower()
+        name = (doc.file_name or '').lower()
+        if mt.startswith('image/') or name.endswith(
+                ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif')):
+            return doc.file_id, doc.file_unique_id
+    return None
+
+
 async def portrait_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Photo-router entry. Returns True if we handled the upload; False if
-    we're not expecting a portrait photo right now."""
+    """Photo/document-router entry. Returns True if we handled the upload;
+    False if we're not expecting a portrait image right now. Accepts the
+    image sent either as a compressed photo OR as an uncompressed file."""
     if not context.user_data.get('expecting_portrait_photo'):
         return False
-    context.user_data.pop('expecting_portrait_photo', None)
 
-    photo = (update.message.photo or [None])[-1]   # highest-res variant
-    if not photo:
-        await update.message.reply_text("❌ no photo in that message. Run /portrait_gen again.")
-        return True
+    src = _image_source(update.message)
+    if not src:
+        # Expecting an image but this message isn't one (e.g. a non-image
+        # file). Leave the flag set so the next image still works.
+        return False
+    context.user_data.pop('expecting_portrait_photo', None)
+    file_id, unique_id = src
 
     try:
-        f = await context.bot.get_file(photo.file_id)
-        local_ref = f"/tmp/portrait_ref_{photo.file_unique_id}.jpg"
+        f = await context.bot.get_file(file_id)
+        local_ref = f"/tmp/portrait_ref_{unique_id}.jpg"
         await f.download_to_drive(local_ref)
     except Exception as e:
-        await update.message.reply_text(f"❌ couldn't download photo: `{e}`",
+        await update.message.reply_text(f"❌ couldn't download image: `{e}`",
                                           parse_mode='Markdown')
         return True
 
