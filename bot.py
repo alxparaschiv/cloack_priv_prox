@@ -53,6 +53,7 @@ import rental
 import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
+import portrait_gen
 import bio_gen
 import looksmax
 import blocked_words
@@ -173,6 +174,8 @@ async def _photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await banner_gen.banner_photo_received(update, context):
         return
+    if await portrait_gen.portrait_photo_received(update, context):
+        return
     if await looksmax.looksmax_photo_received(update, context):
         return
 
@@ -204,6 +207,7 @@ COMMANDS_TEXT = (
     "/bg_generator — Solid / gradient / artistic abstract PNG (single OR batch → Drive)\n"
     "/artistic_bg — AI artistic backgrounds from Drive refs — batch → Drive folder link\n"
     "/banner_gen — Upload a model photo → 21:9 cinematic banner (nano-banana-pro)\n"
+    "/portrait_gen — Upload a model photo → 3:4 vertical portrait (nano-banana-pro)\n"
     "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
     "/looksmax [model] [hair=blonde] — Send a model photo → 3 glow-up styles (natural/goth/max): paler porcelain skin, bigger rounder eyes, fuller lips, glam → Drive folder link\n"
     "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
@@ -263,6 +267,7 @@ async def post_init(application):
         BotCommand("bg_generator",  "🎨 Background PNGs — single OR batch → Drive"),
         BotCommand("artistic_bg",   "🎨 AI artistic backgrounds — batch → Drive folder link"),
         BotCommand("banner_gen",    "🎨 Model photo → 21:9 cinematic banner (nano-banana-pro)"),
+        BotCommand("portrait_gen",  "🎨 Model photo → 3:4 vertical portrait (nano-banana-pro)"),
         BotCommand("looksmax",      "🧬 Model photo → glow-up styles (paler/eyes/lips/glam) → Drive link"),
         BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
         BotCommand("blocklist",     "🎨 IG blocked-words — anchored + anti-cluster guard"),
@@ -307,6 +312,7 @@ async def post_init(application):
         ("📘 /geelark_profile_fb_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
         ("🎨 /artistic_bg", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
         ("🖼 /banner_gen",  ["WAVESPEED_API_KEY"]),
+        ("🖼 /portrait_gen", ["WAVESPEED_API_KEY"]),
         ("🤖 /bio_gen",     ["OPENAI_API_KEY"]),
     ]
     feature_lines = []
@@ -401,6 +407,7 @@ def main():
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
+    application.add_handler(CommandHandler("portrait_gen", portrait_gen.portrait_gen_command))
     application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
     application.add_handler(CommandHandler("looksmax", looksmax.looksmax_command))
     application.add_handler(CommandHandler("blocklist", blocked_words.blocklist_command))
