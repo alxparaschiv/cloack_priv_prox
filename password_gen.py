@@ -13,6 +13,7 @@ Usage:
 
 No network, no storage — pure local generation.
 """
+import html
 import secrets
 
 from telegram import Update
@@ -80,14 +81,16 @@ async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     count, length = _parse_args(context.args or [])
     pwds = generate_batch(count, length)
-    # Each on its own line in a code block → tap-to-copy per line in Telegram.
-    body = '\n'.join(f'`{p}`' for p in pwds)
+    # HTML (not Markdown): passwords contain special chars like & * _ that
+    # break Telegram's legacy-Markdown parser (→ 400 Bad Request, message never
+    # sends). <code> gives per-line tap-to-copy; html.escape neutralizes & < >.
+    body = '\n'.join(f'<code>{html.escape(p)}</code>' for p in pwds)
     actual_len = len(pwds[0])
     caption = (
-        f'🔑 *Strong passwords* — {len(pwds)} × {actual_len} chars\n\n'
+        f'🔑 <b>Strong passwords</b> — {len(pwds)} × {actual_len} chars\n\n'
         f'{body}\n\n'
-        f'_Each has upper + lower + digit + special, CSPRNG-generated, '
-        f'ambiguous chars (O/0, l/1/I) removed. Tap a line to copy._\n'
-        f'_Usage: `/password [count] [length]` — e.g. `/password 8 20`._'
+        f'<i>Each has upper + lower + digit + special, CSPRNG-generated, '
+        f'ambiguous chars (O/0, l/1/I) removed. Tap a line to copy.</i>\n'
+        f'<i>Usage: <code>/password [count] [length]</code> — e.g. /password 8 20</i>'
     )
-    await msg.reply_text(caption, parse_mode='Markdown')
+    await msg.reply_text(caption, parse_mode='HTML')

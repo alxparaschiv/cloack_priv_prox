@@ -107,13 +107,17 @@ def _extract_code(content):
     Handles codes split by a space or hyphen (e.g. "123 456" -> "123456"),
     which Meta/Instagram commonly use. Returns the code string or None.
     """
-    # 1) Contiguous run of 4-8 digits (the common case).
-    m_code = re.search(r'\b(\d{4,8})\b', content)
+    # 1) Contiguous run of 4-8 digits (the common case). Lookarounds (not \b)
+    #    so we grab the whole run and don't trip on adjacent punctuation.
+    m_code = re.search(r'(?<!\d)(\d{4,8})(?!\d)', content)
     if m_code:
         return m_code.group(1)
-    # 2) Split form: two short digit groups separated by a single space/hyphen.
-    #    e.g. "123 456", "123-456" -> "123456". Meta/Instagram commonly do this.
-    m_split = re.search(r'\b(\d{2,4})[ \-](\d{2,4})\b', content)
+    # 2) Split form: two short digit groups separated by ANY run of whitespace
+    #    (space, NBSP, tab, newline) and/or dash variants. Meta/Instagram send
+    #    "123 456", but the separator can be a non-breaking space or newline,
+    #    which the old single-char [ \-] class missed.
+    sep = r'[\s   \-‐-―]+'
+    m_split = re.search(r'(?<!\d)(\d{2,4})' + sep + r'(\d{2,4})(?!\d)', content)
     if m_split:
         joined = m_split.group(1) + m_split.group(2)
         if 4 <= len(joined) <= 8:
