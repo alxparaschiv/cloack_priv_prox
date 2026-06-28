@@ -1,88 +1,163 @@
-"""/portrait_gen — Pure resize of any image to a 3:4 vertical portrait.
+"""/portrait_gen — Resize any image to a 3:4 portrait at 2K quality.
 
-NOT an AI recreation — this is a plain, deterministic resize. Whatever image
-you send, it center-crops to a 3:4 aspect ratio (fills the frame, no
-distortion, no letterbox bars) and returns it. Instant and free.
+Two steps, NO AI recreation (the subject/content is never changed):
+  1. Deterministic crop to 3:4 (fills the frame, no distortion, no bars).
+     The vertical crop is biased toward the top so the face/upper body is
+     kept and more of the lower frame is dropped.
+  2. AI super-resolution upscale to 2K via WaveSpeed's image-upscaler — adds
+     real detail and sharpness instead of the quality loss a plain downscale
+     would cause.
 
 Conversation flow:
   /portrait_gen                → prompt for an image
-  user uploads photo           → bot center-crops to 3:4 and returns it
+  user sends photo OR file     → crop to 3:4 → upscale to 2K → return the file
 
-Crop behavior: keeps the center of the image and trims the overflowing
-edges (sides if the input is wider than 3:4, top/bottom if taller). Output
-is capped at 1080×1440 (downscale only — never upscales a small image).
+Env deps:
+  - WAVESPEED_API_KEY        — same key as /banner_gen and /artistic_bg
 """
 import os
+import io
+import base64
 import time
 import asyncio
 import logging
 
+import requests
 from PIL import Image, ImageOps
 from telegram import Update
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
 
+WAVESPEED_API_BASE = 'https://api.wavespeed.ai/api/v3'
+WAVESPEED_API_KEY = os.environ.get('WAVESPEED_API_KEY', '')
+UPSCALER = 'wavespeed-ai/image-upscaler'  # $0.01/run, ~18s, 2k/4k/8k
+TARGET_RESOLUTION = '2k'
+
 TARGET_W, TARGET_H = 3, 4          # aspect ratio
-MAX_H = 1440                       # cap output height (1080×1440 = IG portrait)
-JPEG_QUALITY = 92
 # When trimming height (input taller than 3:4), take this fraction of the
 # excess off the TOP and the rest off the bottom. 0.25 → keep the head/upper
 # body, drop more of the lower frame (legs/feet). Center for width crops.
 TOP_BIAS = 0.25
 
 
-def resize_to_34(src_path, dst_path):
-    """Crop `src_path` to a 3:4 portrait and save to `dst_path`. Returns
-    (out_w, out_h). No distortion, no bars; trims the overflowing edge.
-    Vertical crops are biased toward the top (TOP_BIAS) to keep the face."""
+def crop_to_34(src_path, dst_path):
+    """Crop `src_path` to a 3:4 portrait, lossless (no downscale), save PNG.
+    Returns (w, h). Vertical crops biased toward the top (TOP_BIAS)."""
     with Image.open(src_path) as im:
-        # Respect EXIF orientation (phone photos) then drop alpha for JPEG.
-        im = ImageOps.exif_transpose(im)
+        im = ImageOps.exif_transpose(im)        # respect phone orientation
         if im.mode not in ('RGB',):
             im = im.convert('RGB')
         w, h = im.size
-
-        # Largest 3:4 box that fits inside the image, centered.
         if w * TARGET_H >= h * TARGET_W:
-            # Image is wider than 3:4 → full height, crop width.
+            # Wider than 3:4 → full height, crop width (centered).
             crop_h = h
             crop_w = round(h * TARGET_W / TARGET_H)
         else:
-            # Image is taller than 3:4 → full width, crop height.
+            # Taller than 3:4 → full width, crop height (top-biased).
             crop_w = w
             crop_h = round(w * TARGET_H / TARGET_W)
-        left = (w - crop_w) // 2                 # width crop stays centered
-        top = round((h - crop_h) * TOP_BIAS)     # height crop biased to top
+        left = (w - crop_w) // 2
+        top = round((h - crop_h) * TOP_BIAS)
         im = im.crop((left, top, left + crop_w, top + crop_h))
-
-        # Downscale only — never upscale (would just blur a small input).
-        if im.height > MAX_H:
-            new_w = round(im.width * MAX_H / im.height)
-            im = im.resize((new_w, MAX_H), Image.LANCZOS)
-
-        im.save(dst_path, 'JPEG', quality=JPEG_QUALITY)
+        im.save(dst_path, 'PNG')                # lossless before upscaling
         return im.size
+
+
+def _upscale_2k(src_path, dst_path):
+    """AI super-resolution upscale to 2K via WaveSpeed image-upscaler.
+    Returns (out_w, out_h, err). On error returns (0, 0, message)."""
+    if not WAVESPEED_API_KEY:
+        return 0, 0, "WAVESPEED_API_KEY not set"
+    try:
+        with open(src_path, 'rb') as f:
+            b = f.read()
+    except Exception as e:
+        return 0, 0, f"can't read crop: {e}"
+    data_uri = f"data:image/png;base64,{base64.b64encode(b).decode('ascii')}"
+
+    submit_url = f"{WAVESPEED_API_BASE}/{UPSCALER}"
+    body = {
+        'image': data_uri,
+        'target_resolution': TARGET_RESOLUTION,
+        'output_format': 'jpeg',
+        'enable_base64_output': False,
+        'enable_sync_mode': False,
+    }
+    try:
+        r = requests.post(submit_url, json=body, timeout=60,
+                          headers={'Authorization': f'Bearer {WAVESPEED_API_KEY}',
+                                   'Content-Type': 'application/json'})
+        if r.status_code != 200:
+            return 0, 0, f"submit HTTP {r.status_code}: {r.text[:200]}"
+        rid = (r.json().get('data') or {}).get('id') or r.json().get('id')
+    except Exception as e:
+        return 0, 0, f"submit err: {type(e).__name__}: {e}"
+    if not rid:
+        return 0, 0, "no prediction id returned"
+
+    deadline = time.time() + 180
+    out_url = None
+    while time.time() < deadline:
+        try:
+            pr = requests.get(f"{WAVESPEED_API_BASE}/predictions/{rid}/result",
+                              headers={'Authorization': f'Bearer {WAVESPEED_API_KEY}'},
+                              timeout=30)
+            pr.raise_for_status()
+            d = pr.json().get('data') or pr.json()
+            status = d.get('status') or ''
+            if status in ('completed', 'succeeded'):
+                outs = d.get('outputs') or []
+                if outs:
+                    out_url = outs[0] if isinstance(outs[0], str) else outs[0].get('url')
+                break
+            if status == 'failed':
+                return 0, 0, f"upscale failed: {str(d)[:200]}"
+        except Exception as e:
+            logger.warning(f"[portrait_gen] upscale poll err: {e}")
+        time.sleep(3)
+    if not out_url:
+        return 0, 0, f"upscale timed out (rid={rid})"
+
+    try:
+        ir = requests.get(out_url, timeout=60); ir.raise_for_status()
+        with open(dst_path, 'wb') as f:
+            f.write(ir.content)
+        with Image.open(dst_path) as im:
+            return im.width, im.height, None
+    except Exception as e:
+        return 0, 0, f"download err: {e}"
+
+
+def make_2k_portrait(src_path):
+    """Crop to 3:4 then upscale to 2K. Returns (out_path, info_str, err)."""
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    crop_path = f"/tmp/portrait_crop_{ts}.png"
+    out_path = f"/tmp/portrait_{ts}.jpg"
+    cw, ch = crop_to_34(src_path, crop_path)
+    ow, oh, err = _upscale_2k(crop_path, out_path)
+    if err:
+        return None, None, err
+    return out_path, f"{cw}×{ch} → {ow}×{oh}", None
 
 
 async def portrait_gen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['expecting_portrait_photo'] = True
     await update.message.reply_text(
-        "🖼 *3:4 resize*\n\n"
-        "Send an image and I'll resize it to a 3:4 vertical portrait "
-        "(IG feed / profile format).\n\n"
-        "Plain center-crop — no AI, no distortion, no bars. The sides "
-        "(or top/bottom) are trimmed so the center fills a 3:4 frame. "
-        "Output up to 1080×1440.",
+        "🖼 *3:4 resize → 2K*\n\n"
+        "Send an image (as a photo OR as a file for max quality) and I'll "
+        "resize it to a 3:4 vertical portrait at 2K.\n\n"
+        "Crop fills the frame — no distortion, no bars; the top is kept "
+        "(face/upper body), more of the bottom is trimmed. Then AI "
+        "super-resolution upscales it to 2K (content unchanged, just "
+        "sharper). ~$0.01, ~20s.",
         parse_mode='Markdown')
 
 
 def _image_source(message):
-    """Return (file_id, unique_id) for an image sent either as a Telegram
-    photo (compressed) OR as a document/file (uncompressed image). None if
-    the message carries no usable image."""
+    """(file_id, unique_id) for an image sent as a photo OR an image file."""
     if message.photo:
-        p = message.photo[-1]          # highest-res variant
+        p = message.photo[-1]
         return p.file_id, p.file_unique_id
     doc = message.document
     if doc:
@@ -95,17 +170,13 @@ def _image_source(message):
 
 
 async def portrait_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Photo/document-router entry. Returns True if we handled the upload;
-    False if we're not expecting a portrait image right now. Accepts the
-    image sent either as a compressed photo OR as an uncompressed file."""
+    """Photo/document-router entry. Returns True if handled; False otherwise.
+    Accepts the image as a compressed photo OR an uncompressed file."""
     if not context.user_data.get('expecting_portrait_photo'):
         return False
-
     src = _image_source(update.message)
     if not src:
-        # Expecting an image but this message isn't one (e.g. a non-image
-        # file). Leave the flag set so the next image still works.
-        return False
+        return False  # not an image — leave flag set for the next message
     context.user_data.pop('expecting_portrait_photo', None)
     file_id, unique_id = src
 
@@ -118,24 +189,21 @@ async def portrait_photo_received(update: Update, context: ContextTypes.DEFAULT_
                                           parse_mode='Markdown')
         return True
 
-    ts = time.strftime('%Y%m%d_%H%M%S')
-    local_out = f"/tmp/portrait_{ts}.jpg"
-    try:
-        out_w, out_h = await asyncio.to_thread(resize_to_34, local_ref, local_out)
-    except Exception as e:
-        logger.warning(f"[portrait_gen] resize err: {e}")
-        await update.message.reply_text(f"❌ resize failed: `{e}`",
+    await update.message.reply_text("⏳ cropping to 3:4 + upscaling to 2K…")
+
+    out_path, info, err = await asyncio.to_thread(make_2k_portrait, local_ref)
+    if err:
+        await update.message.reply_text(f"❌ resize failed: `{err}`",
                                           parse_mode='Markdown')
         return True
 
     try:
-        # Send as a document to avoid Telegram re-compressing/re-cropping the
-        # photo, so the user gets the exact 3:4 file.
-        with open(local_out, 'rb') as fh:
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        with open(out_path, 'rb') as fh:
             await update.message.reply_document(
-                document=fh, filename=f"portrait_{ts}.jpg",
-                caption=f"✅ resized to 3:4 — {out_w}×{out_h}")
+                document=fh, filename=f"portrait_2k_{ts}.jpg",
+                caption=f"✅ 3:4 @ 2K — {info}")
     except Exception as e:
-        await update.message.reply_text(f"⚠️ resized but TG send failed: `{e}`",
+        await update.message.reply_text(f"⚠️ done but TG send failed: `{e}`",
                                           parse_mode='Markdown')
     return True
