@@ -57,6 +57,7 @@ import portrait_gen
 import nsfw_banner
 import bikini_gen
 import bio_gen
+import bio_gen_v2
 import looksmax
 import blocked_words
 import password_gen
@@ -218,6 +219,7 @@ COMMANDS_TEXT = (
     "/nsfw_banner — Model photo → OF-style lingerie banner, soft expression (nano-banana-pro)\n"
     "/bikini_gen — Pick a model → batch of bikini IG-story images → Drive link (no upload)\n"
     "/bio_gen — AI bios: niche → model → 8 with refresh (gpt-4o-mini)\n"
+    "/bio_gen_v2 — Girlfriend-brand bios: warmer, flirty, bonding tone\n"
     "/looksmax [model] [hair=blonde] — Send a model photo → 3 glow-up styles (natural/goth/max): paler porcelain skin, bigger rounder eyes, fuller lips, glam → Drive folder link\n"
     "/blocklist — IG blocked-words list with anti-cluster guard (anchors ai/slop/fake/fakeprofile)\n\n"
 
@@ -281,6 +283,7 @@ async def post_init(application):
         BotCommand("bikini_gen",    "👙 Pick a model → batch bikini IG-story images → Drive"),
         BotCommand("looksmax",      "🧬 Model photo → glow-up styles (paler/eyes/lips/glam) → Drive link"),
         BotCommand("bio_gen",       "🎨 AI bios — niche → model → 8 w/ refresh"),
+        BotCommand("bio_gen_v2",    "💞 Girlfriend-brand bios — warmer/flirty/bonding"),
         BotCommand("blocklist",     "🎨 IG blocked-words — anchored + anti-cluster guard"),
 
         # 🔗 Cloak & privacy
@@ -327,6 +330,7 @@ async def post_init(application):
         ("🔥 /nsfw_banner", ["WAVESPEED_API_KEY"]),
         ("👙 /bikini_gen", ["WAVESPEED_API_KEY", "REEL_GOOGLE_TOKEN_PICKLE"]),
         ("🤖 /bio_gen",     ["OPENAI_API_KEY"]),
+        ("💞 /bio_gen_v2",  ["OPENAI_API_KEY"]),
     ]
     feature_lines = []
     for label, needed in feature_checks:
@@ -424,6 +428,7 @@ def main():
     application.add_handler(CommandHandler("nsfw_banner", nsfw_banner.nsfw_banner_command))
     application.add_handler(CommandHandler("bikini_gen", bikini_gen.bikini_gen_command))
     application.add_handler(CommandHandler("bio_gen", bio_gen.bio_gen_command))
+    application.add_handler(CommandHandler("bio_gen_v2", bio_gen_v2.bio_gen_v2_command))
     application.add_handler(CommandHandler("looksmax", looksmax.looksmax_command))
     application.add_handler(CommandHandler("blocklist", blocked_words.blocklist_command))
     application.add_handler(CommandHandler("cancel", setup_pipeline.cancel_command))
@@ -451,6 +456,8 @@ def main():
         geelark_open.geelark_pre_fb_callback, pattern=r'^gp:fb:'))
     application.add_handler(CallbackQueryHandler(
         bio_gen.bio_gen_callback, pattern=r'^biogen:'))
+    application.add_handler(CallbackQueryHandler(
+        bio_gen_v2.bio_gen_v2_callback, pattern=r'^biogen2:'))
     application.add_handler(CallbackQueryHandler(
         bikini_gen.bikini_callback, pattern=r'^bikini:'))
 

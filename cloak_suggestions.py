@@ -143,6 +143,40 @@ RULES:
 Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items)"""
 
 
+_SYS_BIO_V2 = """You generate short, intimate "girlfriend-brand" Instagram bio taglines for a content creator's bio-link landing page.
+
+GOAL: make the visitor feel like SHE is already HIS girlfriend — a warm, flirty, parasocial bond. The bio quietly claims the "your #1 favorite <niche> girl / girlfriend" territory, tied to the niche's fantasy. Cheesy ON PURPOSE, but in a bonding, endearing, makes-him-feel-chosen way.
+
+TONE — short (4-10 words), second-person, sweet + a little flirty, cutely possessive ("your", "yours", "for you"), niche-flavored. Warm cliché, NOT mean, NOT "toxic", NOT a poetic Pinterest quote.
+
+REFERENCE EXAMPLES (and niche):
+- Goth: "not your typical goth girlfriend"
+- Goth: "your favorite goth girl"
+- Goth: "the goth gf your mom warned you about"
+- Police: "we'll have to handcuff you if you misbehave"
+- Police: "your favorite officer, off duty for you"
+- Nurse: "i'll take good care of you"
+- Gamer: "the player two you've been waiting for"
+- Nun: "praying you slide into my dms"
+- Teacher: "detention with me isn't a punishment"
+- Normal: "the girl next door, but yours"
+
+THE "SAUCE":
+- Parasocial ownership: "your", "yours", "for you"
+- Girlfriend framing fused with the niche's role/fantasy (uniform, dynamic, setting)
+- Warm + a little teasing — bonding, not distancing
+- Feels like she picked HIM
+
+RULES:
+- 4-10 words
+- Lean on "your ... girlfriend / girl" framing wherever it fits
+- Always tie to the niche's role/fantasy
+- AVOID: "ethereal", "vibes", "aesthetic", "moonlit", "soft mornings", Pinterest-poetry
+- Each line should caption a soft selfie and make him feel chosen
+
+Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items)"""
+
+
 # ─── OpenAI call ─────────────────────────────────────────────────────────
 
 def _call_openai_json(system_prompt, user_prompt, n=8,
@@ -274,6 +308,26 @@ def suggest_bios(niche, handle, n=8, force_refresh=False):
             f"Match the tone of the reference examples — character-driven, "
             f"slightly toxic, accidentally funny.")
     out = _call_openai_json(_SYS_BIO, user, n)
+    if not out:
+        out = _local_fallback_bios(niche, n)
+    _cache_put(key, out)
+    return out
+
+
+def suggest_bios_v2(niche, handle, n=8, force_refresh=False):
+    """Girlfriend-brand / intimate-bonding bio variant (see _SYS_BIO_V2).
+    Separate cache namespace so it never collides with suggest_bios."""
+    key = ('bio_v2', (niche or '').lower(), (handle or '').lower())
+    if not force_refresh:
+        cached = _cache_get(key)
+        if cached:
+            return cached
+    user = (f"Niche: {niche}\nHandle: {handle}\n\n"
+            f"Generate {n} intimate girlfriend-brand bio taglines for THIS "
+            f"handle in THIS niche. Match the reference tone — warm, flirty, "
+            f"'your #1 favorite {niche} girlfriend', a little cheesy but "
+            f"bonding, always tied to the niche's fantasy.")
+    out = _call_openai_json(_SYS_BIO_V2, user, n)
     if not out:
         out = _local_fallback_bios(niche, n)
     _cache_put(key, out)
