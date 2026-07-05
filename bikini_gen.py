@@ -41,14 +41,33 @@ import artistic_bg_gen as _ag
 
 logger = logging.getLogger(__name__)
 
-ENGINE = _ag.ENGINE
-ASPECT = '9:16'                 # IG story vertical
+# Wan 2.7 Image Edit Pro — multi-image reference edit with a MUCH laxer safety
+# filter than nano-banana-pro. nano flagged a real two-piece bikini on this
+# reference ~100% of the time; Wan passes it first-try. ~$0.075/img.
+ENGINE = 'alibaba/wan-2.7/image-edit-pro'
+WAN_SIZE = '1080*1920'         # 9:16 vertical (w*h); within Wan's pixel limits
 REFS_PER_CALL = 3              # identity refs per generation (face lock)
 COUNT_OPTIONS = [5, 10, 15, 20]
 BATCH_MAX = 20
-MAX_ATTEMPTS = 4              # retries per image (safety filter is probabilistic)
-WAVE_MAX_WAIT = 420          # s — 2k gens routinely take >300s; don't discard them
+MAX_ATTEMPTS = 3              # retries per image (Wan passes first-try; this is for transient errors)
+WAVE_MAX_WAIT = 300          # s — Wan edits typically finish in 1-3 min
 MAX_WORKERS = 6              # images generated concurrently (they're I/O-bound polls)
+
+
+def _wan_submit(data_uris, prompt):
+    """Submit a Wan 2.7 image-edit-pro job. Returns request_id or raises."""
+    url = f"{_ag.WAVESPEED_API_BASE}/{ENGINE}"
+    body = {'images': data_uris, 'prompt': prompt, 'size': WAN_SIZE, 'seed': -1}
+    r = requests.post(url, json=body, timeout=60,
+                      headers={'Authorization': f'Bearer {_ag.WAVESPEED_API_KEY}',
+                               'Content-Type': 'application/json'})
+    if r.status_code != 200:
+        raise RuntimeError(f"Wan submit HTTP {r.status_code}: {r.text[:300]}")
+    j = r.json()
+    rid = (j.get('data') or {}).get('id') or j.get('id')
+    if not rid:
+        raise RuntimeError(f"Wan submit: no request id in {j}")
+    return rid
 
 # Dark / goth settings cycled across a batch — no bright daylight anywhere.
 SETTINGS = [
@@ -200,8 +219,7 @@ def _gen_one_bikini(svc, data_uris, parent_id, setting, idx, count, emit):
         soften = max(0, attempt - 1)
         prompt = _build_prompt(setting, soften)
         try:
-            rid = _ag._wavespeed_submit_multi_ref(
-                data_uris, prompt=prompt, aspect_ratio=ASPECT, resolution='2k')
+            rid = _wan_submit(data_uris, prompt)
             out_url = _ag._wavespeed_wait(rid, max_wait=WAVE_MAX_WAIT)
             break
         except Exception as e:
@@ -310,13 +328,13 @@ def _count_kb():
 async def bikini_gen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🖤 *Goth bikini batch generator*\n\n"
-        "Batch of *goth-themed* swimwear IG-story images of one of your models "
-        "(her face pulled from her `reference <model>` Drive folder — no "
-        "upload). Dark/black swimwear, night · sunset · dark settings, phone "
-        "night-flash look, same soft neutral-innocent-teasing expression. "
+        "Batch of *goth-themed* two-piece bikini IG-story images of one of your "
+        "models (her face pulled from her `reference <model>` Drive folder — no "
+        "upload). Dark/black bikini, night · sunset · dark settings, phone "
+        "night-flash look, full-body framing, soft neutral-innocent expression. "
         "Uploaded to a Drive folder.\n\n"
-        f"Engine: `{ENGINE}` · ~$0.07-0.20/img · runs concurrently. The safety "
-        "filter is a coin-flip, so images auto-retry — expect a few to drop.\n\n"
+        f"Engine: `Wan 2.7 Image Edit Pro` · ~$0.075/img · runs concurrently. "
+        "A few minutes per batch.\n\n"
         "Pick a model 👇",
         parse_mode='Markdown', reply_markup=_model_kb())
 
@@ -347,9 +365,7 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = min(BATCH_MAX, int(parts[2]))
         await q.edit_message_text(
             f"🖤 generating *{count}* goth-bikini images for *{model}*…\n\n"
-            f"Running up to {MAX_WORKERS} at once. The safety filter rejects "
-            f"~half of tries and each rejection costs a few minutes, so this is "
-            f"a *background job* — roughly 10-40 min depending on batch size. "
+            f"Running up to {MAX_WORKERS} at once (Wan 2.7). A few minutes — "
             f"I'll post the Drive link when it's done; you can keep using the bot.",
             parse_mode='Markdown')
 
