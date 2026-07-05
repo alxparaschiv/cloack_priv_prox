@@ -74,27 +74,29 @@ EXPRESSION = (
     "tease in the eyes"
 )
 
-# Progressive softening for the safety filter. Level 0 is the target look; each
-# step up trades some skin for a higher chance of passing the filter, so a
-# flagged image still eventually produces SOMETHING rather than nothing.
-WARDROBE_LEVELS = [
-    "a dark GOTH-style bikini — black, charcoal or very dark grey (matte black "
-    "or dark straps, optional subtle studs / lace-trim / O-ring detailing in a "
-    "goth style). Never bright, pastel or floral. Suggestive but NOT explicit: "
-    "she is fully clothed in the bikini, breasts and buttocks stay covered, no "
-    "exposed nipples or genitals. A casual Instagram bikini selfie, not "
-    "pornography",
-    "a dark goth bikini (black / charcoal), tasteful fuller coverage, a bit "
-    "less cleavage — clothed, covered, not provocative",
-    "dark goth swimwear with generous coverage — a covering black bikini or "
-    "tankini, modest, minimal cleavage, nothing provocative",
-    "a modest dark one-piece goth swimsuit (black), high coverage, minimal "
-    "skin, completely non-explicit",
+# The swimwear is ALWAYS a sexy TWO-PIECE bikini and is NEVER softened toward
+# a one-piece — an earlier coverage-softening ladder made the *successful*
+# retries come out as modest one-piece "bodysuits", the opposite of the goal.
+BIKINI = (
+    "a sexy TWO-PIECE goth bikini — a separate bikini top AND separate bikini "
+    "bottoms, black or charcoal, the small-coverage string / triangle kind a "
+    "girl wears on Instagram. Goth details welcome: thin straps, O-rings, "
+    "small studs, lace trim. It MUST be two separate pieces — NOT a one-piece "
+    "swimsuit, NOT a bodysuit, NOT a leotard, NOT a tank top. Clothed and "
+    "covered (nipples and genitals covered) — suggestive but not explicit"
+)
+
+# Only the FIGURE emphasis softens across safety retries (curvy → neutral),
+# never the bikini itself, so retries stay on-brief.
+FIGURE_LEVELS = [
+    "She has a fit, curvy hourglass figure — a full bust and curvy hips",
+    "She has a fit, attractive hourglass figure",
+    "She has a natural, fit figure",
 ]
 
 
 def _build_prompt(setting, softening_level=0):
-    wardrobe = WARDROBE_LEVELS[min(softening_level, len(WARDROBE_LEVELS) - 1)]
+    figure = FIGURE_LEVELS[min(softening_level, len(FIGURE_LEVELS) - 1)]
     return (
         "Generate a new photo of the SAME woman shown in the reference images. "
         "Preserve her face, hair color and texture, eye color, complexion and "
@@ -105,14 +107,19 @@ def _build_prompt(setting, softening_level=0):
         "figure. Do NOT make her look youthful, teenage, schoolgirl, or "
         "childlike.\n"
         "\n"
-        f"WARDROBE: {wardrobe}.\n"
+        f"BODY: {figure}. A grown adult woman's figure.\n"
+        "\n"
+        f"WARDROBE: {BIKINI}.\n"
         "\n"
         f"SETTING: {setting}.\n"
         "\n"
-        "POSE / FRAMING: a casual self-shot Instagram photo — natural, candid, "
-        "full-body or upper-thigh-up vertical shot, her looking into the "
-        "camera. Relaxed posture (a hand in her hair, leaning, or holding the "
-        "phone), not a stiff studio pose. " + EXPRESSION + ".\n"
+        "POSE / FRAMING — CRITICAL: a FULL-BODY vertical shot. Show her WHOLE "
+        "body from head to at least the knees (ideally head to feet), standing. "
+        "She FILLS the frame edge-to-edge — large in the frame, with NO big "
+        "empty / negative space around her and no wide empty background. Either "
+        "a full-length mirror selfie (phone visible in her hand) or an "
+        "arm's-length full-body selfie. Relaxed, candid posture — not a stiff "
+        "studio pose. " + EXPRESSION + ".\n"
         "\n"
         "LIGHTING / CAMERA — CRITICAL (goth night-flash look, makes it look "
         "REAL not a studio render):\n"
@@ -132,8 +139,9 @@ def _build_prompt(setting, softening_level=0):
         "  • Photorealistic, candid, Instagram-feed feel — a phone photo she "
         "took herself at night.\n"
         "\n"
-        "COMPOSITION: vertical 9:16 Instagram-story aspect. Subject fills the "
-        "frame; no letterboxing, no borders, no captions or text overlays."
+        "COMPOSITION: vertical 9:16 Instagram-story aspect. Her body fills the "
+        "frame top-to-bottom; minimal empty space, no letterboxing, no borders, "
+        "no captions or text overlays."
     )
 
 
