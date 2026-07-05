@@ -73,21 +73,27 @@ EXPRESSION = (
     "little innocent, with a soft confident look in her eyes"
 )
 
-# The swimwear is ALWAYS a TWO-PIECE bikini and NEVER softens to a one-piece.
-# Language is deliberately PLAIN / wholesome (no "sexy", "full bust", "curvy",
-# "suggestive") — that sexualizing wording spiked nano-banana-pro's safety
-# filter to ~100% rejection. Softening across retries only makes the bikini
-# sportier / fuller-coverage, staying two-piece so retries remain on-brief.
+# The swimwear is ALWAYS a real TWO-PIECE bikini on EVERY attempt — retries do
+# NOT soften toward more coverage. Two hard-won lessons:
+#   1. Sexualizing words ("sexy/full bust/curvy/suggestive") spike the safety
+#      filter to ~100% rejection, so the language is plain/wholesome.
+#   2. Softening retries toward "sporty / athletic / more coverage" backfires:
+#      the bikini (level-0) tries get flagged and only the covered retries
+#      pass, so outputs came out as one-pieces / rashguard+leggings. So every
+#      level stays a genuine two-piece bikini and explicitly forbids the
+#      wardrobe failure modes. Lower yield, but what passes is actually a bikini.
 BIKINI_LEVELS = [
-    "wearing a black or charcoal TWO-PIECE bikini — a bikini top and separate "
-    "bikini bottoms — with subtle goth details (thin straps, small studs or "
-    "lace trim). A normal beach bikini worn as two separate pieces. NOT a "
-    "one-piece swimsuit, NOT a bodysuit, NOT a leotard. Properly and fully "
-    "clothed in the bikini",
-    "wearing a simple black two-piece bikini (top and separate bottoms) with a "
-    "bit more coverage, sporty style. NOT a one-piece, NOT a bodysuit",
-    "wearing a black two-piece athletic swim set (a sporty top and separate "
-    "bottoms) with full sporty coverage. NOT a one-piece, NOT a bodysuit",
+    "wearing a black two-piece bikini — a bikini top and separate bikini "
+    "bottoms — with subtle goth details (thin straps, small studs or lace "
+    "trim). A normal beach bikini, two separate pieces. It is NOT a one-piece "
+    "swimsuit, NOT a bodysuit, NOT a leotard, NOT a rashguard, NOT a crop top, "
+    "NOT leggings",
+    "wearing a simple black two-piece bikini — a triangle or halter bikini top "
+    "and separate bikini bottoms. A normal beach bikini. It is NOT a one-piece, "
+    "NOT a bodysuit, NOT a rashguard, NOT a crop top, NOT leggings",
+    "wearing a classic plain black two-piece bikini — a bikini top and bikini "
+    "bottoms, the ordinary kind worn at the beach. It is NOT a one-piece, NOT a "
+    "bodysuit, NOT a rashguard, NOT a crop top, NOT leggings",
 ]
 
 
