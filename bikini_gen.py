@@ -39,12 +39,6 @@ REFS_PER_CALL = 3              # identity refs per generation (face lock)
 COUNT_OPTIONS = [5, 10, 15, 20]
 BATCH_MAX = 20
 
-# Folder-name prefixes that are OUTPUTS / non-reference — never sampled as refs.
-_EXCLUDE_PREFIXES = (
-    'generated videos', 'bg_batch', 'bikini_', 'looksmax', 'artistic_',
-    'images bg', 'images generated',
-)
-
 # Settings cycled across a batch so each image differs while the vibe holds.
 SETTINGS = [
     "poolside at night, warm indoor lighting, turquoise pool water glowing behind her",
@@ -118,25 +112,36 @@ def _build_prompt(setting, softening_level=0):
 
 
 def _model_ref_folders(svc, model):
-    """All Drive folders whose name starts with the model name and aren't
-    output folders. Returns a list of {id, name}."""
-    ml = model.lower()
+    """Return the model's REFERENCE face folder(s).
+
+    Convention in Drive: the canonical reference face lives in a folder named
+    `reference <Model>` (e.g. "reference Carolina"), NOT in folders that merely
+    start with the model name — those (e.g. "Carolina Goth Nurse") are finished
+    CONTENT/OUTPUT folders full of unrelated generated images, and sampling them
+    produced faces that looked nothing like the model.
+
+    Prefer the exact `reference <model>` folder. If it doesn't exist, fall back
+    to any `reference <model> …` variant folder (some models only have variants
+    like "reference Kira new goth"). Returns a list of {id, name}.
+    """
+    ml = model.lower().strip()
+    q = ("mimeType='application/vnd.google-apps.folder' and trashed=false "
+         f"and name contains 'reference {model}'")
     res = svc.files().list(
-        q="mimeType='application/vnd.google-apps.folder' and trashed=false",
-        fields='files(id,name)', pageSize=400,
+        q=q, fields='files(id,name)', pageSize=100,
         supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    out = []
-    for f in res.get('files') or []:
-        nl = (f.get('name') or '').lower()
-        if nl.startswith(ml) and not any(nl.startswith(x) for x in _EXCLUDE_PREFIXES):
-            out.append(f)
-    return out
+    files = res.get('files') or []
+    exact = [f for f in files if (f.get('name') or '').lower() == f'reference {ml}']
+    if exact:
+        return exact
+    pref = f'reference {ml}'
+    return [f for f in files if (f.get('name') or '').lower().startswith(pref)]
 
 
 def _gen_one_bikini(svc, pool, parent_id, setting, emit):
     """Sample refs → generate one bikini image → upload to Drive. Returns
     (drive_id, err)."""
-    chosen = random.sample(pool, REFS_PER_CALL)
+    chosen = random.sample(pool, min(REFS_PER_CALL, len(pool)))
     data_uris = []
     for f in chosen:
         b = _ag._download_image_bytes(svc, f['id'])
@@ -188,9 +193,9 @@ def generate_bikini_batch(model, count, emit):
             pool.extend(_ag._list_images_in_folder(svc, f['id']))
         except Exception:
             pass
-    if len(pool) < REFS_PER_CALL:
-        return None, 0, [f"only {len(pool)} reference images found for '{model}' "
-                         f"(need {REFS_PER_CALL}+)"]
+    if len(pool) < 1:
+        return None, 0, [f"no reference images found for '{model}' — expected a "
+                         f"'reference {model}' folder in Drive with at least 1 face photo"]
     emit(f"📁 {len(folders)} ref folders · {len(pool)} ref images for {model}")
 
     root = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
