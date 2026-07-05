@@ -1,18 +1,25 @@
-"""/bikini_gen — Batch bikini "thirst-trap" image generator for a reference model.
+"""/bikini_gen — Batch GOTH bikini image generator for a reference model.
 
 No image upload: you pick one of your existing models (carolina, kira, …) and
-the bot pulls that model's reference photos from her Google Drive folders
-(folders whose name starts with the model name), generates a BATCH of bikini
-images (5/10/15/20) in varied settings, uploads them to a fresh Drive folder,
-and returns the folder link.
+the bot pulls that model's REFERENCE face from her `reference <Model>` Drive
+folder, generates a BATCH of goth-themed swimwear images (5/10/15/20) in
+varied dark settings, uploads them to a fresh Drive folder, returns the link.
 
-Every image targets the same Sophie-Rain expression: neutral → innocent →
-slightly teasing — NOT smiling, NOT laughing, NOT sad. Soft, direct gaze.
+GOTH AESTHETIC (matches the accounts' niche — no bright-daylight bikini shots):
+  - Dark swimwear only: black / charcoal / very dark grey, goth-styled.
+  - Dark backgrounds: night, sunset, dim rooms.
+  - Night phone-FLASH look: hard on-camera flash on her, darkness behind —
+    like a flash selfie taken on a dark beach at night.
 
-Suggestive-but-clothed (bikini) only, clearly-adult subject — guardrails are
-in the prompt and the engine's safety filter enforces the hard line.
+Every image targets the same expression: neutral → innocent → slightly
+teasing — NOT smiling, NOT laughing, NOT sad. Soft, direct gaze.
 
-Reuses all Drive + WaveSpeed plumbing from artistic_bg_gen.
+Reliability: nano-banana-pro's safety filter is PROBABILISTIC — the same
+prompt is flagged on some tries and passes on others. So each image retries a
+few times with progressive softening. Successful 2k generations can take
+>300s, so the poll timeout is generous (a too-short timeout was silently
+discarding finished images). Images generate CONCURRENTLY so retries don't
+blow up the wall-clock.
 
 Env deps:
   - WAVESPEED_API_KEY            — nano-banana-pro
@@ -23,6 +30,7 @@ import base64
 import random
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -34,41 +42,59 @@ import artistic_bg_gen as _ag
 logger = logging.getLogger(__name__)
 
 ENGINE = _ag.ENGINE
-ASPECT = '9:16'                 # IG story / thirst-trap vertical
+ASPECT = '9:16'                 # IG story vertical
 REFS_PER_CALL = 3              # identity refs per generation (face lock)
 COUNT_OPTIONS = [5, 10, 15, 20]
 BATCH_MAX = 20
+MAX_ATTEMPTS = 4              # retries per image (safety filter is probabilistic)
+WAVE_MAX_WAIT = 420          # s — 2k gens routinely take >300s; don't discard them
+MAX_WORKERS = 6              # images generated concurrently (they're I/O-bound polls)
 
-# Settings cycled across a batch so each image differs while the vibe holds.
+# Dark / goth settings cycled across a batch — no bright daylight anywhere.
 SETTINGS = [
-    "poolside at night, warm indoor lighting, turquoise pool water glowing behind her",
-    "on a sandy tropical beach in bright daylight, ocean behind her",
-    "a bedroom mirror selfie, soft daylight from a window",
-    "on a sunny hotel balcony overlooking the sea",
-    "a bathroom mirror selfie, clean modern bathroom",
-    "lounging on a poolside deck chair in afternoon sun",
-    "in a cozy living room, lamp-lit, casual evening",
-    "on the deck of a boat/yacht, open water behind her",
-    "by a hotel pool at golden hour, palm trees behind",
-    "sitting on a made bed, soft natural daylight",
+    "on a dark beach at night, lit only by the harsh direct flash of her phone, "
+    "black water and night sky behind her",
+    "outdoors at sunset with a deep orange-to-dark sky, moody low light, dark "
+    "silhouetted palms or dunes behind her",
+    "a dim bedroom at night, lit mainly by her phone's flash, dark walls",
+    "a dark bathroom mirror selfie at night, one dim light, hard phone flash",
+    "on a balcony at night overlooking a dark sea, faint distant lights behind",
+    "poolside at night in the dark, the pool glowing faintly, phone flash on her",
+    "in a dark room lit by a single moody red or purple LED glow",
+    "a night beach flash selfie, sand and darkness all around, strong on-camera flash",
 ]
 
-# Expression — the defining element. Softened across retries for safety edge
-# cases without changing the look.
-EXPRESSION_LEVELS = [
+# Expression — the defining element. Kept constant; softening below only
+# changes wardrobe coverage / suggestiveness for safety retries.
+EXPRESSION = (
     "neutral, innocent, faintly teasing expression — soft relaxed face, lips "
     "softly together or barely parted, a calm direct gaze straight into the "
     "camera, eyebrows relaxed. NOT smiling, NOT laughing, NOT sad, NOT a "
     "sultry pout — understated and a little innocent, with just a hint of a "
-    "tease in the eyes",
-    "soft neutral expression with a faint innocent tease — relaxed face, "
-    "calm direct gaze, lips lightly together, not smiling and not sad",
-    "calm soft neutral expression, gentle direct gaze, relaxed and natural",
+    "tease in the eyes"
+)
+
+# Progressive softening for the safety filter. Level 0 is the target look; each
+# step up trades some skin for a higher chance of passing the filter, so a
+# flagged image still eventually produces SOMETHING rather than nothing.
+WARDROBE_LEVELS = [
+    "a dark GOTH-style bikini — black, charcoal or very dark grey (matte black "
+    "or dark straps, optional subtle studs / lace-trim / O-ring detailing in a "
+    "goth style). Never bright, pastel or floral. Suggestive but NOT explicit: "
+    "she is fully clothed in the bikini, breasts and buttocks stay covered, no "
+    "exposed nipples or genitals. A casual Instagram bikini selfie, not "
+    "pornography",
+    "a dark goth bikini (black / charcoal), tasteful fuller coverage, a bit "
+    "less cleavage — clothed, covered, not provocative",
+    "dark goth swimwear with generous coverage — a covering black bikini or "
+    "tankini, modest, minimal cleavage, nothing provocative",
+    "a modest dark one-piece goth swimsuit (black), high coverage, minimal "
+    "skin, completely non-explicit",
 ]
 
 
 def _build_prompt(setting, softening_level=0):
-    expression = EXPRESSION_LEVELS[min(softening_level, len(EXPRESSION_LEVELS) - 1)]
+    wardrobe = WARDROBE_LEVELS[min(softening_level, len(WARDROBE_LEVELS) - 1)]
     return (
         "Generate a new photo of the SAME woman shown in the reference images. "
         "Preserve her face, hair color and texture, eye color, complexion and "
@@ -79,32 +105,32 @@ def _build_prompt(setting, softening_level=0):
         "figure. Do NOT make her look youthful, teenage, schoolgirl, or "
         "childlike.\n"
         "\n"
-        "WARDROBE: a stylish bikini (vary the color/pattern). Suggestive but "
-        "NOT explicit — she is clothed in the bikini; breasts and buttocks "
-        "stay covered, no exposed nipples or genitals, nothing uncovered. "
-        "Think a casual Instagram-story bikini selfie, not pornography.\n"
+        f"WARDROBE: {wardrobe}.\n"
         "\n"
         f"SETTING: {setting}.\n"
         "\n"
-        "POSE / FRAMING: a casual self-shot Instagram-story photo — natural "
-        "thirst-trap framing, full-body or upper-thigh-up vertical shot, her "
-        "looking into the camera. Relaxed, candid posture (a hand in her hair, "
-        "leaning, or holding the phone), not a stiff studio pose. " + expression + ".\n"
+        "POSE / FRAMING: a casual self-shot Instagram photo — natural, candid, "
+        "full-body or upper-thigh-up vertical shot, her looking into the "
+        "camera. Relaxed posture (a hand in her hair, leaning, or holding the "
+        "phone), not a stiff studio pose. " + EXPRESSION + ".\n"
         "\n"
-        "CAMERA / PHOTOGRAPHY STYLE — CRITICAL (makes it look REAL, not a "
-        "studio render):\n"
-        "  • Smartphone front-camera / selfie look ONLY — NOT professional "
-        "photography, NOT a magazine shoot.\n"
-        "  • ABSOLUTELY NO bokeh, NO depth-of-field blur, NO heavy background "
-        "blur. Foreground and background roughly equally sharp.\n"
-        "  • NO cinematic lighting, NO dramatic shadows, NO color grading, NO "
-        "film filter, NO HDR, NO professional retouching, NO skin smoothing.\n"
-        "  • Plain ambient/natural light for the setting.\n"
-        "  • Slight imperfections are GOOD: a little sensor noise, slightly "
-        "imperfect framing, natural skin texture (visible pores, slight "
-        "unevenness — NOT airbrushed), a stray hair or two.\n"
-        "  • Photorealistic, candid, Instagram-feed feel — like a phone photo "
-        "she took herself.\n"
+        "LIGHTING / CAMERA — CRITICAL (goth night-flash look, makes it look "
+        "REAL not a studio render):\n"
+        "  • Shot on a PHONE at night or in the dark with the HARSH DIRECT "
+        "ON-CAMERA FLASH — bright hard flash on her, falling off into deep "
+        "shadow / darkness behind. Like a flash selfie on a dark beach at night.\n"
+        "  • Dark, moody surroundings; the flash is the main light. Slight "
+        "flash overexposure on the skin is realistic and good.\n"
+        "  • ABSOLUTELY NOT bright daylight, NOT sunny, NOT a cheerful bright "
+        "beach — dark / nighttime / sunset ONLY.\n"
+        "  • Smartphone camera-flash look ONLY — NOT professional photography, "
+        "NOT a magazine shoot. NO bokeh, NO depth-of-field blur, NO cinematic "
+        "color grading, NO HDR, NO skin smoothing / retouching.\n"
+        "  • Slight imperfections are GOOD: sensor noise, slightly imperfect "
+        "framing, natural skin texture (visible pores — NOT airbrushed), a "
+        "stray hair or two.\n"
+        "  • Photorealistic, candid, Instagram-feed feel — a phone photo she "
+        "took herself at night.\n"
         "\n"
         "COMPOSITION: vertical 9:16 Instagram-story aspect. Subject fills the "
         "frame; no letterboxing, no borders, no captions or text overlays."
@@ -138,51 +164,73 @@ def _model_ref_folders(svc, model):
     return [f for f in files if (f.get('name') or '').lower().startswith(pref)]
 
 
-def _gen_one_bikini(svc, pool, parent_id, setting, emit):
-    """Sample refs → generate one bikini image → upload to Drive. Returns
-    (drive_id, err)."""
+def _is_safety_block(err_str):
+    s = (err_str or '').lower()
+    return 'flag' in s or 'sensitive' in s or 'safety' in s
+
+
+def _build_data_uris(svc, pool):
+    """Sample refs and return base64 data URIs for the generation."""
     chosen = random.sample(pool, min(REFS_PER_CALL, len(pool)))
-    data_uris = []
+    uris = []
     for f in chosen:
         b = _ag._download_image_bytes(svc, f['id'])
         mt = (f.get('mimeType') or '').lower()
         if not mt.startswith('image/'):
             mt = 'image/jpeg'
-        data_uris.append(f"data:{mt};base64,{base64.b64encode(b).decode('ascii')}")
+        uris.append(f"data:{mt};base64,{base64.b64encode(b).decode('ascii')}")
+    return uris
 
+
+def _gen_one_bikini(svc, data_uris, parent_id, setting, idx, count, emit):
+    """Generate one goth-bikini image (with safety retries) → upload to Drive.
+    Returns (drive_id, err). `data_uris` are the ref images (already encoded)."""
     out_url = None
     last_err = None
-    MAX_ATTEMPTS = 3
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        # Softening ramps up only after a safety flag, so the first tries keep
+        # the full look and we only concede coverage when forced to.
         soften = max(0, attempt - 1)
         prompt = _build_prompt(setting, soften)
         try:
             rid = _ag._wavespeed_submit_multi_ref(
                 data_uris, prompt=prompt, aspect_ratio=ASPECT, resolution='2k')
-            out_url = _ag._wavespeed_wait(rid)
+            out_url = _ag._wavespeed_wait(rid, max_wait=WAVE_MAX_WAIT)
             break
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-            emit(f"   ⚠️ attempt {attempt}/{MAX_ATTEMPTS}: {last_err}")
+            tag = "🚫 flagged" if _is_safety_block(last_err) else "⚠️"
+            logger.info(f"[bikini] {idx}/{count} attempt {attempt}/{MAX_ATTEMPTS} {tag}: {last_err}")
             if attempt < MAX_ATTEMPTS:
-                time.sleep(8)
+                time.sleep(5)
     if not out_url:
         return None, f"all {MAX_ATTEMPTS} attempts failed; last: {last_err}"
 
-    try:
-        r = requests.get(out_url, timeout=60); r.raise_for_status()
-        img = r.content
-    except Exception as e:
-        return None, f"output fetch err: {e}"
+    img = None
+    for _ in range(3):                       # output fetch can drop; retry a few times
+        try:
+            r = requests.get(out_url, timeout=90); r.raise_for_status()
+            img = r.content
+            break
+        except Exception as e:
+            last_err = f"output fetch err: {e}"
+            time.sleep(3)
+    if img is None:
+        return None, last_err
     ts = time.strftime('%Y%m%d_%H%M%S')
-    fname = f"bikini_{ts}_{random.randint(1000,9999)}.jpg"
+    fname = f"bikini_{_setting_tag(setting)}_{ts}_{random.randint(1000,9999)}.jpg"
     drive_id = _ag._upload_bytes_to_drive(svc, parent_id, fname, img)
     return drive_id, None
 
 
+def _setting_tag(setting):
+    # short filename hint from the setting (first word), best-effort
+    return (setting.split(' ')[0] or 'goth').strip().lower()
+
+
 def generate_bikini_batch(model, count, emit):
-    """Resolve model refs → generate `count` bikini images into a fresh Drive
-    folder. Returns (batch_url, ok_count, errors)."""
+    """Resolve model refs → generate `count` goth-bikini images CONCURRENTLY
+    into a fresh Drive folder. Returns (batch_url, ok_count, errors)."""
     svc = _ag._drive_service()
     folders = _model_ref_folders(svc, model)
     if not folders:
@@ -196,25 +244,39 @@ def generate_bikini_batch(model, count, emit):
     if len(pool) < 1:
         return None, 0, [f"no reference images found for '{model}' — expected a "
                          f"'reference {model}' folder in Drive with at least 1 face photo"]
-    emit(f"📁 {len(folders)} ref folders · {len(pool)} ref images for {model}")
+    emit(f"📁 {len(folders)} ref folder(s) · {len(pool)} ref image(s) for {model}")
+
+    # Encode refs ONCE (they're the same across the whole batch).
+    data_uris = _build_data_uris(svc, pool)
 
     root = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
     ts = time.strftime('%Y%m%d_%H%M%S')
     batch_id = _ag._ensure_folder(svc, f"bikini_{model}_{ts}", root)
     url = _ag._folder_drive_url(batch_id)
 
-    ok, errs = 0, []
-    for i in range(1, count + 1):
+    def _worker(i):
+        # Each thread gets its OWN Drive service — googleapiclient/httplib2 is
+        # not thread-safe, so sharing one `svc` across workers would corrupt it.
+        svc_t = _ag._drive_service()
         setting = SETTINGS[(i - 1) % len(SETTINGS)]
-        emit(f"── 👙 {i}/{count} — {setting.split(',')[0]} ──")
         try:
-            _id, err = _gen_one_bikini(svc, pool, batch_id, setting, emit)
+            _id, err = _gen_one_bikini(svc_t, data_uris, batch_id, setting, i, count, emit)
+            return i, _id, err
+        except Exception as e:
+            return i, None, f"{type(e).__name__}: {e}"
+
+    emit(f"🖤 generating {count} goth-bikini images (up to {MAX_WORKERS} at a time)…")
+    ok, errs = 0, []
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, count)) as ex:
+        futs = [ex.submit(_worker, i) for i in range(1, count + 1)]
+        for fut in as_completed(futs):
+            i, _id, err = fut.result()
             if err:
                 errs.append(f"{i}: {err}")
+                emit(f"❌ {i}/{count} failed — {'safety-flagged all retries' if _is_safety_block(err) else err[:90]}")
             else:
                 ok += 1
-        except Exception as e:
-            errs.append(f"{i}: {type(e).__name__}: {e}")
+                emit(f"✅ {ok}/{count} done")
     return url, ok, errs
 
 
@@ -240,12 +302,14 @@ def _count_kb():
 
 async def bikini_gen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👙 *Bikini batch generator*\n\n"
-        "Generates a batch of bikini Instagram-story images of one of your "
-        "models (refs pulled from her Drive folders — no upload). Varied "
-        "settings, same soft neutral-innocent-teasing expression. Uploaded "
-        "to a Drive folder.\n\n"
-        f"Engine: `{ENGINE}` · ~$0.07-0.20/img · ~1-2 min each.\n\n"
+        "🖤 *Goth bikini batch generator*\n\n"
+        "Batch of *goth-themed* swimwear IG-story images of one of your models "
+        "(her face pulled from her `reference <model>` Drive folder — no "
+        "upload). Dark/black swimwear, night · sunset · dark settings, phone "
+        "night-flash look, same soft neutral-innocent-teasing expression. "
+        "Uploaded to a Drive folder.\n\n"
+        f"Engine: `{ENGINE}` · ~$0.07-0.20/img · runs concurrently. The safety "
+        "filter is a coin-flip, so images auto-retry — expect a few to drop.\n\n"
         "Pick a model 👇",
         parse_mode='Markdown', reply_markup=_model_kb())
 
@@ -275,8 +339,11 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         count = min(BATCH_MAX, int(parts[2]))
         await q.edit_message_text(
-            f"👙 generating *{count}* bikini images for *{model}*…\n"
-            f"~{count}-{count*2} min. I'll post the Drive link when done.",
+            f"🖤 generating *{count}* goth-bikini images for *{model}*…\n\n"
+            f"Running up to {MAX_WORKERS} at once. The safety filter rejects "
+            f"~half of tries and each rejection costs a few minutes, so this is "
+            f"a *background job* — roughly 10-40 min depending on batch size. "
+            f"I'll post the Drive link when it's done; you can keep using the bot.",
             parse_mode='Markdown')
 
         loop = asyncio.get_running_loop()
