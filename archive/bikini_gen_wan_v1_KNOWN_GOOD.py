@@ -92,40 +92,6 @@ EXPRESSION = (
     "little innocent, with a soft confident look in her eyes"
 )
 
-# Body — curvy emphasis. Safe to be explicit here because Wan 2.7's filter is
-# lax (nano-banana-pro would have flagged this wording ~100%).
-FIGURE = (
-    "She has a curvy, hourglass figure — a full, ample bust, a slim snatched "
-    "waist, and curvy hips and butt. A grown adult woman's body, fit and toned"
-)
-
-# Frontal-only pose used by the "classic" style.
-POSE_FRONTAL = "standing facing the camera straight on, full body in frame"
-
-# Varied poses cycled by the "curvy" style so the curves read from different
-# angles — side profile, turned, over-the-shoulder — not always frontal.
-POSES = [
-    POSE_FRONTAL,
-    "her body turned to the side in profile — hip pushed out to show her "
-    "waist-to-hip curve — glancing at the camera",
-    "turned with her back and side toward the camera, looking back over her "
-    "shoulder at the camera, showing her back and the curve of her hips and butt",
-    "a three-quarter turn, body angled to the side, one hip cocked out, looking "
-    "at the camera over her shoulder",
-    "standing facing the camera with one hip cocked to the side, full body",
-    "side-on to the camera, arching her back slightly to show her figure, "
-    "looking toward the camera",
-]
-
-# Selectable prompt styles (picked in the UI after choosing a model):
-#   classic — the original frontal look the user liked (no curvy emphasis).
-#   curvy   — bigger bust / curvy figure + varied side / turned poses.
-STYLES = {
-    'classic': {'label': '🧍 Classic (frontal)', 'figure': None,   'vary_pose': False},
-    'curvy':   {'label': '🍑 Curvy (side angles)', 'figure': FIGURE, 'vary_pose': True},
-}
-DEFAULT_STYLE = 'curvy'
-
 # The swimwear is ALWAYS a real TWO-PIECE bikini on EVERY attempt — retries do
 # NOT soften toward more coverage. Two hard-won lessons:
 #   1. Sexualizing words ("sexy/full bust/curvy/suggestive") spike the safety
@@ -150,9 +116,8 @@ BIKINI_LEVELS = [
 ]
 
 
-def _build_prompt(setting, pose, figure=None, softening_level=0):
+def _build_prompt(setting, softening_level=0):
     bikini = BIKINI_LEVELS[min(softening_level, len(BIKINI_LEVELS) - 1)]
-    body_line = f"BODY: {figure}.\n\n" if figure else ""
     return (
         "Generate a new photo of the SAME woman shown in the reference images. "
         "Preserve her face, hair color and texture, eye color, complexion and "
@@ -163,14 +128,12 @@ def _build_prompt(setting, pose, figure=None, softening_level=0):
         "figure. Do NOT make her look youthful, teenage, schoolgirl, or "
         "childlike.\n"
         "\n"
-        + body_line +
         f"WARDROBE: {bikini}.\n"
         "\n"
         f"SETTING: {setting}.\n"
         "\n"
         "POSE / FRAMING — CRITICAL: a FULL-BODY vertical shot. Show her WHOLE "
-        "body from head to at least the knees (ideally head to feet). "
-        f"POSE: {pose}. "
+        "body from head to at least the knees (ideally head to feet), standing. "
         "She FILLS the frame edge-to-edge — large in the frame, with NO big "
         "empty / negative space around her and no wide empty background. Either "
         "a full-length mirror selfie (phone visible in her hand) or an "
@@ -245,7 +208,7 @@ def _build_data_uris(svc, pool):
     return uris
 
 
-def _gen_one_bikini(svc, data_uris, parent_id, setting, pose, figure, idx, count, emit):
+def _gen_one_bikini(svc, data_uris, parent_id, setting, idx, count, emit):
     """Generate one goth-bikini image (with safety retries) → upload to Drive.
     Returns (drive_id, err). `data_uris` are the ref images (already encoded)."""
     out_url = None
@@ -254,7 +217,7 @@ def _gen_one_bikini(svc, data_uris, parent_id, setting, pose, figure, idx, count
         # Softening ramps up only after a safety flag, so the first tries keep
         # the full look and we only concede coverage when forced to.
         soften = max(0, attempt - 1)
-        prompt = _build_prompt(setting, pose, figure, soften)
+        prompt = _build_prompt(setting, soften)
         try:
             rid = _wan_submit(data_uris, prompt)
             out_url = _ag._wavespeed_wait(rid, max_wait=WAVE_MAX_WAIT)
@@ -290,13 +253,9 @@ def _setting_tag(setting):
     return (setting.split(' ')[0] or 'goth').strip().lower()
 
 
-def generate_bikini_batch(model, count, emit, style=DEFAULT_STYLE):
+def generate_bikini_batch(model, count, emit):
     """Resolve model refs → generate `count` goth-bikini images CONCURRENTLY
-    into a fresh Drive folder. `style` picks the prompt flavor (see STYLES).
-    Returns (batch_url, ok_count, errors)."""
-    style_cfg = STYLES.get(style) or STYLES[DEFAULT_STYLE]
-    figure = style_cfg['figure']
-    vary_pose = style_cfg['vary_pose']
+    into a fresh Drive folder. Returns (batch_url, ok_count, errors)."""
     svc = _ag._drive_service()
     folders = _model_ref_folders(svc, model)
     if not folders:
@@ -325,16 +284,13 @@ def generate_bikini_batch(model, count, emit, style=DEFAULT_STYLE):
         # not thread-safe, so sharing one `svc` across workers would corrupt it.
         svc_t = _ag._drive_service()
         setting = SETTINGS[(i - 1) % len(SETTINGS)]
-        pose = POSES[(i - 1) % len(POSES)] if vary_pose else POSE_FRONTAL
         try:
-            _id, err = _gen_one_bikini(svc_t, data_uris, batch_id, setting, pose,
-                                       figure, i, count, emit)
+            _id, err = _gen_one_bikini(svc_t, data_uris, batch_id, setting, i, count, emit)
             return i, _id, err
         except Exception as e:
             return i, None, f"{type(e).__name__}: {e}"
 
-    emit(f"🖤 generating {count} goth-bikini images "
-         f"({STYLES.get(style, {}).get('label', style)}, up to {MAX_WORKERS} at a time)…")
+    emit(f"🖤 generating {count} goth-bikini images (up to {MAX_WORKERS} at a time)…")
     ok, errs = 0, []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, count)) as ex:
         futs = [ex.submit(_worker, i) for i in range(1, count + 1)]
@@ -358,13 +314,6 @@ def _model_kb():
             rows.append([InlineKeyboardButton(f"👤 {m}", callback_data=f"bikini:model:{m}")])
     except Exception as e:
         logger.warning(f"[bikini] model list err: {e}")
-    rows.append([InlineKeyboardButton("✖ cancel", callback_data="bikini:cancel")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _style_kb():
-    rows = [[InlineKeyboardButton(cfg['label'], callback_data=f"bikini:style:{key}")]
-            for key, cfg in STYLES.items()]
     rows.append([InlineKeyboardButton("✖ cancel", callback_data="bikini:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -404,24 +353,7 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         model = parts[2]
         context.user_data['bikini_model'] = model
         await q.edit_message_text(
-            f"👤 *{model}* selected.\n\nPick a style 👇\n"
-            f"• *Classic* — frontal, the original safe look\n"
-            f"• *Curvy* — bigger/curvier + side & over-the-shoulder angles",
-            parse_mode='Markdown', reply_markup=_style_kb())
-        return
-
-    if action == 'style':
-        style = parts[2]
-        if style not in STYLES:
-            await q.edit_message_text("⚠️ unknown style — run /bikini_gen again.")
-            return
-        if not context.user_data.get('bikini_model'):
-            await q.edit_message_text("⚠️ session expired — run /bikini_gen again.")
-            return
-        context.user_data['bikini_style'] = style
-        await q.edit_message_text(
-            f"👤 *{context.user_data['bikini_model']}* · {STYLES[style]['label']}\n\n"
-            f"How many images?",
+            f"👤 *{model}* selected.\n\nHow many images?",
             parse_mode='Markdown', reply_markup=_count_kb())
         return
 
@@ -430,10 +362,9 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not model:
             await q.edit_message_text("⚠️ session expired — run /bikini_gen again.")
             return
-        style = context.user_data.get('bikini_style', DEFAULT_STYLE)
         count = min(BATCH_MAX, int(parts[2]))
         await q.edit_message_text(
-            f"🖤 generating *{count}* {STYLES[style]['label']} images for *{model}*…\n\n"
+            f"🖤 generating *{count}* goth-bikini images for *{model}*…\n\n"
             f"Running up to {MAX_WORKERS} at once (Wan 2.7). A few minutes — "
             f"I'll post the Drive link when it's done; you can keep using the bot.",
             parse_mode='Markdown')
@@ -447,8 +378,7 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        url, ok, errs = await asyncio.to_thread(
-            generate_bikini_batch, model, count, emit, style)
+        url, ok, errs = await asyncio.to_thread(generate_bikini_batch, model, count, emit)
 
         if not url:
             await chat.send_message(f"❌ couldn't start: {errs[0] if errs else 'unknown'}")
@@ -457,6 +387,6 @@ async def bikini_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if errs:
             tail = f"\n⚠️ {len(errs)} failed (e.g. {errs[0][:120]})"
         await chat.send_message(
-            f"🎉 *Done* — {ok}/{count} {STYLES[style]['label']} images for *{model}*\n"
+            f"🎉 *Done* — {ok}/{count} images for *{model}*\n"
             f"📂 [Open Drive folder]({url})\n`{url}`{tail}",
             parse_mode='Markdown', disable_web_page_preview=True)
