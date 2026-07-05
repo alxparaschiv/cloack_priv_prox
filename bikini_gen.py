@@ -67,36 +67,32 @@ SETTINGS = [
 # Expression — the defining element. Kept constant; softening below only
 # changes wardrobe coverage / suggestiveness for safety retries.
 EXPRESSION = (
-    "neutral, innocent, faintly teasing expression — soft relaxed face, lips "
-    "softly together or barely parted, a calm direct gaze straight into the "
-    "camera, eyebrows relaxed. NOT smiling, NOT laughing, NOT sad, NOT a "
-    "sultry pout — understated and a little innocent, with just a hint of a "
-    "tease in the eyes"
+    "a neutral, calm, innocent expression — soft relaxed face, lips softly "
+    "together or barely parted, a calm direct gaze into the camera, relaxed "
+    "eyebrows. Not smiling, not laughing, not sad — understated, natural and a "
+    "little innocent, with a soft confident look in her eyes"
 )
 
-# The swimwear is ALWAYS a sexy TWO-PIECE bikini and is NEVER softened toward
-# a one-piece — an earlier coverage-softening ladder made the *successful*
-# retries come out as modest one-piece "bodysuits", the opposite of the goal.
-BIKINI = (
-    "a sexy TWO-PIECE goth bikini — a separate bikini top AND separate bikini "
-    "bottoms, black or charcoal, the small-coverage string / triangle kind a "
-    "girl wears on Instagram. Goth details welcome: thin straps, O-rings, "
-    "small studs, lace trim. It MUST be two separate pieces — NOT a one-piece "
-    "swimsuit, NOT a bodysuit, NOT a leotard, NOT a tank top. Clothed and "
-    "covered (nipples and genitals covered) — suggestive but not explicit"
-)
-
-# Only the FIGURE emphasis softens across safety retries (curvy → neutral),
-# never the bikini itself, so retries stay on-brief.
-FIGURE_LEVELS = [
-    "She has a fit, curvy hourglass figure — a full bust and curvy hips",
-    "She has a fit, attractive hourglass figure",
-    "She has a natural, fit figure",
+# The swimwear is ALWAYS a TWO-PIECE bikini and NEVER softens to a one-piece.
+# Language is deliberately PLAIN / wholesome (no "sexy", "full bust", "curvy",
+# "suggestive") — that sexualizing wording spiked nano-banana-pro's safety
+# filter to ~100% rejection. Softening across retries only makes the bikini
+# sportier / fuller-coverage, staying two-piece so retries remain on-brief.
+BIKINI_LEVELS = [
+    "wearing a black or charcoal TWO-PIECE bikini — a bikini top and separate "
+    "bikini bottoms — with subtle goth details (thin straps, small studs or "
+    "lace trim). A normal beach bikini worn as two separate pieces. NOT a "
+    "one-piece swimsuit, NOT a bodysuit, NOT a leotard. Properly and fully "
+    "clothed in the bikini",
+    "wearing a simple black two-piece bikini (top and separate bottoms) with a "
+    "bit more coverage, sporty style. NOT a one-piece, NOT a bodysuit",
+    "wearing a black two-piece athletic swim set (a sporty top and separate "
+    "bottoms) with full sporty coverage. NOT a one-piece, NOT a bodysuit",
 ]
 
 
 def _build_prompt(setting, softening_level=0):
-    figure = FIGURE_LEVELS[min(softening_level, len(FIGURE_LEVELS) - 1)]
+    bikini = BIKINI_LEVELS[min(softening_level, len(BIKINI_LEVELS) - 1)]
     return (
         "Generate a new photo of the SAME woman shown in the reference images. "
         "Preserve her face, hair color and texture, eye color, complexion and "
@@ -107,9 +103,7 @@ def _build_prompt(setting, softening_level=0):
         "figure. Do NOT make her look youthful, teenage, schoolgirl, or "
         "childlike.\n"
         "\n"
-        f"BODY: {figure}. A grown adult woman's figure.\n"
-        "\n"
-        f"WARDROBE: {BIKINI}.\n"
+        f"WARDROBE: {bikini}.\n"
         "\n"
         f"SETTING: {setting}.\n"
         "\n"
@@ -118,8 +112,7 @@ def _build_prompt(setting, softening_level=0):
         "She FILLS the frame edge-to-edge — large in the frame, with NO big "
         "empty / negative space around her and no wide empty background. Either "
         "a full-length mirror selfie (phone visible in her hand) or an "
-        "arm's-length full-body selfie. Relaxed, candid posture — not a stiff "
-        "studio pose. " + EXPRESSION + ".\n"
+        "arm's-length full-body selfie. Relaxed, natural posture. " + EXPRESSION + ".\n"
         "\n"
         "LIGHTING / CAMERA — CRITICAL (goth night-flash look, makes it look "
         "REAL not a studio render):\n"
