@@ -214,6 +214,14 @@ def _geelark_create_phone(profile_name, proxy):
 
     # Try a couple of language candidates — GeeLark periodically rejects
     # specific values with code 43025 (see reel_bot.py geelark_create_phone).
+    # IMPORTANT: only a *language* rejection is worth retrying another language.
+    # Any other error (quota 44002 "Maximum number of package environments
+    # reached", bad proxy, etc.) is surfaced immediately so we don't mask the
+    # real reason behind a generic "all language candidates rejected".
+    def _is_language_err(code, msg):
+        return code in (43025, '43025') or 'language' in (msg or '').lower()
+
+    last_err = None
     for lang in ('default', 'en-US', 'zh-CN'):
         body = {
             'mobileType': 'Android 13',
@@ -228,8 +236,11 @@ def _geelark_create_phone(profile_name, proxy):
             }],
         }
         data, err = _geelark_post('/phone/addNew', body)
-        if not data:
-            continue
+        if err:
+            last_err = err
+            if _is_language_err(None, err):
+                continue          # language-specific → try next language
+            return None, err       # real error (quota/proxy/…) — surface it now
         details = data.get('details') or data.get('successDetails') or []
         if isinstance(details, list) and details:
             first = details[0]
@@ -237,11 +248,13 @@ def _geelark_create_phone(profile_name, proxy):
             if phone_id:
                 return phone_id, None
             code = first.get('code')
-            err_msg = (first.get('msg') or '').lower()
-            if code == 43025 or 'language' in err_msg:
-                continue  # try next language
-            return None, f"GeeLark error: code={code} msg={first.get('msg')}"
-    return None, "all language candidates rejected"
+            msg = first.get('msg')
+            last_err = f"GeeLark error: code={code} msg={msg}"
+            if _is_language_err(code, msg):
+                continue          # try next language
+            return None, last_err  # real per-item error — surface it now
+        last_err = last_err or "GeeLark addNew returned no phone details"
+    return None, last_err or "all language candidates rejected"
 
 
 def _geelark_delete_phone(phone_id):
