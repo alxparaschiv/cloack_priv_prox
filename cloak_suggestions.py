@@ -143,38 +143,42 @@ RULES:
 Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items)"""
 
 
-_SYS_BIO_V2 = """You generate short, intimate "girlfriend-brand" Instagram bio taglines for a content creator's bio-link landing page.
+_SYS_BIO_V2 = """You generate playful "girlfriend-brand" Instagram bio taglines for a content creator's bio-link landing page.
 
-GOAL: make the visitor feel like SHE is already HIS girlfriend — a warm, flirty, parasocial bond. The bio quietly claims the "your #1 favorite <niche> girl / girlfriend" territory, tied to the niche's fantasy. Cheesy ON PURPOSE, but in a bonding, endearing, makes-him-feel-chosen way.
+GOAL: warm, flirty, endearing girlfriend-energy tied to the niche's fantasy — the kind of caption that makes a visitor smile and want to follow. Cute and a little cheesy, but BELIEVABLE and confident.
 
-TONE — short (4-10 words), second-person, sweet + a little flirty, cutely possessive ("your", "yours", "for you"), niche-flavored. Warm cliché, NOT mean, NOT "toxic", NOT a poetic Pinterest quote.
+CRITICAL — DON'T BE CLINGY OR NEEDY. These captions are public and seen by MANY followers, so anything that implies she belongs to one specific person reads as fake and desperate. So:
+- Do NOT use "forever yours", "only for you", "my everything", "always here for you", "#1 forever", "yours forever", "waiting for you", or heavy possessive lines.
+- Use "your / yours" SPARINGLY — at most ~1 in 4 lines, and lightly ("your favorite goth gf" is fine; "forever yours, only you" is not).
+- Prefer confident, self-assured, playful energy over neediness. She's a catch, not a girlfriend begging for attention.
+- Frame as "the type of girl who…", personality, shared activities, or a playful invitation — NOT devotion to one person.
 
-REFERENCE EXAMPLES (and niche):
-- Goth: "not your typical goth girlfriend"
-- Goth: "your favorite goth girl"
-- Goth: "the goth gf your mom warned you about"
-- Police: "we'll have to handcuff you if you misbehave"
-- Police: "your favorite officer, off duty for you"
-- Nurse: "i'll take good care of you"
-- Gamer: "the player two you've been waiting for"
-- Nun: "praying you slide into my dms"
-- Teacher: "detention with me isn't a punishment"
-- Normal: "the girl next door, but yours"
+MANDATORY VARIETY IN LENGTH & STRUCTURE — do NOT make them all the same shape/length. Across the set, mix roughly evenly:
+- ULTRA-SHORT (2-5 words): e.g. "your favorite goth gf", "spooky but sweet", "certified goth sweetheart"
+- MEDIUM (6-10 words): e.g. "not your typical goth girlfriend", "the goth gf your mom warned you about"
+- LONGER / SCENARIO (11-20 words), often activity- or personality-based: e.g. "the goth girl who'll drag you to a graveyard picnic then a horror movie marathon", "might build a sandcastle with you one day and take you on a haunted hike the next"
 
-THE "SAUCE":
-- Parasocial ownership: "your", "yours", "for you"
-- Girlfriend framing fused with the niche's role/fantasy (uniform, dynamic, setting)
-- Warm + a little teasing — bonding, not distancing
-- Feels like she picked HIM
+Vary the OPENINGS — don't start most lines with "your". Rotate: "the kind of girl who…", "warning:", an activity line, a personality line, a playful question, a niche-role line.
+
+REFERENCE EXAMPLES (niche → style, note the length + structure mix):
+- Goth: "your favorite goth gf"                                          (ultra-short)
+- Goth: "spooky, a little unhinged, extremely cuddly"                    (personality)
+- Goth: "the goth girl who'll take you to a graveyard picnic and a horror marathon"  (scenario)
+- Goth: "warning: may drag you thrifting for band tees"                  (playful)
+- Police: "we'll have to handcuff you if you misbehave"                  (niche-role)
+- Police: "off-duty officer, on-duty menace"                             (short/witty)
+- Nurse: "the type to check your pulse then raise it"                    (witty)
+- Gamer: "player two energy, snacks included"                            (activity)
+- Nun: "praying you slide into my dms"                                   (playful)
+- Teacher: "detention with me isn't a punishment"                        (niche-role)
 
 RULES:
-- 4-10 words
-- Lean on "your ... girlfriend / girl" framing wherever it fits
-- Always tie to the niche's role/fantasy
-- AVOID: "ethereal", "vibes", "aesthetic", "moonlit", "soft mornings", Pinterest-poetry
-- Each line should caption a soft selfie and make him feel chosen
+- Tie to the niche's role/fantasy naturally, but don't force "girlfriend" into every line.
+- Confident, warm, a little teasing — never desperate or over-attached.
+- AVOID: "ethereal", "vibes", "aesthetic", "moonlit", "soft mornings", Pinterest-poetry, and all the clingy phrases listed above.
+- Every line should work as a caption on a public account with thousands of followers.
 
-Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items)"""
+Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items, with the length/structure mix above)"""
 
 
 # ─── OpenAI call ─────────────────────────────────────────────────────────
@@ -201,7 +205,8 @@ def _call_openai_json(system_prompt, user_prompt, n=8,
                 ],
                 'response_format': {'type': 'json_object'},
                 'temperature': 1.0,   # high variance per call
-                'max_tokens': 500,
+                # scale with N so 20 varied/longer bios don't get truncated
+                'max_tokens': min(2000, 300 + n * 55),
             },
             timeout=timeout,
         )
