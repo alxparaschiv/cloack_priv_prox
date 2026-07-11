@@ -28,6 +28,8 @@ from PIL import Image, ImageDraw, ImageFilter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
+import bg_patterns as _bp   # 37 print/pattern generators (camo, animal, plaid, …)
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +59,82 @@ MODES_ALL = [
     ('voronoi',       '🔷 Voronoi mosaic'),
     ('color_field',   '🟫 Color field (Rothko bands)'),
 ]
+
+
+# ─── Unified pattern registry ────────────────────────────────────────────
+# The original 9 modes (defined below) wrapped as zero-arg (png, info)
+# generators + the 37 from bg_patterns → ~46 total "ways". Grouped into
+# categories for the batch picker so a batch can draw from EVERYTHING or from
+# a single category (e.g. animal prints only).
+
+def _rand_hex():
+    return random.choice([h for _, h in PROFILE_COLOR_PALETTE])
+
+
+# key → (label, category). fn is attached in _build_registry() once the
+# original generator functions are defined further down the module.
+_ORIG_META = [
+    ('solid',         '🟦 Solid color',            'color'),
+    ('gradient',      '🌈 Gradient',               'color'),
+    ('radial',        '✨ Radial burst',           'color'),
+    ('impressionist', '🌻 Impressionist',          'artistic'),
+    ('splatter',      '🎨 Splatter',               'artistic'),
+    ('watercolor',    '💧 Watercolor',             'artistic'),
+    ('color_field',   '🟫 Color field (Rothko)',   'artistic'),
+    ('geometric',     '🟥 Geometric (Mondrian)',   'pattern'),
+    ('voronoi',       '🔷 Voronoi mosaic',         'pattern'),
+]
+
+CATEGORY_LABELS = {
+    'color':    '🎨 Colors & gradients',
+    'artistic': '🖌 Artistic',
+    'pattern':  '🔷 Geometric prints',
+    'animal':   '🐆 Animal prints',
+    'camo':     '🪖 Camouflage',
+    'texture':  '🌀 Textures',
+}
+
+PATTERNS = []          # list of {key, label, cat, fn}
+_PATTERN_BY_KEY = {}
+CATEGORIES = {}        # cat -> [keys]
+
+
+def _build_registry():
+    """Populate PATTERNS/_PATTERN_BY_KEY/CATEGORIES. Called at import end,
+    after the original generator functions exist."""
+    orig_fns = {
+        'solid':         lambda: solid_color_png(_rand_hex()),
+        'gradient':      lambda: gradient_png(
+            _rand_hex(), _rand_hex(),
+            direction=random.choice(['vertical', 'horizontal', 'diagonal'])),
+        'radial':        lambda: radial_burst_png(_rand_hex()),
+        'impressionist': lambda: impressionist_png(_rand_hex()),
+        'splatter':      lambda: splatter_png(_rand_hex()),
+        'watercolor':    lambda: watercolor_png(_rand_hex()),
+        'color_field':   lambda: color_field_png(_rand_hex()),
+        'geometric':     lambda: geometric_png(_rand_hex()),
+        'voronoi':       lambda: voronoi_png(_rand_hex()),
+    }
+    PATTERNS.clear()
+    for key, label, cat in _ORIG_META:
+        PATTERNS.append({'key': key, 'label': label, 'cat': cat, 'fn': orig_fns[key]})
+    for key, label, cat, fn in _bp.NEW_PATTERNS:
+        PATTERNS.append({'key': key, 'label': label, 'cat': cat, 'fn': fn})
+    _PATTERN_BY_KEY.clear()
+    CATEGORIES.clear()
+    for p in PATTERNS:
+        _PATTERN_BY_KEY[p['key']] = p
+        CATEGORIES.setdefault(p['cat'], []).append(p['key'])
+
+
+def _resolve_style(style_key):
+    """A style_key may be a specific pattern key, a category key, or
+    'all'/'mixed'. Returns a concrete PATTERN dict (random where applicable)."""
+    if style_key in ('all', 'mixed'):
+        return random.choice(PATTERNS)
+    if style_key in CATEGORIES:
+        return _PATTERN_BY_KEY[random.choice(CATEGORIES[style_key])]
+    return _PATTERN_BY_KEY.get(style_key) or random.choice(PATTERNS)
 
 
 def _parse_hex(h):
@@ -371,10 +449,13 @@ def _emit_kb(mode):
 
 
 def _mode_menu_kb():
-    rows = []
-    for key, label in MODES_ALL:
-        rows.append([InlineKeyboardButton(label,
-            callback_data=f"bg_gen:mode:{key}")])
+    rows = [[InlineKeyboardButton("🎲 Surprise print (46 styles)",
+                                  callback_data="bg_gen:one:all")]]
+    # Preview any category (camo, animal prints, geometric, textures, …).
+    for cat, lbl in CATEGORY_LABELS.items():
+        if len(CATEGORIES.get(cat, [])):
+            rows.append([InlineKeyboardButton(f"👀 {lbl}",
+                        callback_data=f"bg_gen:one:{cat}")])
     rows.append([InlineKeyboardButton(
         "📦 Batch — generate N + save to Drive",
         callback_data="bg_gen:batch:menu")])
@@ -386,22 +467,32 @@ def _mode_menu_kb():
 # generated PNGs into a fresh `bg_batch_<style>_<ts>/` subfolder under the
 # OUTPUT_ROOT used by artistic_bg, then DM back the Drive folder link.
 
-BATCH_MAX = 50
-BATCH_COUNTS = [1, 3, 5, 10, 20]
+BATCH_MAX = 100
+BATCH_COUNTS = [5, 10, 20, 30, 50]
+
+
+def _style_pretty(style_key):
+    if style_key in ('all', 'mixed'):
+        return '🎲 Everything (max variety)'
+    if style_key in CATEGORY_LABELS:
+        return CATEGORY_LABELS[style_key]
+    p = _PATTERN_BY_KEY.get(style_key)
+    return p['label'] if p else style_key
 
 
 def _batch_style_kb():
-    rows = []
-    for key, label in MODES_ALL:
-        rows.append([InlineKeyboardButton(label,
-            callback_data=f"bg_gen:batch:style:{key}")])
-    rows.append([InlineKeyboardButton(
-        "🎲 Mixed (random style per image)",
-        callback_data="bg_gen:batch:style:mixed")])
-    rows.append([InlineKeyboardButton("⬅ Back",
-                                       callback_data="bg_gen:menu"),
+    """Category-based picker — 'Everything' draws from all ~46 styles, each
+    category button draws only from that category (random per image)."""
+    rows = [[InlineKeyboardButton("🎲 Everything (max variety)",
+                                  callback_data="bg_gen:batch:style:all")]]
+    for cat, lbl in CATEGORY_LABELS.items():
+        n = len(CATEGORIES.get(cat, []))
+        if n:
+            rows.append([InlineKeyboardButton(f"{lbl} ({n})",
+                        callback_data=f"bg_gen:batch:style:{cat}")])
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="bg_gen:menu"),
                  InlineKeyboardButton("✖ Cancel",
-                                       callback_data="bg_gen:batch:cancel")])
+                                      callback_data="bg_gen:batch:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -411,6 +502,8 @@ def _batch_count_kb(style_key):
            for n in BATCH_COUNTS]
     return InlineKeyboardMarkup([
         row,
+        [InlineKeyboardButton("✏️ Custom number",
+                              callback_data=f"bg_gen:batch:custom:{style_key}")],
         [InlineKeyboardButton("⬅ Back to style picker",
                               callback_data="bg_gen:batch:menu")],
         [InlineKeyboardButton("✖ Cancel",
@@ -418,35 +511,14 @@ def _batch_count_kb(style_key):
     ])
 
 
-def _generate_one_png(mode):
-    """Render a single PNG (bytes) in the given mode using a random palette
-    color. Returns (png_bytes, filename).
-    """
-    _label, hex_color = random.choice(PROFILE_COLOR_PALETTE)
-    if mode == 'gradient':
-        choices = [h for l, h in PROFILE_COLOR_PALETTE if h != hex_color]
-        hex_color_b = random.choice(choices) if choices else hex_color
-        direction = random.choice(['vertical', 'horizontal', 'diagonal'])
-        png, _ = gradient_png(hex_color, hex_color_b, direction=direction)
-    elif mode == 'radial':
-        png, _ = radial_burst_png(hex_color)
-    elif mode == 'impressionist':
-        png, _ = impressionist_png(hex_color)
-    elif mode == 'splatter':
-        png, _ = splatter_png(hex_color)
-    elif mode == 'watercolor':
-        png, _ = watercolor_png(hex_color)
-    elif mode == 'geometric':
-        png, _ = geometric_png(hex_color)
-    elif mode == 'voronoi':
-        png, _ = voronoi_png(hex_color)
-    elif mode == 'color_field':
-        png, _ = color_field_png(hex_color)
-    else:  # solid (default fallback)
-        png, _ = solid_color_png(hex_color)
+def _generate_one_png(style_key):
+    """Render one PNG for a style_key (specific pattern, a category, or
+    'all'/'mixed' → random). Returns (png_bytes, filename)."""
+    pat = _resolve_style(style_key)
+    png, info = pat['fn']()
+    safe = str(info).replace('#', '').replace(' ', '').replace('/', '')[:20]
     suffix = random.randint(1000, 9999)
-    fname = f'bg_{mode}_{hex_color.lstrip("#")}_{suffix}.png'
-    return png, fname
+    return png, f"bg_{pat['key']}_{safe}_{suffix}.png"
 
 
 def generate_bg_batch(style_key, count, send_progress=None):
@@ -472,13 +544,12 @@ def generate_bg_batch(style_key, count, send_progress=None):
     emit(f"📁 batch folder: `{_ag.OUTPUT_ROOT_NAME}/{batch_name}`")
     emit(f"🔗 {batch_url}")
 
-    valid_modes = [k for k, _ in MODES_ALL]
     successes, errors = [], []
     for i in range(1, count + 1):
-        mode = (random.choice(valid_modes)
-                if style_key == 'mixed' else style_key)
+        # _generate_one_png resolves 'all'/category/specific per call, so a
+        # mixed or category batch naturally varies image-to-image.
         try:
-            png, fname = _generate_one_png(mode)
+            png, fname = _generate_one_png(style_key)
             drive_id = _ag._upload_bytes_to_drive(
                 svc, batch_id, fname, png, mime='image/png')
             successes.append((drive_id, fname))
@@ -586,20 +657,13 @@ async def bg_generator_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await _emit(update.message, mode=arg)
         return
     body = ("🎨 <b>Background generator</b>\n\n"
-            "Pick a style — each generation is jittered ±12 RGB so two "
-            "pulls of the same palette are never pixel-identical.\n\n"
-            "<b>Flat / simple</b>\n"
-            "🟦 Solid — single color\n"
-            "🌈 Gradient — two-color fade\n"
-            "✨ Radial — bright center → dark edges\n\n"
-            "<b>Artistic abstractions</b>\n"
-            "🌻 Impressionist — Monet brush strokes\n"
-            "🎨 Splatter — Pollock drip + dots\n"
-            "💧 Watercolor — soft translucent bleeds\n"
-            "🟥 Geometric — Mondrian-style blocks\n"
-            "🔷 Voronoi — organic cell mosaic\n"
-            "🟫 Color field — Rothko-style bands\n\n"
-            "<i>Or run </i><code>/bg_generator &lt;mode&gt;</code><i> directly.</i>")
+            f"<b>{len(PATTERNS)} styles</b> across colors, artistic abstracts, "
+            "geometric prints, <b>animal prints</b> (leopard/zebra/tiger/…), "
+            "<b>camouflage</b>, and textures (marble/tie-dye/bokeh).\n\n"
+            "• <b>👀 Preview</b> a category or hit <b>🎲 Surprise</b>.\n"
+            "• <b>📦 Batch</b> → pick <i>Everything</i> or one category, choose "
+            "a count (or type a custom number), and they're saved to Drive.\n\n"
+            "Every image is jittered so no two are pixel-identical.")
     await update.message.reply_text(body, parse_mode='HTML',
                                      reply_markup=_mode_menu_kb())
 
@@ -632,15 +696,25 @@ async def bg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith('bg_gen:batch:style:'):
         style_key = data.split(':', 3)[3]
-        valid = {k for k, _ in MODES_ALL} | {'mixed'}
+        valid = set(CATEGORIES) | {'all', 'mixed'} | set(_PATTERN_BY_KEY)
         if style_key not in valid:
             await query.edit_message_text("⚠️ stale selection — run /bg_generator again.")
             return
         await query.message.reply_text(
-            f"<b>Style:</b> <code>{style_key}</code>\n\n"
+            f"<b>Style:</b> {_style_pretty(style_key)}\n\n"
             f"How many backgrounds? (each ~1–2s, hard cap {BATCH_MAX})",
             parse_mode='HTML',
             reply_markup=_batch_count_kb(style_key))
+        return
+
+    if data.startswith('bg_gen:batch:custom:'):
+        style_key = data.split(':', 3)[3]
+        context.user_data['expecting_bg_batch_count'] = True
+        context.user_data['bg_batch_style'] = style_key
+        await query.message.reply_text(
+            f"✏️ <b>Custom count</b> — reply with a number "
+            f"(1–{BATCH_MAX}) for <b>{_style_pretty(style_key)}</b>.",
+            parse_mode='HTML')
         return
 
     if data.startswith('bg_gen:batch:n:'):
@@ -657,6 +731,23 @@ async def bg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"⚠️ count must be 1–{BATCH_MAX}.")
             return
         await _kickoff_bg_batch(query.message, context, style_key, count)
+        return
+
+    if data.startswith('bg_gen:one:'):
+        # Preview a single image from any style / category / 'all'.
+        import asyncio as _a
+        style_key = data.split(':', 2)[2]
+        png, fname = await _a.to_thread(_generate_one_png, style_key)
+        bio = io.BytesIO(png); bio.name = fname
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎲 Another", callback_data=f"bg_gen:one:{style_key}")],
+            [InlineKeyboardButton("📦 Batch these → Drive",
+                                  callback_data="bg_gen:batch:menu")],
+            [InlineKeyboardButton("⬅ Menu", callback_data="bg_gen:menu")],
+        ])
+        await query.message.reply_photo(
+            photo=bio, caption=f"🖼 <b>{_style_pretty(style_key)}</b>\n<code>{fname}</code>",
+            parse_mode='HTML', reply_markup=kb)
         return
 
     if data.startswith('bg_gen:mode:'):
@@ -724,7 +815,7 @@ async def _kickoff_bg_batch(target_msg, context, style_key, count):
     DM the Drive folder link when finished."""
     import asyncio
     chat_id = target_msg.chat_id
-    pretty = (style_key if style_key != 'mixed' else 'Mixed (random per image)')
+    pretty = _style_pretty(style_key)
     await target_msg.reply_text(
         f"📦 <b>Batch started</b>\n\n"
         f"Style: <code>{pretty}</code>\n"
@@ -767,3 +858,25 @@ async def _kickoff_bg_batch(target_msg, context, style_key, count):
     await context.bot.send_message(chat_id=chat_id, text=summary,
                                     parse_mode='Markdown',
                                     disable_web_page_preview=False)
+
+
+async def bg_batch_count_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle a typed custom batch count (routed here when
+    user_data['expecting_bg_batch_count'] is set)."""
+    context.user_data.pop('expecting_bg_batch_count', None)
+    style_key = context.user_data.pop('bg_batch_style', 'all')
+    txt = (update.message.text or '').strip()
+    try:
+        count = int(''.join(ch for ch in txt if ch.isdigit()))
+    except ValueError:
+        await update.message.reply_text(
+            f"⚠️ '{txt}' isn't a number. Run /bg_generator again.")
+        return
+    if count < 1 or count > BATCH_MAX:
+        await update.message.reply_text(f"⚠️ pick a number 1–{BATCH_MAX}.")
+        return
+    await _kickoff_bg_batch(update.message, context, style_key, count)
+
+
+# Build the unified registry now that every generator function is defined.
+_build_registry()

@@ -140,6 +140,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("expecting_sms_phone"):
         await sms_verified.sms_text_received(update, context)
         return
+    if context.user_data.get('expecting_bg_batch_count'):
+        await bg.bg_batch_count_text_received(update, context)
+        return
     if context.user_data.get('expecting_geelark_name'):
         await geelark_open.geelark_text_received(update, context)
         return
