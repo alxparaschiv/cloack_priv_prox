@@ -33,17 +33,20 @@ import bg_patterns as _bp   # 37 print/pattern generators (camo, animal, plaid, 
 logger = logging.getLogger(__name__)
 
 
+# DARK / goth-themed palette — full spectrum but every tone is deep & muted
+# (no bright/neon), plus black + charcoal + grey. The accounts are dark-themed,
+# so a bright yellow/pink background would be off-brand.
 PROFILE_COLOR_PALETTE = [
-    ('🩷 Pink',      '#ff5fa2'),
-    ('💜 Purple',    '#9b59b6'),
-    ('💙 Blue',      '#3498db'),
-    ('💚 Green',     '#2ecc71'),
-    ('🧡 Orange',    '#ff8c42'),
-    ('❤️ Red',        '#e74c3c'),
-    ('🤎 Brown',     '#8b5a2b'),
-    ('⚫️ Charcoal',  '#2c3e50'),
-    ('⚪️ White',     '#f5f5f5'),
-    ('🩶 Gray',      '#808080'),
+    ('🩸 Dark red',    '#7a1f2b'),
+    ('💜 Dark purple', '#4a2d6b'),
+    ('🔵 Dark blue',   '#1f3a5f'),
+    ('🟢 Dark green',  '#1e4d33'),
+    ('🟠 Dark rust',   '#7a3b1a'),
+    ('🟡 Dark gold',   '#7a6212'),
+    ('🤎 Brown',       '#4a3320'),
+    ('⚫️ Charcoal',    '#22262b'),
+    ('🩶 Gray',        '#4a4a4a'),
+    ('⚫ Black',       '#141414'),
 ]
 
 
@@ -263,10 +266,9 @@ def splatter_png(hex_dominant, size=1080):
     """Pollock-inspired splatter: random circles in 4-6 palette colors +
     thin drip lines. Slight blur to soften the harshest edges."""
     bg = _jitter(_parse_hex(hex_dominant), 12)
-    # Off-white-ish backgrounds look most Pollock-y, but allow dominant
-    # to win sometimes
-    if random.random() < 0.55:
-        bg = _jitter((random.randint(225, 250),) * 3, 8)
+    # Dark canvas (charcoal/black) to stay on-brand — colored drips pop on it.
+    if random.random() < 0.6:
+        bg = _jitter((random.randint(16, 34),) * 3, 6)
     img = Image.new('RGB', (size, size), bg)
     draw = ImageDraw.Draw(img, 'RGBA')
     n_hues = random.randint(4, 6)
@@ -308,8 +310,8 @@ def watercolor_png(hex_dominant, size=1080):
     """Soft translucent blobs in 3-6 palette colors + heavy Gaussian blur
     so colors bleed into each other watercolor-style."""
     bg_base = _parse_hex(hex_dominant)
-    # Lighten background — watercolor is on cream paper
-    bg = tuple(min(255, c + random.randint(40, 90)) for c in bg_base)
+    # Keep the canvas DARK (deep, slightly varied) — no cream paper.
+    bg = tuple(max(0, min(70, c + random.randint(-8, 14))) for c in bg_base)
     img = Image.new('RGB', (size, size), bg)
     draw = ImageDraw.Draw(img, 'RGBA')
     n_hues = random.randint(3, 6)
@@ -333,8 +335,8 @@ def watercolor_png(hex_dominant, size=1080):
 
 def geometric_png(hex_dominant, size=1080):
     """Mondrian-style geometric: divide canvas with thick black lines,
-    fill some rectangles with primary colors + leave others off-white."""
-    img = Image.new('RGB', (size, size), _jitter((245, 245, 235), 8))
+    fill some rectangles with dark primaries + leave others dark charcoal."""
+    img = Image.new('RGB', (size, size), _jitter((26, 26, 28), 6))
     draw = ImageDraw.Draw(img)
     # Choose 2-4 vertical + 2-4 horizontal split lines
     n_v = random.randint(2, 4)
@@ -345,9 +347,10 @@ def geometric_png(hex_dominant, size=1080):
                        for _ in range(n_h)])
     v_lines = [0] + v_lines + [size]
     h_lines = [0] + h_lines + [size]
-    # Mondrian-ish primary palette + dominant
-    primaries = ['#e63946', '#ffd60a', '#1d3557', '#f5f5f5', hex_dominant,
-                  '#000000']
+    # Mondrian-ish palette — darkened primaries (deep red/gold/blue + charcoal)
+    # so it stays on-brand for dark-themed accounts (no bright yellow/white).
+    primaries = ['#7a1f2b', '#7a6212', '#1f3a5f', '#3a3a3a', hex_dominant,
+                  '#141414', '#22262b']
     rect_count = 0
     for i in range(len(v_lines) - 1):
         for j in range(len(h_lines) - 1):
@@ -358,17 +361,15 @@ def geometric_png(hex_dominant, size=1080):
                 fill = _jitter(_parse_hex(random.choice(primaries)), 15)
                 draw.rectangle([x0, y0, x1, y1], fill=fill)
                 rect_count += 1
-    # Thick black grid lines
+    # Thick grid lines — soft grey so the grid reads on the dark cells.
+    grid = (150, 150, 156)
     line_w = random.randint(14, 26)
     for v in v_lines[1:-1]:
-        draw.rectangle([v - line_w // 2, 0, v + line_w // 2, size],
-                        fill=(0, 0, 0))
+        draw.rectangle([v - line_w // 2, 0, v + line_w // 2, size], fill=grid)
     for h in h_lines[1:-1]:
-        draw.rectangle([0, h - line_w // 2, size, h + line_w // 2],
-                        fill=(0, 0, 0))
+        draw.rectangle([0, h - line_w // 2, size, h + line_w // 2], fill=grid)
     # Outer border
-    draw.rectangle([0, 0, size - 1, size - 1], outline=(0, 0, 0),
-                    width=line_w)
+    draw.rectangle([0, 0, size - 1, size - 1], outline=grid, width=line_w)
     buf = io.BytesIO()
     img.save(buf, format='PNG', optimize=True)
     return buf.getvalue(), f'mondrian-{rect_count}'

@@ -56,15 +56,26 @@ def _vgrad(top, bottom, size=SIZE):
     return col.resize((size, size))
 
 
-# Curated color pools.
-BRIGHTS = ['#ff5fa2', '#9b59b6', '#3498db', '#2ecc71', '#ff8c42', '#e74c3c',
-           '#f1c40f', '#1abc9c', '#e84393', '#00cec9', '#6c5ce7', '#fd79a8',
-           '#00b894', '#fdcb6e', '#0984e3', '#d63031', '#e17055', '#a29bfe']
-PASTELS = ['#ffd1dc', '#c1e1c1', '#bde0fe', '#fff1a8', '#e2c2ff', '#ffdac1',
-           '#b5ead7', '#c7ceea', '#ffb7b2', '#f1c0e8']
-DARKS = ['#2c3e50', '#1b2a4a', '#22160f', '#111111', '#2d3436', '#3b0d0d',
-         '#0f2417', '#241a2e']
-EARTH = ['#8b5a2b', '#a0885a', '#c2b280', '#6b4f2a', '#d9a441', '#e0cfa0']
+# Curated color pools — DARK / MOODY ONLY. The accounts are goth / dark-themed,
+# so no bright or pastel backgrounds. The full spectrum is kept (dark red,
+# dark green, dark blue, dark gold, …) but every tone is deep and muted, plus
+# lots of black / charcoal / grey.
+BRIGHTS = [  # the "colorful" pool — deep jewel tones (darkened)
+    '#7a1f2b', '#5a2d82', '#1f3a5f', '#1e5631', '#8a5a12', '#7a2f1a',
+    '#6e6212', '#146b5f', '#7a1f5a', '#0f5a52', '#3a2f7a', '#8a2f5a',
+    '#2f6b4a', '#123f6b', '#6b1f1f', '#4a3f7a', '#5a2f1a', '#2f5a6b']
+PASTELS = [  # muted dusty mid-dark (used where a softer tone is needed)
+    '#4a3a4a', '#3a4a3a', '#2f3f4f', '#4a463a', '#3f2f3f', '#4a3a2f',
+    '#2f4a4a', '#3a3a4a', '#463a4a', '#3a4642']
+DARKS = [  # black / charcoal / navy / graphite greys
+    '#111111', '#1a1a1a', '#222222', '#2a2a2a', '#333333', '#3a3a3a',
+    '#4a4a4a', '#0f1420', '#1b2a4a', '#22160f', '#0f2417', '#241a2e',
+    '#2d3436', '#2c3e50']
+EARTH = ['#5a4326', '#6b4f2a', '#3a2a15', '#4a3a22', '#7a6a3a', '#3f3320']
+# Medium desaturated accents — visible on dark bases but NOT bright/colorful.
+# Used only where a pattern needs internal contrast (confetti/terrazzo chips).
+MUTED = ['#8a6a5a', '#6a7a6a', '#5a6a7a', '#8a7a5a', '#7a5a6a', '#6a6a5a',
+         '#9a8a7a', '#7a7a8a', '#8a7a4a', '#6a5a6a']
 
 
 def _rc(pool):
@@ -73,11 +84,11 @@ def _rc(pool):
 
 # ─── CAMO ───────────────────────────────────────────────────────────────────
 _CAMO_WAYS = {
-    'woodland': ['#4b5320', '#78866b', '#3b3b2f', '#2f3b1f', '#1e2414'],
-    'desert':   ['#c2b280', '#a0885a', '#e0cfa0', '#7a6a3a', '#8b7d55'],
-    'urban':    ['#9a9a9a', '#4a4a4a', '#c8c8c8', '#2a2a2a', '#6f6f6f'],
-    'navy':     ['#1b2a4a', '#34558b', '#8aa0c0', '#0f1a30', '#22406e'],
-    'pink':     ['#ff9ecb', '#d94f8a', '#ffd1e6', '#a83a68', '#ffb3d9'],
+    'woodland': ['#2f3618', '#3f4a2f', '#26261c', '#1c2410', '#12160c'],
+    'desert':   ['#3a3320', '#4a4230', '#2a2416', '#2f2a1c', '#1e1a10'],
+    'urban':    ['#2a2a2a', '#3f3f3f', '#4d4d4d', '#1a1a1a', '#5a5a5a'],
+    'navy':     ['#12203a', '#22406e', '#0f1a30', '#1b2a4a', '#2a3f5f'],
+    'mauve':    ['#3a2430', '#4a2f3f', '#2a1a24', '#1e1218', '#3f2434'],
 }
 
 
@@ -100,10 +111,10 @@ def _camo(way):
 
 # ─── ANIMAL PRINTS ────────────────────────────────────────────────────────
 def _leopard():
-    base = _jit(_parse_hex('#d9a441'), 8)
+    base = _jit(_parse_hex('#4a3820'), 8)
     img = Image.new('RGB', (SIZE, SIZE), base)
     d = ImageDraw.Draw(img)
-    mid, dark = (170, 110, 45), (38, 26, 14)
+    mid, dark = (108, 78, 34), (22, 15, 8)
     step = 108
     for gy in range(-1, SIZE // step + 2):
         for gx in range(-1, SIZE // step + 2):
@@ -122,9 +133,9 @@ def _leopard():
 
 
 def _cheetah():
-    img = Image.new('RGB', (SIZE, SIZE), _jit(_parse_hex('#e3b866'), 8))
+    img = Image.new('RGB', (SIZE, SIZE), _jit(_parse_hex('#43331d'), 8))
     d = ImageDraw.Draw(img)
-    dark = (35, 24, 12)
+    dark = (20, 14, 7)
     for _ in range(320):
         x, y = random.randint(0, SIZE), random.randint(0, SIZE)
         r = random.randint(8, 20)
@@ -152,12 +163,12 @@ def _wavy_stripes(base, stripe, thin=False, orange=False):
 
 
 def _zebra():
-    img = _wavy_stripes((245, 245, 245), (22, 22, 22))
+    img = _wavy_stripes((60, 60, 62), (16, 16, 16))
     return _save(img), 'zebra'
 
 
 def _tiger():
-    img = _wavy_stripes(_jit(_parse_hex('#e8862b'), 6), (20, 14, 8), thin=True)
+    img = _wavy_stripes(_jit(_parse_hex('#6e3410'), 6), (16, 11, 6), thin=True)
     return _save(img), 'tiger'
 
 
@@ -175,24 +186,24 @@ def _blobs(base, blob, n=(6, 10)):
 
 
 def _cow():
-    img = _blobs((246, 246, 246), (24, 24, 24))
+    img = _blobs((54, 54, 56), (16, 16, 16))
     return _save(img), 'cow'
 
 
 def _dalmatian():
-    img = Image.new('RGB', (SIZE, SIZE), (247, 247, 247))
+    img = Image.new('RGB', (SIZE, SIZE), (58, 58, 60))
     d = ImageDraw.Draw(img)
     for _ in range(180):
         x, y = random.randint(0, SIZE), random.randint(0, SIZE)
         r = random.randint(6, 18)
-        d.ellipse([x - r, y - r, x + r, y + r], fill=(20, 20, 20))
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(14, 14, 14))
     return _save(img), 'dalmatian'
 
 
 def _snake():
-    img = Image.new('RGB', (SIZE, SIZE), _parse_hex('#c9b98f'))
+    img = Image.new('RGB', (SIZE, SIZE), _parse_hex('#3e3524'))
     d = ImageDraw.Draw(img)
-    tones = ['#6b4f2a', '#3a2a15', '#d9c9a0', '#8b7346', '#22160f']
+    tones = ['#2a1f10', '#1a1208', '#4a3f28', '#3a2f1a', '#0f0a05']
     s = 46
     for row, y in enumerate(range(-s, SIZE + s, s)):
         for col, x in enumerate(range(-s, SIZE + s, s)):
@@ -204,9 +215,9 @@ def _snake():
 
 
 def _giraffe():
-    img = Image.new('RGB', (SIZE, SIZE), _parse_hex('#e7d7a8'))
+    img = Image.new('RGB', (SIZE, SIZE), _parse_hex('#5a4a2e'))
     d = ImageDraw.Draw(img)
-    patch = _parse_hex('#9c6b2f')
+    patch = _parse_hex('#2f2213')
     step = 150
     for gy in range(-1, SIZE // step + 2):
         for gx in range(-1, SIZE // step + 2):
@@ -260,14 +271,13 @@ def _checkerboard():
 
 
 def _gingham():
-    base = random.choice(BRIGHTS)
-    img = Image.new('RGBA', (SIZE, SIZE), (255, 255, 255, 255))
+    col = _rc(MUTED)
+    img = Image.new('RGBA', (SIZE, SIZE), (26, 26, 28, 255))
     d = ImageDraw.Draw(img, 'RGBA')
-    col = _parse_hex(base)
     w = random.randint(48, 80)
     for p in range(0, SIZE, w):
-        d.rectangle([p, 0, p + w // 2, SIZE], fill=(col[0], col[1], col[2], 110))
-        d.rectangle([0, p, SIZE, p + w // 2], fill=(col[0], col[1], col[2], 110))
+        d.rectangle([p, 0, p + w // 2, SIZE], fill=(col[0], col[1], col[2], 130))
+        d.rectangle([0, p, SIZE, p + w // 2], fill=(col[0], col[1], col[2], 130))
     return _save(img.convert('RGB')), 'gingham'
 
 
@@ -308,8 +318,8 @@ def _chevron():
 
 
 def _polka():
-    a = _rc(random.choice([BRIGHTS, DARKS, PASTELS]))
-    b = _rc(random.choice([PASTELS, BRIGHTS]))
+    a = _rc(random.choice([DARKS, BRIGHTS]))
+    b = _rc(MUTED)                     # muted dots keep contrast on the dark base
     img = Image.new('RGB', (SIZE, SIZE), tuple(a))
     d = ImageDraw.Draw(img)
     step = random.choice([90, 120, 150])
@@ -399,9 +409,9 @@ def _concentric():
 
 
 def _terrazzo():
-    img = Image.new('RGB', (SIZE, SIZE), _jit(_parse_hex('#efe9e0'), 6))
+    img = Image.new('RGB', (SIZE, SIZE), _jit(_parse_hex('#26262a'), 6))
     d = ImageDraw.Draw(img)
-    pool = BRIGHTS + DARKS + EARTH
+    pool = BRIGHTS + EARTH + MUTED + MUTED   # muted chips so they read on dark
     for _ in range(420):
         x, y = random.randint(0, SIZE), random.randint(0, SIZE)
         r = random.randint(6, 20)
@@ -417,11 +427,11 @@ def _terrazzo():
 
 
 def _confetti():
-    img = Image.new('RGB', (SIZE, SIZE), tuple(_rc(DARKS)))
+    img = Image.new('RGB', (SIZE, SIZE), tuple(_rc(['#141414', '#1a1a1a', '#0f1420'])))
     d = ImageDraw.Draw(img)
     for _ in range(260):
         x, y = random.randint(0, SIZE), random.randint(0, SIZE)
-        c = tuple(_rc(BRIGHTS))
+        c = tuple(_rc(BRIGHTS + MUTED))
         s = random.randint(8, 22)
         shape = random.random()
         if shape < 0.4:
@@ -479,8 +489,9 @@ def _marble():
     n = Image.new('L', (S, S))
     n.putdata([random.randint(0, 255) for _ in range(S * S)])
     n = n.filter(ImageFilter.GaussianBlur(5))
-    c1 = _parse_hex(random.choice(['#f5f5f5', '#eae0d5', '#dfe6e9', '#e8e0e8']))
-    c2 = _parse_hex(random.choice(['#2d3436', '#34558b', '#6c5ce7', '#3a2a15']))
+    # lighter vein tone vs near-black base → visible dark-marble veining
+    c1 = _parse_hex(random.choice(['#5a5a66', '#544a40', '#465565', '#4e4656']))
+    c2 = _parse_hex(random.choice(['#0e0e12', '#12203a', '#241a2e', '#141018']))
     out = Image.new('RGB', (S, S))
     op = out.load()
     npx = n.load()
@@ -565,7 +576,7 @@ NEW_PATTERNS = [
     ('camo_desert',   '🏜 Camo — desert',   'camo', lambda: _camo('desert')),
     ('camo_urban',    '🏙 Camo — urban',    'camo', lambda: _camo('urban')),
     ('camo_navy',     '🌊 Camo — navy',     'camo', lambda: _camo('navy')),
-    ('camo_pink',     '🩷 Camo — pink',     'camo', lambda: _camo('pink')),
+    ('camo_mauve',    '🖤 Camo — dark mauve', 'camo', lambda: _camo('mauve')),
     # animal
     ('leopard',   '🐆 Leopard',   'animal', _leopard),
     ('cheetah',   '🐆 Cheetah',   'animal', _cheetah),
