@@ -50,6 +50,7 @@ import geelark_open
 import ig_setup
 import drive_image_picker
 import rental
+import account_pack
 import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
@@ -207,7 +208,8 @@ COMMANDS_TEXT = (
     "/geelark_stop_phone — Batch-stop GeeLark phones once setup is done\n\n"
 
     "🔐 <b>Verification &amp; SMS</b>\n"
-    "/password — Strong passwords for new accounts ([count] [length], e.g. /password 8 20)\n"
+    "/account_pack — Full account package (name + birthdate + password + FB number), single or batch\n"
+    "/password — Strong AI passwords for new accounts ([count], e.g. /password 10)\n"
     "/rambler — Latest FB/IG code from a Rambler inbox\n"
     "/rambler_microsoft — Latest Microsoft code from a Rambler inbox\n"
     "/sms — Latest SMS code from a TextVerified rental\n"
@@ -270,7 +272,8 @@ async def post_init(application):
         BotCommand("geelark_stop_phone",      "📱 Batch-stop GeeLark phones"),
 
         # 🔐 Verification & SMS
-        BotCommand("password",           "🔑 Strong passwords for new accounts (batch)"),
+        BotCommand("account_pack",       "🧩 Full account package (name+dob+pass+FB number)"),
+        BotCommand("password",           "🔑 Strong AI passwords for new accounts (batch)"),
         BotCommand("rambler",            "🔐 Latest FB/IG code from a Rambler inbox"),
         BotCommand("rambler_microsoft",  "🔐 Latest Microsoft code from a Rambler inbox"),
         BotCommand("sms",                "🔐 Latest SMS code from a TextVerified rental"),
@@ -323,6 +326,7 @@ async def post_init(application):
         ("🪟 /rambler_microsoft", []),  # zero env deps — user provides creds per-call
         ("🔑 /password",    []),  # zero env deps — local CSPRNG generator
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
+        ("🧩 /account_pack", ["TEXTVERIFIED_API_KEY", "OPENAI_API_KEY"]),
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
         ("📷 /geelark_profile_ig_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
@@ -425,6 +429,7 @@ def main():
     application.add_handler(CommandHandler("ig_setup_private", ig_setup.ig_setup_command))
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
+    application.add_handler(CommandHandler("account_pack", account_pack.account_pack_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("portrait_gen", portrait_gen.portrait_gen_command))
@@ -463,6 +468,8 @@ def main():
         bio_gen_v2.bio_gen_v2_callback, pattern=r'^biogen2:'))
     application.add_handler(CallbackQueryHandler(
         bikini_gen.bikini_callback, pattern=r'^bikini:'))
+    application.add_handler(CallbackQueryHandler(
+        account_pack.account_pack_callback, pattern=r'^acctpack:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(
