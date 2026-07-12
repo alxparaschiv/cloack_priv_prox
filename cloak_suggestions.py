@@ -177,6 +177,7 @@ RULES:
 - Confident, warm, a little teasing — never desperate or over-attached.
 - AVOID: "ethereal", "vibes", "aesthetic", "moonlit", "soft mornings", Pinterest-poetry, and all the clingy phrases listed above.
 - Every line should work as a caption on a public account with thousands of followers.
+- FRESHNESS IS CRITICAL: the reference examples above are TONE GUIDES ONLY — never copy their wording verbatim (do NOT output "your favorite goth gf" or any example line as-is). Invent completely original lines every single time; assume the user has seen your previous sets, so nothing should repeat run-to-run. Reach for unexpected words, imagery and angles.
 
 Output strictly: {"bios": ["...", "...", ...]}  (JSON, {N} items, with the length/structure mix above)"""
 
@@ -327,11 +328,12 @@ def suggest_bios_v2(niche, handle, n=8, force_refresh=False):
         cached = _cache_get(key)
         if cached:
             return cached
-    user = (f"Niche: {niche}\nHandle: {handle}\n\n"
-            f"Generate {n} intimate girlfriend-brand bio taglines for THIS "
-            f"handle in THIS niche. Match the reference tone — warm, flirty, "
-            f"'your #1 favorite {niche} girlfriend', a little cheesy but "
-            f"bonding, always tied to the niche's fantasy.")
+    user = (f"Niche: {niche}\n\n"
+            f"Generate {n} fresh, ORIGINAL girlfriend-brand bio taglines for the "
+            f"{niche} niche — warm, flirty, playful and confident (not clingy). "
+            f"Mix the lengths and structures as instructed. Make every line "
+            f"distinct and unexpected; do not reuse example wording. Return a "
+            f"completely new set each time.")
     out = _call_openai_json(_SYS_BIO_V2, user, n)
     if not out:
         out = _local_fallback_bios(niche, n)

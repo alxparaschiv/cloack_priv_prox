@@ -1,6 +1,6 @@
 """/bio_gen_v2 — intimate "girlfriend-brand" bio generator.
 
-One-step flow: /bio_gen_v2 → pick a niche → 20 bios + refresh. Bios are tied
+One-step flow: /bio_gen_v2 → pick a niche → 10 fresh bios + refresh. Bios are tied
 to the NICHE only (not to any specific model), so there is no model-picker
 step — warm, flirty, parasocial "your #1 favorite <niche> girlfriend" bonding
 bios instead of the toxic/accidentally-funny style of /bio_gen.
@@ -42,7 +42,7 @@ def _niche_kb():
 
 def _result_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh (20 new)", callback_data="biogen2:refresh")],
+        [InlineKeyboardButton("🔄 Refresh (10 new)", callback_data="biogen2:refresh")],
         [InlineKeyboardButton("⬅ Back to niches", callback_data="biogen2:back_nch")],
         [InlineKeyboardButton("✖ Cancel", callback_data="biogen2:cancel")],
     ])
@@ -66,14 +66,17 @@ def _render_bios_block(niche, bios):
     return '\n'.join(lines)
 
 
-N_BIOS = 20
+N_BIOS = 10
 
 
-async def _fetch_bios(niche, force_refresh=False):
+async def _fetch_bios(niche, force_refresh=True):
+    # ALWAYS force_refresh=True → bypass the cache so every generation calls the
+    # LLM fresh and returns a brand-new, non-repeating set (the user never wants
+    # the same "your favorite goth gf" line twice).
     try:
         return await asyncio.to_thread(
             cloak_suggestions.suggest_bios_v2,
-            niche, _HANDLE, N_BIOS, force_refresh)
+            niche, _HANDLE, N_BIOS, True)
     except Exception as e:
         logger.warning(f"[biogen2] suggest_bios_v2 failed: {e}")
         return []
@@ -85,7 +88,7 @@ async def bio_gen_v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "💞 <b>Bio generator V2 — girlfriend-brand</b> (gpt-4o-mini)\n\n"
         "Warm, flirty, playful girlfriend-energy bios — confident (not clingy), "
         "with mixed lengths from ultra-short to scenario lines.\n\n"
-        "<b>Pick a niche</b> → you'll get 20 mixed-length bios you can refresh.",
+        "<b>Pick a niche</b> → you'll get 10 mixed-length bios you can refresh.",
         parse_mode='HTML',
         reply_markup=_niche_kb())
 
@@ -121,7 +124,7 @@ async def bio_gen_v2_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         wiz = {'state': 'show_bios', 'niche': niche}
         context.user_data['biogen2'] = wiz
         await q.edit_message_text(
-            f"💞 generating 20 girlfriend-brand bios for "
+            f"💞 generating 10 fresh girlfriend-brand bios for "
             f"<b>{_h.escape(niche)}</b>…",
             parse_mode='HTML')
         bios = await _fetch_bios(niche)
@@ -137,7 +140,7 @@ async def bio_gen_v2_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await q.edit_message_text("⚠️ session expired — run /bio_gen_v2 again.")
             return
         await q.edit_message_text(
-            f"🔄 refreshing 20 bios for <b>{_h.escape(niche)}</b>…",
+            f"🔄 refreshing 10 bios for <b>{_h.escape(niche)}</b>…",
             parse_mode='HTML')
         bios = await _fetch_bios(niche, force_refresh=True)
         wiz['bios'] = bios
