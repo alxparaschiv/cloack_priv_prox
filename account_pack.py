@@ -42,7 +42,8 @@ Rules:
 - Realistic and common-but-not-famous; first + last should plausibly go together for that heritage.
 - Plain ASCII Latin letters only (no accents/diacritics that break signup forms), normal capitalization.
 
-Output strictly: {"names": [{"first": "...", "last": "...", "heritage": "..."}, ...]}  ({N} items)"""
+Output strictly as JSON with each entry as a single string "Firstname Lastname | Heritage":
+{"names": ["Firstname Lastname | Heritage", ...]}  ({N} items)"""
 
 # Local fallback: (first, last, heritage) across varied heritages.
 _FALLBACK_NAMES = [
@@ -71,17 +72,21 @@ def _gen_names(n):
         raw = []
     out = []
     for item in raw:
-        if isinstance(item, dict):
-            first = str(item.get('first', '')).strip()
-            last = str(item.get('last', '')).strip()
-            her = str(item.get('heritage', '')).strip() or '—'
-        elif isinstance(item, str) and item.strip():
-            parts = item.strip().split()
-            first, last, her = parts[0], ' '.join(parts[1:]) or '', '—'
-        else:
+        # _call_openai_json returns scalars, so each item is a string like
+        # "Firstname Lastname | Heritage".
+        s = str(item).strip()
+        if not s:
             continue
-        if first and last:
-            out.append((first, last, her))
+        if '|' in s:
+            name_part, her = s.split('|', 1)
+            her = her.strip() or '—'
+        else:
+            name_part, her = s, '—'
+        parts = name_part.strip().split()
+        if len(parts) < 2:
+            continue
+        first, last = parts[0], ' '.join(parts[1:])
+        out.append((first, last, her))
     # Top up / fall back locally if the LLM came up short.
     if len(out) < n:
         pool = list(_FALLBACK_NAMES)
@@ -156,9 +161,12 @@ def generate_packages(count, emit, post_one):
             pkg['phone_err'] = err or 'no number returned'
         else:
             digits = ''.join(c for c in phone if c.isdigit())
+            ten = digits[-10:] if len(digits) >= 10 else digits
             pkg['rental_id'] = rental_id
-            pkg['phone_e164'] = phone if phone.startswith('+') else f'+{phone}'
-            pkg['phone_10'] = digits[-10:] if len(digits) >= 10 else digits
+            pkg['phone_10'] = ten
+            # Proper US E.164: +1 + 10 digits (TextVerified returns a bare
+            # 10-digit US number, so we must add the +1 country code).
+            pkg['phone_e164'] = f'+1{ten}' if len(ten) == 10 else f'+{digits}'
             phone_ok += 1
         post_one(_format_package(i + 1, count, pkg))
 
