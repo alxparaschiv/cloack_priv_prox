@@ -338,6 +338,8 @@ async def post_init(application):
         ("🔑 /password",    []),  # zero env deps — local CSPRNG generator
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🧩 /account_pack", ["TEXTVERIFIED_API_KEY", "OPENAI_API_KEY"]),
+        ("🔑 /batch_sms",   ["TEXTVERIFIED_API_KEY"]),
+        ("📧 /batch_rambler", []),  # user provides creds per-call (IMAP)
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
                                 "GOOGLE_TOKEN_PICKLE"]),
         ("📷 /geelark_profile_ig_open", ["GOLOGIN_API_KEY", "GEELARK_API_KEY", "GEELARK_APP_ID"]),
