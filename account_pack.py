@@ -202,6 +202,11 @@ def _count_kb():
 
 
 async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balance, ramb = await asyncio.to_thread(
+        lambda: (rental._balance_str(), R.rambler_count()))
+    ramb_line = (f"📧 Rambler pool: <b>{ramb}</b> left"
+                 if ramb is not None else
+                 "📧 Rambler pool: <i>no rambler_pool.txt on Drive yet</i>")
     await update.message.reply_text(
         "🧩 <b>Account package generator</b>\n\n"
         "Each account = <b>FB META POSTER NNN</b> with a believable name + "
@@ -209,8 +214,8 @@ async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "(from your Drive pool), and a fresh <b>7-day Facebook number</b>.\n\n"
         "Everything is logged to a Drive Google Sheet + JSON, and you get a "
         ".txt per account (batch → .zip).\n\n"
-        f"💰 balance: <code>{html.escape(rental._balance_str())}</code> · each "
-        "account uses one paid rental.\n\nHow many accounts?",
+        f"💰 balance: <code>{html.escape(balance)}</code> · each account uses "
+        f"one paid rental.\n{ramb_line}\n\nHow many accounts?",
         parse_mode='HTML', reply_markup=_count_kb())
 
 
@@ -229,8 +234,8 @@ async def _run_batch(chat, context, count):
         return
     if not reserve['had_pool']:
         await chat.send_message(
-            "ℹ️ no <code>FB META POSTER · rambler pool.txt</code> found on Drive "
-            "yet — accounts will be created without Rambler emails. Add the file "
+            "ℹ️ no <code>rambler_pool.txt</code> found on Drive yet — accounts "
+            "will be created without Rambler emails. Add the file "
             "(one <code>email:password</code> per line) to include them.",
             parse_mode='HTML')
 
@@ -270,11 +275,17 @@ async def _run_batch(chat, context, count):
 
     sheet_line = (f"📊 <a href=\"{sheet_url}\">Google Sheet (all accounts)</a>"
                   if sheet_url else "📊 sheet link unavailable")
+    used = sum(1 for e, _p in reserve['ramblers'] if e)
+    if reserve['had_pool']:
+        ramb_line = (f"📧 Rambler pool: <b>{len(reserve['remaining_pool'])}</b> "
+                     f"left (used {used})")
+    else:
+        ramb_line = "📧 Rambler pool: <i>no rambler_pool.txt on Drive</i>"
     await context.bot.send_message(
         chat_id=chat.id,
         text=(f"🎉 <b>Done</b> — {len(records)} account(s), {phone_ok} with a "
               f"live FB number.\n{sheet_line}\n"
-              f"💰 balance: <code>{html.escape(balance)}</code>\n\n"
+              f"💰 balance: <code>{html.escape(balance)}</code>\n{ramb_line}\n\n"
               f"Tap below to grab the SMS codes for this whole batch."),
         parse_mode='HTML', disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(

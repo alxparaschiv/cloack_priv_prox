@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 NAME_PREFIX = 'FB META POSTER'
 JSON_NAME = 'FB META POSTER · accounts.json'
 SHEET_NAME = 'FB META POSTER · accounts'
-RAMBLER_POOL_NAME = 'FB META POSTER · rambler pool.txt'
+# User-created file. Keep the primary name simple/typeable; also accept a few
+# variants so it's found however they name it.
+RAMBLER_POOL_NAME = 'rambler_pool.txt'
+RAMBLER_POOL_ALIASES = ['rambler_pool.txt', 'rambler pool.txt',
+                        'FB META POSTER · rambler pool.txt',
+                        'FB META POSTER rambler pool.txt']
 
 SHEET_HEADER = ['Account', 'First Name', 'Last Name', 'Gender', 'Heritage',
                 'Birthdate', 'Age', 'Password', 'Rambler Email',
@@ -104,8 +109,13 @@ def _save_store(drive, store, fid):
 # ─── Rambler pool ───────────────────────────────────────────────────────────
 
 def _load_rambler(drive):
-    """Return (lines, fid). Each line is a raw 'email:password' string."""
-    fid = _find_id(RAMBLER_POOL_NAME, drive)
+    """Return (lines, fid). Each line is a raw 'email:password[:junk]' string.
+    Tries a few filename variants so the user's file is found however named."""
+    fid = None
+    for name in RAMBLER_POOL_ALIASES:
+        fid = _find_id(name, drive)
+        if fid:
+            break
     if not fid:
         return [], None
     text = _download_text(fid, drive)
@@ -123,8 +133,12 @@ def _save_rambler(drive, lines, fid):
 
 
 def _parse_rambler(line):
-    email, _, pw = line.partition(':')
-    return email.strip(), pw.strip()
+    """Format: email:password:junk — take ONLY email + password, ignore the
+    rest (e.g. 'a@rambler.ru:pass:extra' → ('a@rambler.ru', 'pass'))."""
+    parts = line.split(':')
+    email = parts[0].strip() if parts else ''
+    pw = parts[1].strip() if len(parts) > 1 else ''
+    return email, pw
 
 
 # ─── Native Google Sheet (CSV → convert) ────────────────────────────────────
@@ -231,6 +245,19 @@ def last_batch():
     except Exception as e:
         logger.warning(f"[fb_registry] last_batch read failed: {e}")
         return []
+
+
+def rambler_count():
+    """How many Rambler credentials remain in the pool. None if no pool file."""
+    drive = _drive()
+    if not drive:
+        return None
+    try:
+        lines, fid = _load_rambler(drive)
+        return len(lines) if fid is not None else None
+    except Exception as e:
+        logger.warning(f"[fb_registry] rambler_count failed: {e}")
+        return None
 
 
 def sheet_url():
