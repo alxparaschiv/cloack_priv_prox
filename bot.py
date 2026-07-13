@@ -144,6 +144,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_bg_batch_count'):
         await bg.bg_batch_count_text_received(update, context)
         return
+    if context.user_data.get('expecting_acctpack_count'):
+        await account_pack.account_pack_count_text_received(update, context)
+        return
     if context.user_data.get('expecting_geelark_name'):
         await geelark_open.geelark_text_received(update, context)
         return
@@ -208,7 +211,8 @@ COMMANDS_TEXT = (
     "/geelark_stop_phone — Batch-stop GeeLark phones once setup is done\n\n"
 
     "🔐 <b>Verification &amp; SMS</b>\n"
-    "/account_pack — Full account package (name + birthdate + password + FB number), single or batch\n"
+    "/account_pack — Full account package (name+gender+dob+password+rambler+FB number) → Sheet + .zip\n"
+    "/batch_sms — Fetch the SMS codes for every number in the last /account_pack batch\n"
     "/password — Strong AI passwords for new accounts ([count], e.g. /password 10)\n"
     "/rambler — Latest FB/IG code from a Rambler inbox\n"
     "/rambler_microsoft — Latest Microsoft code from a Rambler inbox\n"
@@ -272,7 +276,8 @@ async def post_init(application):
         BotCommand("geelark_stop_phone",      "📱 Batch-stop GeeLark phones"),
 
         # 🔐 Verification & SMS
-        BotCommand("account_pack",       "🧩 Full account package (name+dob+pass+FB number)"),
+        BotCommand("account_pack",       "🧩 Full account package → Sheet + .zip (single/batch)"),
+        BotCommand("batch_sms",          "🔑 SMS codes for the whole last account batch"),
         BotCommand("password",           "🔑 Strong AI passwords for new accounts (batch)"),
         BotCommand("rambler",            "🔐 Latest FB/IG code from a Rambler inbox"),
         BotCommand("rambler_microsoft",  "🔐 Latest Microsoft code from a Rambler inbox"),
@@ -430,6 +435,7 @@ def main():
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("account_pack", account_pack.account_pack_command))
+    application.add_handler(CommandHandler("batch_sms", account_pack.batch_sms_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("portrait_gen", portrait_gen.portrait_gen_command))
