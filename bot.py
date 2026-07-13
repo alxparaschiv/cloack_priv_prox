@@ -51,6 +51,7 @@ import ig_setup
 import drive_image_picker
 import rental
 import account_pack
+import batch_verify
 import geelark_image_wizard
 import artistic_bg_gen
 import banner_gen
@@ -144,6 +145,9 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_bg_batch_count'):
         await bg.bg_batch_count_text_received(update, context)
         return
+    if context.user_data.get('batch_verify'):
+        await batch_verify.batch_verify_text_received(update, context)
+        return
     if context.user_data.get('expecting_acctpack_count'):
         await account_pack.account_pack_count_text_received(update, context)
         return
@@ -212,7 +216,8 @@ COMMANDS_TEXT = (
 
     "🔐 <b>Verification &amp; SMS</b>\n"
     "/account_pack — Full account package (name+gender+dob+password+rambler+FB number) → Sheet + .zip\n"
-    "/batch_sms — Fetch the SMS codes for every number in the last /account_pack batch\n"
+    "/batch_sms — Paste many phone numbers, then get all their SMS codes at once\n"
+    "/batch_rambler — Paste many email:password lines, get all their Rambler codes at once\n"
     "/password — Strong AI passwords for new accounts ([count], e.g. /password 10)\n"
     "/rambler — Latest FB/IG code from a Rambler inbox\n"
     "/rambler_microsoft — Latest Microsoft code from a Rambler inbox\n"
@@ -277,7 +282,8 @@ async def post_init(application):
 
         # 🔐 Verification & SMS
         BotCommand("account_pack",       "🧩 Full account package → Sheet + .zip (single/batch)"),
-        BotCommand("batch_sms",          "🔑 SMS codes for the whole last account batch"),
+        BotCommand("batch_sms",          "🔑 Paste phone numbers → all SMS codes at once"),
+        BotCommand("batch_rambler",      "📧 Paste email:password → all Rambler codes at once"),
         BotCommand("password",           "🔑 Strong AI passwords for new accounts (batch)"),
         BotCommand("rambler",            "🔐 Latest FB/IG code from a Rambler inbox"),
         BotCommand("rambler_microsoft",  "🔐 Latest Microsoft code from a Rambler inbox"),
@@ -435,7 +441,8 @@ def main():
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("account_pack", account_pack.account_pack_command))
-    application.add_handler(CommandHandler("batch_sms", account_pack.batch_sms_command))
+    application.add_handler(CommandHandler("batch_sms", batch_verify.batch_sms_command))
+    application.add_handler(CommandHandler("batch_rambler", batch_verify.batch_rambler_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))
     application.add_handler(CommandHandler("banner_gen", banner_gen.banner_gen_command))
     application.add_handler(CommandHandler("portrait_gen", portrait_gen.portrait_gen_command))
@@ -476,6 +483,8 @@ def main():
         bikini_gen.bikini_callback, pattern=r'^bikini:'))
     application.add_handler(CallbackQueryHandler(
         account_pack.account_pack_callback, pattern=r'^acctpack:'))
+    application.add_handler(CallbackQueryHandler(
+        batch_verify.batch_verify_callback, pattern=r'^bverify:'))
 
     # Text + document routers (catch-all, dispatch by user_data flag)
     application.add_handler(MessageHandler(

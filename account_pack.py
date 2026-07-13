@@ -28,6 +28,7 @@ from telegram.ext import ContextTypes
 
 import password_gen
 import rental
+import privacy
 import cloak_suggestions as _cs
 import fb_poster_registry as R
 
@@ -97,6 +98,39 @@ def _gen_names(n):
     return out[:n]
 
 
+# ─── App names (casual, first-timer, occasional typos) ──────────────────────
+
+_SYS_APPS = """You generate short, casual app names a FIRST-TIME developer would type when creating a throwaway test/developer app for the very first time — placeholder names someone in a hurry picks, not polished brands.
+
+Style:
+- Very casual/generic: e.g. "test app", "app one", "tester", "my app", "pilot app", "try out app", "app try", "testing app", "first app", "demo app", "app123", "test123", "sample app".
+- Short (1-3 words), lowercase or mixed case, nothing branded.
+- About 1 in 4 should contain a small REALISTIC human typo (e.g. "tset app", "aplication test", "tester ap", "test aap", "myy app").
+- Vary widely; never repeat.
+
+Output strictly as JSON: {"apps": ["...", ...]}  ({N} items)"""
+
+_FALLBACK_APPS = [
+    'test app', 'app one', 'tester', 'my app', 'pilot app', 'try out app',
+    'app try', 'testing app', 'first app', 'demo app', 'sample app', 'app123',
+    'test123', 'tset app', 'tester ap', 'aplication test', 'test aap',
+    'new app', 'my test app', 'app test', 'quick app', 'trial app',
+]
+
+
+def _gen_app_names(n):
+    n = max(1, min(BATCH_MAX, n))
+    try:
+        raw = _cs._call_openai_json(_SYS_APPS, f"Generate {n} app names.", n) or []
+    except Exception as e:
+        logger.warning(f"[account_pack] app-name LLM failed: {e}")
+        raw = []
+    out = [str(x).strip() for x in raw if str(x).strip()]
+    while len(out) < n:
+        out.append(secrets.choice(_FALLBACK_APPS))
+    return out[:n]
+
+
 # ─── Birthdate (age 25-40, month shown as a name) ───────────────────────────
 
 def random_birthdate():
@@ -124,8 +158,8 @@ def _format_card(idx, count, rec):
             if rec.get('rambler_email') else "⚠️ pool empty — add to Drive")
     phone = f"<code>{e(rec['phone10'])}</code>" if rec.get('phone10') else \
             f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"
-    rid = (f"<code>{e(rec['rental_id'])}</code> · 7-day"
-           if rec.get('rental_id') else "—")
+    priv = (f"<a href=\"{e(rec['privacy_url'])}\">{e(rec['privacy_url'])}</a>"
+            if rec.get('privacy_url') else "⚠️ not generated")
     return '\n'.join([
         "━━━━━━━━━━━━━━━━━━",
         f"👤 <b>{e(rec['account'])}</b>  ({idx}/{count})",
@@ -136,7 +170,8 @@ def _format_card(idx, count, rec):
         f"<b>Password:</b> <code>{e(rec['password'])}</code>",
         f"<b>Rambler:</b> {ramb}",
         f"<b>FB phone:</b> {phone}",
-        f"<b>Rental ID:</b> {rid}",
+        f"<b>App name:</b> <code>{e(rec.get('app_name',''))}</code>",
+        f"<b>Privacy policy:</b> {priv}",
     ])
 
 
@@ -151,6 +186,7 @@ def generate_packages(count, reserve, emit, post_one):
          f"real 7-day FB number each.")
 
     names = _gen_names(count)
+    apps = _gen_app_names(count)
     pwds, _ai = password_gen.make_passwords(count)
     now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -159,6 +195,7 @@ def generate_packages(count, reserve, emit, post_one):
         first, last, her, gender = names[i]
         iso, disp, age = random_birthdate()
         r_email, r_pw = ramblers[i] if i < len(ramblers) else (None, None)
+        app_name = apps[i]
         rec = {
             'account': f"{R.NAME_PREFIX} {start + i:03d}",
             'index': start + i,
@@ -166,6 +203,7 @@ def generate_packages(count, reserve, emit, post_one):
             'birthdate': iso, 'birthdate_display': disp, 'age': age,
             'password': pwds[i],
             'rambler_email': r_email or '', 'rambler_password': r_pw or '',
+            'app_name': app_name, 'privacy_url': '',
             'created_utc': now,
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
@@ -179,6 +217,14 @@ def generate_packages(count, reserve, emit, post_one):
             rec['phone10'] = digits[-10:] if len(digits) >= 10 else digits
             rec['rental_id'] = rental_id
             phone_ok += 1
+        # Auto-generate a privacy policy for this app (best-effort).
+        try:
+            url, perr, _meta = privacy._create_privacy_policy_dispatch(app_name=app_name)
+            rec['privacy_url'] = url or ''
+            if perr:
+                logger.warning(f"[account_pack] privacy gen for {app_name}: {perr}")
+        except Exception as ex:
+            logger.warning(f"[account_pack] privacy gen crash: {ex}")
         records.append(rec)
         post_one(_format_card(i + 1, count, rec))
 

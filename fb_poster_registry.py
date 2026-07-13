@@ -41,7 +41,7 @@ RAMBLER_POOL_ALIASES = ['rambler_pool.txt', 'rambler pool.txt',
 SHEET_HEADER = ['Account', 'First Name', 'Last Name', 'Gender', 'Heritage',
                 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
-                'Created (UTC)']
+                'App Name', 'Privacy Policy URL', 'Created (UTC)']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -153,6 +153,7 @@ def _sheet_rows(accounts):
             str(a.get('age', '')), a.get('password', ''),
             a.get('rambler_email', ''), a.get('rambler_password', ''),
             a.get('phone10', ''), a.get('rental_id', ''),
+            a.get('app_name', ''), a.get('privacy_url', ''),
             a.get('created_utc', ''),
         ])
     return rows
@@ -282,7 +283,8 @@ def account_txt(rec):
         f"Rambler email: {rec.get('rambler_email','') or '(none left in pool)'}",
         f"Rambler password: {rec.get('rambler_password','')}",
         f"FB phone (10-digit): {rec.get('phone10','') or '(rental failed)'}",
-        f"Rental ID: {rec.get('rental_id','')}  (7-day)",
+        f"App name: {rec.get('app_name','')}",
+        f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
         f"Created (UTC): {rec.get('created_utc','')}",
     ]
     return '\n'.join(lines)
