@@ -42,8 +42,8 @@ SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
                 'Heritage', 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
                 'App Name', 'Privacy Policy URL', 'FB Page Name 1',
-                'FB Page Name 2', 'Block Countries', 'Block Words',
-                'Created (UTC)']
+                'FB Page Name 2', 'Page Category', 'Bio', 'Block Countries',
+                'Block Words', 'Created (UTC)']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -157,6 +157,7 @@ def _sheet_rows(accounts):
             a.get('phone10', ''), a.get('rental_id', ''),
             a.get('app_name', ''), a.get('privacy_url', ''),
             a.get('page_name_1', ''), a.get('page_name_2', ''),
+            a.get('page_category', ''), a.get('bio', ''),
             a.get('block_countries', ''), a.get('block_words', ''),
             a.get('created_utc', ''),
         ])
@@ -196,6 +197,10 @@ def reserve(count):
     except Exception as e:
         return {'ok': False, 'err': f'tracker read failed: {type(e).__name__}: {e}'}
     start = len(store['accounts']) + 1
+    # Existing "first last" names (lowercased) so the generator never repeats.
+    existing_names = {
+        (f"{a.get('first','')} {a.get('last','')}").strip().lower()
+        for a in store['accounts']}
     try:
         lines, pool_fid = _load_rambler(drive)
     except Exception as e:
@@ -210,7 +215,8 @@ def reserve(count):
             ramblers.append((None, None))
     return {'ok': True, 'start': start, 'ramblers': ramblers,
             'remaining_pool': remaining, 'pool_fid': pool_fid,
-            'had_pool': pool_fid is not None, 'err': None}
+            'had_pool': pool_fid is not None,
+            'existing_names': existing_names, 'err': None}
 
 
 def commit(records, remaining_pool, pool_fid):
@@ -291,6 +297,8 @@ def account_txt(rec):
         f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
         f"FB page name (option 1): {rec.get('page_name_1','')}",
         f"FB page name (option 2): {rec.get('page_name_2','')}",
+        f"Page category: {rec.get('page_category','')}",
+        f"Bio: {rec.get('bio','')}",
         f"Block countries: {rec.get('block_countries','')}",
         f"Block words: {rec.get('block_words','')}",
         f"Created (UTC): {rec.get('created_utc','')}",

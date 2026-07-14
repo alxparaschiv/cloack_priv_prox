@@ -87,12 +87,15 @@ _FALLBACK_NAMES = [
 ]
 
 
-def _gen_names(n):
+def _gen_names(n, exclude=None):
     """Return n (first, last, heritage, gender) tuples that pass the FB length
-    check. LLM first (short ones filtered out), else length-safe local list."""
+    check AND don't repeat any name in `exclude` (existing accounts) or within
+    the batch. LLM first (short/dup filtered out), else length-safe local list.
+    Over-fetches from the LLM so dedup doesn't starve the batch."""
     n = max(1, min(BATCH_MAX, n))
+    seen = set(exclude or ())               # lowercased "first last"
     try:
-        raw = _cs._call_openai_json(_SYS_NAMES, f"Generate {n} names.", n) or []
+        raw = _cs._call_openai_json(_SYS_NAMES, f"Generate {n + 6} names.", n + 6) or []
     except Exception as e:
         logger.warning(f"[account_pack] name LLM failed: {e}")
         raw = []
@@ -113,11 +116,20 @@ def _gen_names(n):
         first, last = parts[0], ' '.join(parts[1:])
         if not _name_ok(first, last):        # skip FB-too-short names
             continue
+        key = f"{first} {last}".lower()
+        if key in seen:                      # skip repeats (existing + in-batch)
+            continue
+        seen.add(key)
         out.append((first, last, her, gender))
+        if len(out) >= n:
+            break
     if len(out) < n:
-        pool = [t for t in _FALLBACK_NAMES if _name_ok(t[0], t[1])]
+        pool = [t for t in _FALLBACK_NAMES
+                if _name_ok(t[0], t[1]) and f"{t[0]} {t[1]}".lower() not in seen]
         while len(out) < n and pool:
-            out.append(pool.pop(secrets.randbelow(len(pool))))
+            t = pool.pop(secrets.randbelow(len(pool)))
+            seen.add(f"{t[0]} {t[1]}".lower())
+            out.append(t)
     return out[:n]
 
 
@@ -162,9 +174,11 @@ Each name = the exact first name + a dark/gothic flourish. Examples:
 - "Carolina" → "Carolina Rose", "Carolina Bloom", "Carolina Dark", "Carolina Nightshade", "Carolina the Gothic Tempest", "Carolina Noir"
 - "Kira" → "Kira Vamp", "Kira Bangs", "Kira Noir", "Kira Ravenna", "Kira Nightshade"
 
-Style: dark, gothic, moody, feminine, a little mysterious — roses, thorns, night, shadow, velvet, raven, ash, lace, moon, storm, ember, hex. A believable page name (2-4 words) that ALWAYS starts with the exact first name given. Vary widely; never repeat; no AI clichés like "ethereal"/"celestial".
+Style: dark, gothic, moody, feminine, a little mysterious — roses, thorns, night, shadow, velvet, raven, ash, lace, moon, storm, ember, hex. A believable page name (2-4 words). Vary widely; never repeat; no AI clichés like "ethereal"/"celestial".
 
-If the user message lists SEED WORDS, incorporate ONE OR MORE of them into every name so the page name feels connected to that handle (e.g. seeds "dark, blue, rose" + "Carolina" → "Carolina Blue Rose", "Carolina Darkbloom", "Carolina Rose Noir"). Keep it gothic and natural, not a literal word dump.
+VARIETY — CRITICAL: do NOT always start with the first name (that's repetitive). Roughly HALF should be standalone gothic names with NO first name at all — e.g. "Shadow Mistress", "Velvet Girl", "Nightshade Girl", "Dark Rose", "Gothic Tales", "Midnight Muse". The other half can start with the given first name. Mix the two.
+
+If the user message lists SEED WORDS, weave ONE OR MORE of them into most names (with OR without the first name) so the page name feels connected to that handle (e.g. seeds "dark, blue, rose" → "Carolina Blue Rose", "Dark Blue Rose", "Blue Rose Noir"). Keep it gothic and natural, not a literal word dump.
 
 Output strictly as JSON: {"names": ["<FirstName> ...", ...]}  ({N} items)"""
 
@@ -173,6 +187,55 @@ _GOTHIC_WORDS = [
     'Thorn', 'Shadow', 'Moon', 'Storm', 'Vamp', 'Lace', 'Ember', 'Sable',
     'Hex', 'Crow', 'Ravenna', 'Wren', 'Nyx', 'Onyx', 'Dusk', 'Vesper',
     'Grave', 'Petal', 'Bane', 'Mist', 'Wraith', 'Bloomfield']
+
+# Standalone gothic page names (NO model name) for variety — the page name
+# should not always contain the model's first name.
+_GOTHIC_STANDALONE = [
+    'Shadow Mistress', 'Velvet Girl', 'Nightshade Girl', 'Dark Rose',
+    'Gothic Tales', 'Midnight Muse', 'Raven Girl', 'Thorn & Lace',
+    'Ember Witch', 'Moonlit Veil', 'Velvet Noir', 'Crimson Veil',
+    'Little Nightshade', 'Rose & Thorn', 'Dark Bloom', 'Lace & Shadow']
+
+# Facebook page category — one is picked at random per account so a VA can
+# just select it during page creation.
+_PAGE_CATEGORIES = ['Blogger', 'Personal Blog', 'Arts and Entertainment',
+                    'Artist', 'Model']
+
+
+_GOTHIC_SUFFIX = ['Girl', 'Mistress', 'Muse', 'Doll', 'Witch', 'Rose', 'Veil',
+                  'Tales', 'Noir', 'Diaries', 'Heart', 'Kiss']
+
+
+def _standalone_gothic(seeds=None):
+    """A gothic page name with NO model first name — seed-aware when a handle
+    is present. e.g. 'Shadow Mistress', 'Velvet Rose', 'Dark Blue Veil'."""
+    if seeds and secrets.randbelow(2):
+        s = secrets.choice(seeds).title()
+        return f"{s} {secrets.choice(_GOTHIC_SUFFIX)}"
+    roll = secrets.randbelow(3)
+    if roll == 0:
+        return secrets.choice(_GOTHIC_STANDALONE)
+    if roll == 1:
+        return f"{secrets.choice(_GOTHIC_WORDS)} {secrets.choice(_GOTHIC_SUFFIX)}"
+    return f"{secrets.choice(_GOTHIC_WORDS)} & {secrets.choice(_GOTHIC_WORDS)}"
+
+
+def _pick_page_category():
+    return secrets.choice(_PAGE_CATEGORIES)
+
+
+def _gen_bios(count):
+    """One girlfriend-brand goth bio per account (reuses bio_gen_v2 backend)."""
+    try:
+        bios = _cs.suggest_bios_v2('Goth', 'default', max(count, 3),
+                                   force_refresh=True) or []
+    except Exception as e:
+        logger.warning(f"[account_pack] bio gen failed: {e}")
+        bios = []
+    out = list(bios)
+    while len(out) < count:
+        out.append(secrets.choice(out) if out else '')
+    return out[:count]
 
 
 def _handle_tokens(handle):
@@ -203,11 +266,22 @@ def _gen_page_names(model_display, handle, count):
         logger.warning(f"[account_pack] pagename LLM failed: {e}")
         raw = []
     names = [str(x).strip() for x in raw if str(x).strip()]
-    # Fallback: seed-word-based if we have a handle, else gothic-word.
     while len(names) < need:
-        w = (secrets.choice(seeds).title() if seeds
-             else secrets.choice(_GOTHIC_WORDS))
-        names.append(f"{model_display} {w}")
+        names.append(f"{model_display} {secrets.choice(_GOTHIC_WORDS)}")
+    # The LLM tends to prepend the first name to EVERYTHING → force variety by
+    # flipping ~half the slots to standalone gothic names (no model name), and
+    # dedup so a batch never shows the same page name twice.
+    seen = set()
+    for i in range(len(names)):
+        if secrets.randbelow(2):
+            names[i] = _standalone_gothic(seeds)
+        base = names[i].lower()
+        tries = 0
+        while base in seen and tries < 8:
+            names[i] = _standalone_gothic(seeds)
+            base = names[i].lower()
+            tries += 1
+        seen.add(base)
     return [(names[2 * i], names[2 * i + 1]) for i in range(count)]
 
 
@@ -288,6 +362,8 @@ def _format_card(idx, count, rec):
         f"<b>Privacy policy:</b> {priv}",
         f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
         f"<code>{e(rec.get('page_name_2',''))}</code>",
+        f"<b>Page category:</b> {e(rec.get('page_category',''))}",
+        f"<b>Bio:</b> <code>{e(rec.get('bio',''))}</code>",
         f"<b>Block countries:</b> <code>{e(rec.get('block_countries',''))}</code>",
         f"<b>Block words:</b> <code>{e(rec.get('block_words',''))}</code>",
     ])
@@ -306,8 +382,9 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
          f"<b>{R.NAME_PREFIX} {start:03d}</b> for model <b>{model}</b> — names + "
          f"passwords first, then a real 7-day FB number each.")
 
-    names = _gen_names(count)
+    names = _gen_names(count, reserve.get('existing_names'))
     apps = _gen_app_names(count)
+    bios = _gen_bios(count)
     # Page names: per-account when handles are supplied (tight pairing), else a
     # single standalone batch (loose).
     if handles:
@@ -336,6 +413,8 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
             'rambler_email': r_email or '', 'rambler_password': r_pw or '',
             'app_name': app_name, 'privacy_url': '',
             'page_name_1': pg1, 'page_name_2': pg2,
+            'page_category': _pick_page_category(),
+            'bio': bios[i],
             'block_countries': ', '.join(_pick_blocked_countries()),
             'block_words': ', '.join(_gen_blocked_words()),
             'created_utc': now,
