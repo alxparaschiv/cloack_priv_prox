@@ -298,6 +298,13 @@ def account_txt(rec):
     return '\n'.join(lines)
 
 
+def combined_txt(records):
+    """All accounts in ONE text file, separated — so the whole batch is a
+    single downloadable file the user can keep locally."""
+    sep = '\n\n' + '=' * 46 + '\n\n'
+    return sep.join(account_txt(r) for r in records)
+
+
 def build_zip(records):
     """Zip one .txt per account. Returns (bytes, filename)."""
     buf = io.BytesIO()

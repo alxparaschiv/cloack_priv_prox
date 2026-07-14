@@ -345,8 +345,7 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
                                      reserve['pool_fid'])
     if commit_err:
         emit(f"⚠️ tracker/sheet save issue: {commit_err}")
-    zip_bytes, zip_name = R.build_zip(records)
-    return records, phone_ok, rental._balance_str(), sheet_url, zip_bytes, zip_name
+    return records, phone_ok, rental._balance_str(), sheet_url
 
 
 # ─── Telegram: /account_pack ────────────────────────────────────────────────
@@ -373,6 +372,9 @@ def _count_kb():
 
 
 async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear any stale text-collecting session so it can't swallow our inputs.
+    context.user_data.pop('batch_verify', None)
+    context.user_data.pop('expecting_acctpack_count', None)
     balance, ramb = await asyncio.to_thread(
         lambda: (rental._balance_str(), R.rambler_count()))
     ramb_line = (f"📧 Rambler pool: <b>{ramb}</b> left"
@@ -425,18 +427,20 @@ async def _run_batch(chat, context, count, model):
         except Exception:
             pass
 
-    (records, phone_ok, balance, sheet_url,
-     zip_bytes, zip_name) = await asyncio.to_thread(
+    records, phone_ok, balance, sheet_url = await asyncio.to_thread(
         generate_packages, count, reserve, model, emit, post_one)
 
-    # Send the .txt (single) or .zip (batch) file.
+    # Deliver ONE combined .txt with every account (single file, easy to keep).
     import io as _io
     if len(records) == 1:
-        doc = _io.BytesIO(R.account_txt(records[0]).encode('utf-8'))
-        doc.name = records[0]['account'].replace(' ', '_') + '.txt'
+        body = R.account_txt(records[0])
+        name = records[0]['account'].replace(' ', '_') + '.txt'
     else:
-        doc = _io.BytesIO(zip_bytes)
-        doc.name = zip_name
+        body = R.combined_txt(records)
+        last = records[-1]['account'].split()[-1]
+        name = (records[0]['account'] + '-' + last).replace(' ', '_') + '.txt'
+    doc = _io.BytesIO(body.encode('utf-8'))
+    doc.name = name
     try:
         await context.bot.send_document(chat_id=chat.id, document=doc,
                                         filename=doc.name)

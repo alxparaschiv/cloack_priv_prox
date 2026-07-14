@@ -52,13 +52,20 @@ def _render(sess):
 
 # ─── Commands ───────────────────────────────────────────────────────────────
 
+def _clear_other_flows(context):
+    for k in ('expecting_acctpack_count', 'expecting_bg_batch_count'):
+        context.user_data.pop(k, None)
+
+
 async def batch_sms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_other_flows(context)
     context.user_data['batch_verify'] = {'mode': 'sms', 'items': []}
     await update.message.reply_text(_render(context.user_data['batch_verify']),
                                     parse_mode='HTML', reply_markup=_kb(0))
 
 
 async def batch_rambler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_other_flows(context)
     context.user_data['batch_verify'] = {'mode': 'rambler', 'items': []}
     await update.message.reply_text(_render(context.user_data['batch_verify']),
                                     parse_mode='HTML', reply_markup=_kb(0))

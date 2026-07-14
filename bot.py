@@ -145,11 +145,13 @@ async def _text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('expecting_bg_batch_count'):
         await bg.bg_batch_count_text_received(update, context)
         return
-    if context.user_data.get('batch_verify'):
-        await batch_verify.batch_verify_text_received(update, context)
-        return
+    # One-shot count prompts take priority over the sticky batch_verify session
+    # (a leftover /batch_sms session must not swallow an /account_pack count).
     if context.user_data.get('expecting_acctpack_count'):
         await account_pack.account_pack_count_text_received(update, context)
+        return
+    if context.user_data.get('batch_verify'):
+        await batch_verify.batch_verify_text_received(update, context)
         return
     if context.user_data.get('expecting_geelark_name'):
         await geelark_open.geelark_text_received(update, context)
