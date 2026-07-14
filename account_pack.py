@@ -29,6 +29,7 @@ from telegram.ext import ContextTypes
 import password_gen
 import rental
 import privacy
+import cloak
 import cloak_suggestions as _cs
 import fb_poster_registry as R
 
@@ -131,6 +132,46 @@ def _gen_app_names(n):
     return out[:n]
 
 
+# ─── Gothic Facebook page names (per chosen reference model) ────────────────
+
+_SYS_PAGENAME = """You generate GOTHIC Facebook PAGE NAMES for a content creator whose first name is given.
+
+Each name = the exact first name + a dark/gothic flourish. Examples:
+- "Carolina" → "Carolina Rose", "Carolina Bloom", "Carolina Dark", "Carolina Nightshade", "Carolina the Gothic Tempest", "Carolina Noir"
+- "Kira" → "Kira Vamp", "Kira Bangs", "Kira Noir", "Kira Ravenna", "Kira Nightshade"
+
+Style: dark, gothic, moody, feminine, a little mysterious — roses, thorns, night, shadow, velvet, raven, ash, lace, moon, storm, ember, hex. A believable page name (2-4 words) that ALWAYS starts with the exact first name given. Vary widely; never repeat; no AI clichés like "ethereal"/"celestial".
+
+Output strictly as JSON: {"names": ["<FirstName> ...", ...]}  ({N} items)"""
+
+_GOTHIC_WORDS = [
+    'Rose', 'Bloom', 'Dark', 'Nightshade', 'Noir', 'Raven', 'Ash', 'Velvet',
+    'Thorn', 'Shadow', 'Moon', 'Storm', 'Vamp', 'Lace', 'Ember', 'Sable',
+    'Hex', 'Crow', 'Ravenna', 'Wren', 'Nyx', 'Onyx', 'Dusk', 'Vesper',
+    'Grave', 'Petal', 'Bane', 'Mist', 'Wraith', 'Bloomfield']
+
+
+def _gen_page_names(model_display, count):
+    """Return `count` (option1, option2) gothic page-name pairs for the model."""
+    need = count * 2
+    try:
+        raw = _cs._call_openai_json(
+            _SYS_PAGENAME,
+            f"First name: {model_display}\nGenerate {need} gothic Facebook page "
+            f"names, each starting with '{model_display}'.", need) or []
+    except Exception as e:
+        logger.warning(f"[account_pack] pagename LLM failed: {e}")
+        raw = []
+    names = [str(x).strip() for x in raw if str(x).strip()]
+    # top up with fallback "<Model> <gothic word>"
+    while len(names) < need:
+        names.append(f"{model_display} {secrets.choice(_GOTHIC_WORDS)}")
+    pairs = []
+    for i in range(count):
+        pairs.append((names[2 * i], names[2 * i + 1]))
+    return pairs
+
+
 # ─── Birthdate (age 25-40, month shown as a name) ───────────────────────────
 
 def random_birthdate():
@@ -172,21 +213,26 @@ def _format_card(idx, count, rec):
         f"<b>FB phone:</b> {phone}",
         f"<b>App name:</b> <code>{e(rec.get('app_name',''))}</code>",
         f"<b>Privacy policy:</b> {priv}",
+        f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
+        f"<code>{e(rec.get('page_name_2',''))}</code>",
     ])
 
 
-def generate_packages(count, reserve, emit, post_one):
+def generate_packages(count, reserve, model, emit, post_one):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
+    `model` is the reference-model display name (e.g. 'Carolina') for the
+    gothic FB page names.
     Returns (records, phone_ok, balance, sheet_url, zip_bytes, zip_name)."""
     count = max(1, min(BATCH_MAX, count))
     start = reserve['start']
     ramblers = reserve['ramblers']
     emit(f"🧩 building {count} account(s) starting at "
-         f"<b>{R.NAME_PREFIX} {start:03d}</b> — names + passwords first, then a "
-         f"real 7-day FB number each.")
+         f"<b>{R.NAME_PREFIX} {start:03d}</b> for model <b>{model}</b> — names + "
+         f"passwords first, then a real 7-day FB number each.")
 
     names = _gen_names(count)
     apps = _gen_app_names(count)
+    page_pairs = _gen_page_names(model, count)
     pwds, _ai = password_gen.make_passwords(count)
     now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -196,14 +242,16 @@ def generate_packages(count, reserve, emit, post_one):
         iso, disp, age = random_birthdate()
         r_email, r_pw = ramblers[i] if i < len(ramblers) else (None, None)
         app_name = apps[i]
+        pg1, pg2 = page_pairs[i]
         rec = {
             'account': f"{R.NAME_PREFIX} {start + i:03d}",
-            'index': start + i,
+            'index': start + i, 'model': model,
             'first': first, 'last': last, 'heritage': her, 'gender': gender,
             'birthdate': iso, 'birthdate_display': disp, 'age': age,
             'password': pwds[i],
             'rambler_email': r_email or '', 'rambler_password': r_pw or '',
             'app_name': app_name, 'privacy_url': '',
+            'page_name_1': pg1, 'page_name_2': pg2,
             'created_utc': now,
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
@@ -238,6 +286,18 @@ def generate_packages(count, reserve, emit, post_one):
 
 # ─── Telegram: /account_pack ────────────────────────────────────────────────
 
+def _model_kb():
+    rows = []
+    try:
+        for m in (cloak._known_models() or []):
+            rows.append([InlineKeyboardButton(f"🖤 {m.title()}",
+                        callback_data=f"acctpack:model:{m}")])
+    except Exception as e:
+        logger.warning(f"[account_pack] model list err: {e}")
+    rows.append([InlineKeyboardButton("✖ cancel", callback_data="acctpack:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _count_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{n}", callback_data=f"acctpack:count:{n}")
@@ -256,16 +316,15 @@ async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         "🧩 <b>Account package generator</b>\n\n"
         "Each account = <b>FB META POSTER NNN</b> with a believable name + "
-        "gender, a birthdate (age 25-40), a strong password, a Rambler email "
-        "(from your Drive pool), and a fresh <b>7-day Facebook number</b>.\n\n"
-        "Everything is logged to a Drive Google Sheet + JSON, and you get a "
-        ".txt per account (batch → .zip).\n\n"
-        f"💰 balance: <code>{html.escape(balance)}</code> · each account uses "
-        f"one paid rental.\n{ramb_line}\n\nHow many accounts?",
-        parse_mode='HTML', reply_markup=_count_kb())
+        "gender, a birthdate (age 25-40), a strong password, a Rambler email, a "
+        "fresh <b>7-day Facebook number</b>, an app name + privacy link, and a "
+        "gothic <b>FB page name</b> for the chosen model.\n\n"
+        f"💰 balance: <code>{html.escape(balance)}</code> · {ramb_line}\n\n"
+        "Pick the reference model 👇",
+        parse_mode='HTML', reply_markup=_model_kb())
 
 
-async def _run_batch(chat, context, count):
+async def _run_batch(chat, context, count, model):
     count = max(1, min(BATCH_MAX, count))
     await chat.send_message(
         f"🧩 generating <b>{count}</b> account package(s)…", parse_mode='HTML')
@@ -303,7 +362,7 @@ async def _run_batch(chat, context, count):
 
     (records, phone_ok, balance, sheet_url,
      zip_bytes, zip_name) = await asyncio.to_thread(
-        generate_packages, count, reserve, emit, post_one)
+        generate_packages, count, reserve, model, emit, post_one)
 
     # Send the .txt (single) or .zip (batch) file.
     import io as _io
@@ -348,6 +407,14 @@ async def account_pack_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await q.edit_message_text("✖ cancelled.")
         return
 
+    if action == 'model':
+        model = (parts[2] if len(parts) > 2 else '').strip().title() or 'Carolina'
+        context.user_data['acctpack_model'] = model
+        await q.edit_message_text(
+            f"🖤 model: <b>{html.escape(model)}</b>\n\nHow many accounts?",
+            parse_mode='HTML', reply_markup=_count_kb())
+        return
+
     if action == 'custom':
         context.user_data['expecting_acctpack_count'] = True
         await q.edit_message_text(
@@ -360,8 +427,9 @@ async def account_pack_callback(update: Update, context: ContextTypes.DEFAULT_TY
         except (ValueError, IndexError):
             await q.edit_message_text("⚠️ bad count — run /account_pack again.")
             return
-        await q.edit_message_text(f"🧩 starting {count} account(s)…")
-        await _run_batch(q.message.chat, context, count)
+        model = context.user_data.get('acctpack_model') or 'Carolina'
+        await q.edit_message_text(f"🧩 starting {count} account(s) for {model}…")
+        await _run_batch(q.message.chat, context, count, model)
         return
 
     if action == 'sms':
@@ -380,7 +448,8 @@ async def account_pack_count_text_received(update: Update, context: ContextTypes
     if count < 1 or count > BATCH_MAX:
         await update.message.reply_text(f"⚠️ pick a number 1–{BATCH_MAX}.")
         return
-    await _run_batch(update.message.chat, context, count)
+    model = context.user_data.get('acctpack_model') or 'Carolina'
+    await _run_batch(update.message.chat, context, count, model)
 
 
 # ─── Telegram: /batch_sms ───────────────────────────────────────────────────

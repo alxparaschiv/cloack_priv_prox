@@ -38,10 +38,11 @@ RAMBLER_POOL_ALIASES = ['rambler_pool.txt', 'rambler pool.txt',
                         'FB META POSTER · rambler pool.txt',
                         'FB META POSTER rambler pool.txt']
 
-SHEET_HEADER = ['Account', 'First Name', 'Last Name', 'Gender', 'Heritage',
-                'Birthdate', 'Age', 'Password', 'Rambler Email',
+SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
+                'Heritage', 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
-                'App Name', 'Privacy Policy URL', 'Created (UTC)']
+                'App Name', 'Privacy Policy URL', 'FB Page Name 1',
+                'FB Page Name 2', 'Created (UTC)']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -147,13 +148,14 @@ def _sheet_rows(accounts):
     rows = [SHEET_HEADER]
     for a in accounts:
         rows.append([
-            a.get('account', ''), a.get('first', ''), a.get('last', ''),
-            a.get('gender', ''), a.get('heritage', ''),
+            a.get('account', ''), a.get('model', ''), a.get('first', ''),
+            a.get('last', ''), a.get('gender', ''), a.get('heritage', ''),
             a.get('birthdate_display', a.get('birthdate', '')),
             str(a.get('age', '')), a.get('password', ''),
             a.get('rambler_email', ''), a.get('rambler_password', ''),
             a.get('phone10', ''), a.get('rental_id', ''),
             a.get('app_name', ''), a.get('privacy_url', ''),
+            a.get('page_name_1', ''), a.get('page_name_2', ''),
             a.get('created_utc', ''),
         ])
     return rows
@@ -285,6 +287,8 @@ def account_txt(rec):
         f"FB phone (10-digit): {rec.get('phone10','') or '(rental failed)'}",
         f"App name: {rec.get('app_name','')}",
         f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
+        f"FB page name (option 1): {rec.get('page_name_1','')}",
+        f"FB page name (option 2): {rec.get('page_name_2','')}",
         f"Created (UTC): {rec.get('created_utc','')}",
     ]
     return '\n'.join(lines)
