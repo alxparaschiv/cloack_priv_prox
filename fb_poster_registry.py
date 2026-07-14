@@ -42,7 +42,8 @@ SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
                 'Heritage', 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
                 'App Name', 'Privacy Policy URL', 'FB Page Name 1',
-                'FB Page Name 2', 'Created (UTC)']
+                'FB Page Name 2', 'Block Countries', 'Block Words',
+                'Created (UTC)']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -156,6 +157,7 @@ def _sheet_rows(accounts):
             a.get('phone10', ''), a.get('rental_id', ''),
             a.get('app_name', ''), a.get('privacy_url', ''),
             a.get('page_name_1', ''), a.get('page_name_2', ''),
+            a.get('block_countries', ''), a.get('block_words', ''),
             a.get('created_utc', ''),
         ])
     return rows
@@ -289,6 +291,8 @@ def account_txt(rec):
         f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
         f"FB page name (option 1): {rec.get('page_name_1','')}",
         f"FB page name (option 2): {rec.get('page_name_2','')}",
+        f"Block countries: {rec.get('block_countries','')}",
+        f"Block words: {rec.get('block_words','')}",
         f"Created (UTC): {rec.get('created_utc','')}",
     ]
     return '\n'.join(lines)

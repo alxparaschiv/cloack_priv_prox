@@ -172,6 +172,40 @@ def _gen_page_names(model_display, count):
     return pairs
 
 
+# ─── FB page setup: block countries + block words (per account) ─────────────
+
+# India is ALWAYS blocked (most important); 2 more drawn from this pool.
+_BLOCK_COUNTRY_POOL = ['Mexico', 'Brazil', 'Philippines', 'Pakistan']
+
+# Legit curse words for comment-blocking — NOT GenZ slang. The list is only a
+# menu; each account gets a small random subset so batches aren't identical.
+_CURSE_WORDS = [
+    'bitch', 'whore', 'slut', 'cock', 'dick', 'pussy', 'cunt', 'fuck',
+    'shit', 'asshole', 'twat', 'skank', 'hoe', 'bastard', 'prick', 'wanker',
+    'douche', 'jackass', 'slag', 'tramp',
+]
+
+
+def _sample(pool, k):
+    """CSPRNG sample without replacement (no `random` import needed)."""
+    pool = list(pool)
+    out = []
+    for _ in range(min(k, len(pool))):
+        out.append(pool.pop(secrets.randbelow(len(pool))))
+    return out
+
+
+def _pick_blocked_countries():
+    """India + 2 random others (3 total)."""
+    return ['India'] + _sample(_BLOCK_COUNTRY_POOL, 2)
+
+
+def _gen_blocked_words():
+    """5-7 words: always 'ai' + 'slop', the rest legit curse words."""
+    k = 3 + secrets.randbelow(3)          # 3-5 → total 5-7
+    return ['ai', 'slop'] + _sample(_CURSE_WORDS, k)
+
+
 # ─── Birthdate (age 25-40, month shown as a name) ───────────────────────────
 
 def random_birthdate():
@@ -215,6 +249,8 @@ def _format_card(idx, count, rec):
         f"<b>Privacy policy:</b> {priv}",
         f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
         f"<code>{e(rec.get('page_name_2',''))}</code>",
+        f"<b>Block countries:</b> <code>{e(rec.get('block_countries',''))}</code>",
+        f"<b>Block words:</b> <code>{e(rec.get('block_words',''))}</code>",
     ])
 
 
@@ -252,6 +288,8 @@ def generate_packages(count, reserve, model, emit, post_one):
             'rambler_email': r_email or '', 'rambler_password': r_pw or '',
             'app_name': app_name, 'privacy_url': '',
             'page_name_1': pg1, 'page_name_2': pg2,
+            'block_countries': ', '.join(_pick_blocked_countries()),
+            'block_words': ', '.join(_gen_blocked_words()),
             'created_utc': now,
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
