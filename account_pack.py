@@ -42,10 +42,25 @@ COUNT_OPTIONS = [1, 3, 5, 10]
 
 # ─── Name + gender generation (LLM primary, local fallback) ─────────────────
 
+# Facebook rejects short names (e.g. "Luca Rosi"). Enforce a comfortable
+# minimum so generated names always pass signup.
+_NAME_MIN_FIRST = 3
+_NAME_MIN_LAST = 4
+_NAME_MIN_TOTAL = 11
+
+
+def _name_ok(first, last):
+    f = ''.join(c for c in (first or '') if c.isalpha())
+    l = ''.join(c for c in (last or '') if c.isalpha())
+    return (len(f) >= _NAME_MIN_FIRST and len(l) >= _NAME_MIN_LAST
+            and len(f) + len(l) >= _NAME_MIN_TOTAL)
+
+
 _SYS_NAMES = """You generate believable, realistic FULL NAMES (with gender) for social-media account profiles.
 
 Rules:
 - Each entry = a first name + a last name of a real, ordinary person (NOT a celebrity or fictional character).
+- LENGTH — CRITICAL: Facebook REJECTS short names. Every first name + last name TOGETHER must be at least 11 letters, and the last name at least 4 letters. Do NOT output short combos like "Luca Rosi", "Ana Silva", "Minh Tran" — prefer fuller surnames (e.g. "Marco Bianchi", "Priya Sharma", "Hoang Nguyen").
 - Spread across DIFFERENT cultural heritages — mix widely (American, British, Irish, Italian, German, French, Spanish, Latin-American, Portuguese, Scandinavian, Polish, Czech, Greek, Turkish, Filipino, Vietnamese, Korean, Japanese, Indian, Arabic, Nigerian, Brazilian, …). Try not to repeat a heritage.
 - Mix genders across the list (roughly half Male, half Female). The first name must match the gender.
 - Plain ASCII Latin letters only (no accents), normal capitalization.
@@ -53,25 +68,28 @@ Rules:
 Output strictly as JSON, each entry a single string "Firstname Lastname | Heritage | Gender" (Gender is exactly Male or Female):
 {"names": ["Firstname Lastname | Heritage | Gender", ...]}  ({N} items)"""
 
-# Local fallback: (first, last, heritage, gender).
+# Local fallback: (first, last, heritage, gender). All pass _name_ok.
 _FALLBACK_NAMES = [
     ('Ethan', 'Caldwell', 'American', 'Male'), ('Olivia', 'Bennett', 'British', 'Female'),
-    ('Marco', 'Ricci', 'Italian', 'Male'), ('Lena', 'Hoffmann', 'German', 'Female'),
+    ('Marco', 'Bianchi', 'Italian', 'Male'), ('Lena', 'Hoffmann', 'German', 'Female'),
     ('Diego', 'Morales', 'Mexican', 'Male'), ('Sofia', 'Almeida', 'Portuguese', 'Female'),
     ('Anders', 'Lindqvist', 'Swedish', 'Male'), ('Katarzyna', 'Nowak', 'Polish', 'Female'),
     ('Nikos', 'Papadakis', 'Greek', 'Male'), ('Emine', 'Yilmaz', 'Turkish', 'Female'),
     ('Mateo', 'Fernandez', 'Argentine', 'Male'), ('Chloe', 'Dubois', 'French', 'Female'),
-    ('Liam', 'Murphy', 'Irish', 'Male'), ('Ana', 'Silva', 'Brazilian', 'Female'),
-    ('Kenji', 'Nakamura', 'Japanese', 'Male'), ('Priya', 'Nair', 'Indian', 'Female'),
-    ('Omar', 'Haddad', 'Lebanese', 'Male'), ('Amara', 'Okafor', 'Nigerian', 'Female'),
-    ('Petr', 'Novak', 'Czech', 'Male'), ('Lucas', 'Vermeulen', 'Dutch', 'Male'),
-    ('Isabela', 'Cruz', 'Filipino', 'Female'), ('Minh', 'Tran', 'Vietnamese', 'Male'),
-    ('Jisoo', 'Park', 'Korean', 'Female'), ('Elena', 'Popescu', 'Romanian', 'Female'),
+    ('Liam', 'Gallagher', 'Irish', 'Male'), ('Bianca', 'Ferreira', 'Brazilian', 'Female'),
+    ('Kenji', 'Nakamura', 'Japanese', 'Male'), ('Priya', 'Sharma', 'Indian', 'Female'),
+    ('Youssef', 'Haddad', 'Lebanese', 'Male'), ('Amara', 'Okafor', 'Nigerian', 'Female'),
+    ('Pavel', 'Novakov', 'Czech', 'Male'), ('Lucas', 'Vermeulen', 'Dutch', 'Male'),
+    ('Isabela', 'Delgado', 'Filipino', 'Female'), ('Hoang', 'Nguyen', 'Vietnamese', 'Male'),
+    ('Seojin', 'Hwang', 'Korean', 'Female'), ('Elena', 'Popescu', 'Romanian', 'Female'),
+    ('Viktor', 'Sokolov', 'Russian', 'Male'), ('Camila', 'Rossini', 'Italian', 'Female'),
+    ('Nathan', 'Brooks', 'American', 'Male'), ('Freya', 'Andersen', 'Danish', 'Female'),
 ]
 
 
 def _gen_names(n):
-    """Return n (first, last, heritage, gender) tuples. LLM first, else local."""
+    """Return n (first, last, heritage, gender) tuples that pass the FB length
+    check. LLM first (short ones filtered out), else length-safe local list."""
     n = max(1, min(BATCH_MAX, n))
     try:
         raw = _cs._call_openai_json(_SYS_NAMES, f"Generate {n} names.", n) or []
@@ -92,9 +110,12 @@ def _gen_names(n):
         parts = name_part.split()
         if len(parts) < 2:
             continue
-        out.append((parts[0], ' '.join(parts[1:]), her, gender))
+        first, last = parts[0], ' '.join(parts[1:])
+        if not _name_ok(first, last):        # skip FB-too-short names
+            continue
+        out.append((first, last, her, gender))
     if len(out) < n:
-        pool = list(_FALLBACK_NAMES)
+        pool = [t for t in _FALLBACK_NAMES if _name_ok(t[0], t[1])]
         while len(out) < n and pool:
             out.append(pool.pop(secrets.randbelow(len(pool))))
     return out[:n]
