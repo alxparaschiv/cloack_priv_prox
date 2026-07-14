@@ -16,6 +16,7 @@ comes back as a .zip). See fb_poster_registry for the persistence + numbering.
 /batch_sms pulls the verification code for every number in the most recent
 batch in one shot (no more typing numbers into /sms one by one).
 """
+import re
 import html
 import asyncio
 import logging
@@ -142,6 +143,8 @@ Each name = the exact first name + a dark/gothic flourish. Examples:
 
 Style: dark, gothic, moody, feminine, a little mysterious — roses, thorns, night, shadow, velvet, raven, ash, lace, moon, storm, ember, hex. A believable page name (2-4 words) that ALWAYS starts with the exact first name given. Vary widely; never repeat; no AI clichés like "ethereal"/"celestial".
 
+If the user message lists SEED WORDS, incorporate ONE OR MORE of them into every name so the page name feels connected to that handle (e.g. seeds "dark, blue, rose" + "Carolina" → "Carolina Blue Rose", "Carolina Darkbloom", "Carolina Rose Noir"). Keep it gothic and natural, not a literal word dump.
+
 Output strictly as JSON: {"names": ["<FirstName> ...", ...]}  ({N} items)"""
 
 _GOTHIC_WORDS = [
@@ -151,25 +154,40 @@ _GOTHIC_WORDS = [
     'Grave', 'Petal', 'Bane', 'Mist', 'Wraith', 'Bloomfield']
 
 
-def _gen_page_names(model_display, count):
-    """Return `count` (option1, option2) gothic page-name pairs for the model."""
+def _handle_tokens(handle):
+    """dark-blue-rose → ['dark','blue','rose'] (drops empties/stopwords)."""
+    if not handle:
+        return []
+    toks = [t for t in re.split(r'[-_\s]+', str(handle).strip().lower()) if t]
+    stop = {'the', 'a', 'of', 'and', 'to', 'for'}
+    return [t for t in toks if t not in stop]
+
+
+def _gen_page_names(model_display, handle, count):
+    """Return `count` (option1, option2) gothic page-name pairs for the model.
+
+    If `handle` is given (e.g. 'dark-blue-rose'), its tokens seed the LLM so the
+    page name is a play on the cloak-link handle. If empty/None, standalone
+    gothic names (loose pairing)."""
+    seeds = _handle_tokens(handle)
+    seed_line = f"SEED WORDS: {', '.join(seeds)}\n" if seeds else ""
     need = count * 2
+    user = (f"First name: {model_display}\n{seed_line}"
+            f"Generate {need} gothic Facebook page names, each starting with "
+            f"'{model_display}'"
+            + (" and weaving in the seed words." if seeds else "."))
     try:
-        raw = _cs._call_openai_json(
-            _SYS_PAGENAME,
-            f"First name: {model_display}\nGenerate {need} gothic Facebook page "
-            f"names, each starting with '{model_display}'.", need) or []
+        raw = _cs._call_openai_json(_SYS_PAGENAME, user, need) or []
     except Exception as e:
         logger.warning(f"[account_pack] pagename LLM failed: {e}")
         raw = []
     names = [str(x).strip() for x in raw if str(x).strip()]
-    # top up with fallback "<Model> <gothic word>"
+    # Fallback: seed-word-based if we have a handle, else gothic-word.
     while len(names) < need:
-        names.append(f"{model_display} {secrets.choice(_GOTHIC_WORDS)}")
-    pairs = []
-    for i in range(count):
-        pairs.append((names[2 * i], names[2 * i + 1]))
-    return pairs
+        w = (secrets.choice(seeds).title() if seeds
+             else secrets.choice(_GOTHIC_WORDS))
+        names.append(f"{model_display} {w}")
+    return [(names[2 * i], names[2 * i + 1]) for i in range(count)]
 
 
 # ─── FB page setup: block countries + block words (per account) ─────────────
@@ -254,10 +272,11 @@ def _format_card(idx, count, rec):
     ])
 
 
-def generate_packages(count, reserve, model, emit, post_one):
+def generate_packages(count, reserve, model, emit, post_one, handles=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
-    `model` is the reference-model display name (e.g. 'Carolina') for the
-    gothic FB page names.
+    `model` is the reference-model display name (e.g. 'Carolina').
+    `handles` (optional) is a per-account list of cloak-link handles so each
+    gothic FB page name is a play on its handle; None → standalone (loose).
     Returns (records, phone_ok, balance, sheet_url, zip_bytes, zip_name)."""
     count = max(1, min(BATCH_MAX, count))
     start = reserve['start']
@@ -268,7 +287,13 @@ def generate_packages(count, reserve, model, emit, post_one):
 
     names = _gen_names(count)
     apps = _gen_app_names(count)
-    page_pairs = _gen_page_names(model, count)
+    # Page names: per-account when handles are supplied (tight pairing), else a
+    # single standalone batch (loose).
+    if handles:
+        page_pairs = [_gen_page_names(model, (handles[i] if i < len(handles) else None), 1)[0]
+                      for i in range(count)]
+    else:
+        page_pairs = _gen_page_names(model, None, count)
     pwds, _ai = password_gen.make_passwords(count)
     now = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -279,9 +304,11 @@ def generate_packages(count, reserve, model, emit, post_one):
         r_email, r_pw = ramblers[i] if i < len(ramblers) else (None, None)
         app_name = apps[i]
         pg1, pg2 = page_pairs[i]
+        h = handles[i] if handles and i < len(handles) else None
         rec = {
             'account': f"{R.NAME_PREFIX} {start + i:03d}",
             'index': start + i, 'model': model,
+            'handle': h or '', 'pairing': 'tight' if _handle_tokens(h) else 'loose',
             'first': first, 'last': last, 'heritage': her, 'gender': gender,
             'birthdate': iso, 'birthdate_display': disp, 'age': age,
             'password': pwds[i],
