@@ -43,8 +43,8 @@ SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
                 'Heritage', 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
                 'App Name', 'Privacy Policy URL', 'FB Page Name 1',
-                'FB Page Name 2', 'Page Category', 'Bio', 'Block Countries',
-                'Block Words', 'Created (UTC)']
+                'FB Page Name 2', 'Workflow Name', 'Page Category', 'Bio',
+                'Block Countries', 'Block Words', 'Created (UTC)']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -158,6 +158,7 @@ def _sheet_rows(accounts):
             a.get('phone10', ''), a.get('rental_id', ''),
             a.get('app_name', ''), a.get('privacy_url', ''),
             a.get('page_name_1', ''), a.get('page_name_2', ''),
+            a.get('workflow_name', ''),
             a.get('page_category', ''), a.get('bio', ''),
             a.get('block_countries', ''), a.get('block_words', ''),
             a.get('created_utc', ''),
@@ -308,6 +309,7 @@ def account_txt(rec):
         lines += [
             f"FB page name (option 1): {rec.get('page_name_1','')}",
             f"FB page name (option 2): {rec.get('page_name_2','')}",
+            f"Workflow name: {rec.get('workflow_name','')}",
         ]
     lines += [
         f"Page category: {rec.get('page_category','')}",

@@ -224,6 +224,18 @@ def _pick_page_category():
     return secrets.choice(_PAGE_CATEGORIES)
 
 
+def _slug(s):
+    return re.sub(r'[^a-z0-9]+', '_', (s or '').lower()).strip('_')
+
+
+def _workflow_name_from_folder(folder_name):
+    """Derive the workflow name from a reel-bot output folder name, matching the
+    bot-VA contract: 'Output Carolina Goth Compilations 5' →
+    'carolina_goth_compilations_5'. Empty folder → ''."""
+    n = re.sub(r'^\s*output\s+', '', str(folder_name or ''), flags=re.I)
+    return _slug(n)
+
+
 def _gen_bios(count):
     """One girlfriend-brand goth bio per account (reuses bio_gen_v2 backend)."""
     try:
@@ -370,6 +382,7 @@ def _format_card(idx, count, rec):
         lines.append(
             f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
             f"<code>{e(rec.get('page_name_2',''))}</code>")
+        lines.append(f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name',''))}</code>")
     lines += [
         f"<b>Page category:</b> {e(rec.get('page_category',''))}",
         f"<b>Bio:</b> <code>{e(rec.get('bio',''))}</code>",
@@ -379,11 +392,15 @@ def _format_card(idx, count, rec):
     return '\n'.join(lines)
 
 
-def generate_packages(count, reserve, model, emit, post_one, handles=None):
+def generate_packages(count, reserve, model, emit, post_one, handles=None,
+                      output_folders=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
     gothic FB page name is a play on its handle; None → standalone (loose).
+    `output_folders` (optional) is a per-account list of reel-bot output folder
+    names → each account's `workflow_name` is derived from its folder; without
+    it, a model-based placeholder is used (manual flow).
     Returns (records, phone_ok, balance, sheet_url, zip_bytes, zip_name)."""
     count = max(1, min(BATCH_MAX, count))
     is_backup = (model == BACKUP_MODEL)
@@ -418,12 +435,20 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
         app_name = apps[i]
         pg1, pg2 = page_pairs[i]
         h = handles[i] if handles and i < len(handles) else None
+        folder = output_folders[i] if output_folders and i < len(output_folders) else None
+        if is_backup:
+            wf = ''                                   # backups run no workflow
+        elif folder:
+            wf = _workflow_name_from_folder(folder)   # from reel-bot output folder
+        else:
+            wf = f"{_slug(model)}_goth"                # manual-flow placeholder
         rec = {
             'account': f"{prefix} {start + i:03d}",
             'index': start + i,
             'model': '' if is_backup else model,
             'kind': 'backup_manager' if is_backup else 'primary',
             'handle': h or '', 'pairing': 'tight' if _handle_tokens(h) else 'loose',
+            'workflow_name': wf,
             'first': first, 'last': last, 'heritage': her, 'gender': gender,
             'birthdate': iso, 'birthdate_display': disp, 'age': age,
             'password': pwds[i],
