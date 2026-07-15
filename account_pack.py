@@ -235,6 +235,19 @@ def _pick_dev_app_role():
     return secrets.choice(_DEV_APP_ROLES)
 
 
+# Posting cadence, PREDEFINED per package: 50/50 between 3×/day and 4×/day. A
+# random time-variant per family so accounts on the same cadence don't all post at
+# identical hours (anti-fingerprint). bot-VA's /setup applies this verbatim — the
+# VA never picks a schedule. Keys must exist in the poster's FB_SCHEDULES.
+_SCHED_3X = ('3x_daily', '3x_daily_v1', '3x_daily_v2', '3x_daily_v3', '3x_daily_v4')
+_SCHED_4X = ('4x_daily', '4x_daily_v1', '4x_daily_v2', '4x_daily_v3', '4x_daily_v4')
+
+
+def _pick_schedule():
+    fam = _SCHED_3X if secrets.randbelow(2) == 0 else _SCHED_4X
+    return secrets.choice(fam)
+
+
 def _slug(s):
     return re.sub(r'[^a-z0-9]+', '_', (s or '').lower()).strip('_')
 
@@ -398,6 +411,8 @@ def _format_card(idx, count, rec):
             f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
             f"<code>{e(rec.get('page_name_2',''))}</code>")
         lines.append(f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name',''))}</code>")
+        lines.append(f"<b>Schedule:</b> <code>{e(rec.get('schedule',''))}</code>  "
+                     f"<i>(auto-applied)</i>")
         if rec.get('page_bg_image_url'):
             lines.append(
                 f"<b>Page background:</b> "
@@ -489,6 +504,9 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # bot-VA reads package_type ('' = normal account, 'backup_manager' = BM);
             # his `kind` field is kept untouched above.
             'package_type': ('backup_manager' if is_backup else ''),
+            # Predefined 50/50 3×/4× posting cadence — bot-VA auto-applies it, no
+            # VA choice. Backups run no workflow → ''.
+            'schedule': ('' if is_backup else _pick_schedule()),
             'output_folder_name': (folder or ''),
             'source_req_id': (source_req_ids[i]
                               if source_req_ids and i < len(source_req_ids) else ''),

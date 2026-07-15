@@ -125,6 +125,14 @@ check("BM has NO page_bg_image_url (intentional)",
 check("BM still carries a proxy + one-row rambler_login + dev_app_role",
       bms[0].get('proxy') and bms[0].get('rambler_login')
       and bms[0].get('dev_app_role'))
+_SCHED_ALL = account_pack._SCHED_3X + account_pack._SCHED_4X
+check("every primary has a PREDEFINED schedule in the 3x/4x set",
+      all(a.get('schedule') in _SCHED_ALL for a in accts))
+_draws = [account_pack._pick_schedule() for _ in range(400)]
+_n3 = sum(1 for d in _draws if d in account_pack._SCHED_3X)
+check("_pick_schedule is ~50/50 3x/4x over 400 draws (140<n3<260)",
+      140 < _n3 < 260)
+check("BM has empty schedule (runs no workflow)", bms[0].get('schedule') == '')
 
 # ── run pass 2 — idempotency ──
 print("\n=== PASS 2 — idempotency (seen-set) ===")

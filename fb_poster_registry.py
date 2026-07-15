@@ -50,7 +50,8 @@ SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
                 'FB Page Name 2', 'Workflow Name', 'Page Category', 'Bio',
                 'Block Countries', 'Block Words', 'Created (UTC)',
                 'Rambler Login', 'Proxy', 'Dev App Role', 'Package Type',
-                'Output Folder', 'Page BG Image URL', 'Source Req ID']
+                'Output Folder', 'Page BG Image URL', 'Source Req ID',
+                'Schedule']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -188,7 +189,7 @@ def _sheet_rows(accounts):
             a.get('rambler_login', ''), a.get('proxy', ''),
             a.get('dev_app_role', ''), a.get('package_type', ''),
             a.get('output_folder_name', ''), a.get('page_bg_image_url', ''),
-            a.get('source_req_id', ''),
+            a.get('source_req_id', ''), a.get('schedule', ''),
         ])
     return rows
 
@@ -351,6 +352,7 @@ def account_txt(rec):
             f"FB page name (option 1): {rec.get('page_name_1','')}",
             f"FB page name (option 2): {rec.get('page_name_2','')}",
             f"Workflow name: {rec.get('workflow_name','')}",
+            f"Schedule (auto-applied): {rec.get('schedule','')}",
             f"Page background image: {rec.get('page_bg_image_url','') or '(none)'}",
         ]
     lines += [
