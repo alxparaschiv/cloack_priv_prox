@@ -38,13 +38,19 @@ RAMBLER_POOL_NAME = 'rambler_pool.txt'
 RAMBLER_POOL_ALIASES = ['rambler_pool.txt', 'rambler pool.txt',
                         'FB META POSTER · rambler pool.txt',
                         'FB META POSTER rambler pool.txt']
+# Validated proxies — reel-bot's proxy-autofill keeps this filled; one proxy/line.
+PROXY_POOL_NAME = '📦 DAILY PROXY POOL.txt'
+PROXY_POOL_ALIASES = ['📦 DAILY PROXY POOL.txt', 'DAILY PROXY POOL.txt',
+                      'proxy_pool.txt', 'proxy pool.txt']
 
 SHEET_HEADER = ['Account', 'Model', 'First Name', 'Last Name', 'Gender',
                 'Heritage', 'Birthdate', 'Age', 'Password', 'Rambler Email',
                 'Rambler Password', 'FB Phone (10-digit)', 'Rental ID',
                 'App Name', 'Privacy Policy URL', 'FB Page Name 1',
                 'FB Page Name 2', 'Workflow Name', 'Page Category', 'Bio',
-                'Block Countries', 'Block Words', 'Created (UTC)']
+                'Block Countries', 'Block Words', 'Created (UTC)',
+                'Rambler Login', 'Proxy', 'Dev App Role', 'Package Type',
+                'Output Folder', 'Page BG Image URL', 'Source Req ID']
 
 _SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 
@@ -144,6 +150,23 @@ def _parse_rambler(line):
     return email, pw
 
 
+def _load_proxy(drive):
+    """Return (lines, fid) for the proxy pool — one proxy/line (e.g.
+    socks5://user:pass@host:port), blank/# lines skipped. Non-deleting: callers
+    dedup against already-assigned proxies so the pool file is never rewritten."""
+    fid = None
+    for name in PROXY_POOL_ALIASES:
+        fid = _find_id(name, drive)
+        if fid:
+            break
+    if not fid:
+        return [], None
+    text = _download_text(fid, drive)
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith('#')]
+    return lines, fid
+
+
 # ─── Native Google Sheet (CSV → convert) ────────────────────────────────────
 
 def _sheet_rows(accounts):
@@ -162,6 +185,10 @@ def _sheet_rows(accounts):
             a.get('page_category', ''), a.get('bio', ''),
             a.get('block_countries', ''), a.get('block_words', ''),
             a.get('created_utc', ''),
+            a.get('rambler_login', ''), a.get('proxy', ''),
+            a.get('dev_app_role', ''), a.get('package_type', ''),
+            a.get('output_folder_name', ''), a.get('page_bg_image_url', ''),
+            a.get('source_req_id', ''),
         ])
     return rows
 
@@ -221,7 +248,18 @@ def reserve(count, kind='primary'):
             ramblers.append(_parse_rambler(remaining.pop()))
         else:
             ramblers.append((None, None))
+    # Proxy pool (non-deleting): exclude any proxy already assigned to an existing
+    # account (cross-batch dedup) and pop from the rest (within-batch dedup).
+    try:
+        plines, _pfid = _load_proxy(drive)
+    except Exception as e:
+        plines, _pfid = [], None
+        logger.warning(f"[fb_registry] proxy load failed: {e}")
+    used_proxies = {a.get('proxy', '') for a in store['accounts'] if a.get('proxy')}
+    avail = [p for p in plines if p not in used_proxies]
+    proxies = [avail.pop() if avail else '' for _ in range(count)]
     return {'ok': True, 'start': start, 'kind': kind, 'ramblers': ramblers,
+            'proxies': proxies,
             'remaining_pool': remaining, 'pool_fid': pool_fid,
             'had_pool': pool_fid is not None,
             'existing_names': existing_names, 'err': None}
@@ -300,8 +338,11 @@ def account_txt(rec):
         f"Password: {rec.get('password','')}",
         f"Rambler email: {rec.get('rambler_email','') or '(none left in pool)'}",
         f"Rambler password: {rec.get('rambler_password','')}",
+        f"Rambler login (paste into /rambler): {rec.get('rambler_login','') or '(none left in pool)'}",
+        f"Proxy (add to AdsPower profile): {rec.get('proxy','') or '(pending — from proxy check)'}",
         f"FB phone (10-digit): {rec.get('phone10','') or '(rental failed)'}",
         f"App name: {rec.get('app_name','')}",
+        f"Meta-dev role (About you): {rec.get('dev_app_role','') or '(any)'}",
         f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
     ]
     # Backup-manager accounts have no Facebook page → no page names.
@@ -310,6 +351,7 @@ def account_txt(rec):
             f"FB page name (option 1): {rec.get('page_name_1','')}",
             f"FB page name (option 2): {rec.get('page_name_2','')}",
             f"Workflow name: {rec.get('workflow_name','')}",
+            f"Page background image: {rec.get('page_bg_image_url','') or '(none)'}",
         ]
     lines += [
         f"Page category: {rec.get('page_category','')}",

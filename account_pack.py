@@ -224,6 +224,17 @@ def _pick_page_category():
     return secrets.choice(_PAGE_CATEGORIES)
 
 
+# Meta-for-Developers "About you" role the VA selects at app creation — random
+# per package for anti-fingerprinting. Curated to the plausible-professional
+# options (Student/Other dropped as least believable for an app builder).
+_DEV_APP_ROLES = ('Developer', 'Marketer', 'Product manager', 'Analyst',
+                  'Owner/founder')
+
+
+def _pick_dev_app_role():
+    return secrets.choice(_DEV_APP_ROLES)
+
+
 def _slug(s):
     return re.sub(r'[^a-z0-9]+', '_', (s or '').lower()).strip('_')
 
@@ -357,12 +368,14 @@ def random_birthdate():
 
 def _format_card(idx, count, rec):
     e = html.escape
-    ramb = (f"<code>{e(rec['rambler_email'])}</code> : <code>{e(rec['rambler_password'])}</code>"
-            if rec.get('rambler_email') else "⚠️ pool empty — add to Drive")
     phone = f"<code>{e(rec['phone10'])}</code>" if rec.get('phone10') else \
             f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"
     priv = (f"<a href=\"{e(rec['privacy_url'])}\">{e(rec['privacy_url'])}</a>"
             if rec.get('privacy_url') else "⚠️ not generated")
+    rlogin = (f"<code>{e(rec['rambler_login'])}</code>"
+              if rec.get('rambler_login') else "⚠️ pool empty — add to Drive")
+    prox = (f"<code>{e(rec['proxy'])}</code>" if rec.get('proxy')
+            else "⏳ pending — from the proxy check")
     is_backup = rec.get('kind') == 'backup_manager'
     lines = [
         "━━━━━━━━━━━━━━━━━━",
@@ -373,9 +386,11 @@ def _format_card(idx, count, rec):
         f"<b>Gender:</b> {e(rec['gender'])}",
         f"<b>Birthdate:</b> <code>{e(rec['birthdate_display'])}</code>  (age {rec['age']})",
         f"<b>Password:</b> <code>{e(rec['password'])}</code>",
-        f"<b>Rambler:</b> {ramb}",
+        f"<b>Rambler login</b> (→ /rambler): {rlogin}",
+        f"<b>Proxy</b> (→ AdsPower): {prox}",
         f"<b>FB phone:</b> {phone}",
         f"<b>App name:</b> <code>{e(rec.get('app_name',''))}</code>",
+        f"<b>Meta-dev role (“About you”):</b> {e(rec.get('dev_app_role','') or '(any)')}",
         f"<b>Privacy policy:</b> {priv}",
     ]
     if not is_backup:
@@ -383,6 +398,10 @@ def _format_card(idx, count, rec):
             f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
             f"<code>{e(rec.get('page_name_2',''))}</code>")
         lines.append(f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name',''))}</code>")
+        if rec.get('page_bg_image_url'):
+            lines.append(
+                f"<b>Page background:</b> "
+                f"<a href=\"{e(rec['page_bg_image_url'])}\">image</a>")
     lines += [
         f"<b>Page category:</b> {e(rec.get('page_category',''))}",
         f"<b>Bio:</b> <code>{e(rec.get('bio',''))}</code>",
@@ -393,7 +412,7 @@ def _format_card(idx, count, rec):
 
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
-                      output_folders=None):
+                      output_folders=None, source_req_ids=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
@@ -407,6 +426,7 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
     prefix = R.BACKUP_PREFIX if is_backup else R.NAME_PREFIX
     start = reserve['start']
     ramblers = reserve['ramblers']
+    proxies = reserve.get('proxies') or []
     who = 'backup-manager account(s)' if is_backup else f'account(s) for model <b>{model}</b>'
     emit(f"🧩 building {count} {who} starting at "
          f"<b>{prefix} {start:03d}</b> — names + passwords first, then a real "
@@ -460,6 +480,18 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             'block_countries': ', '.join(_pick_blocked_countries()),
             'block_words': ', '.join(_gen_blocked_words()),
             'created_utc': now,
+            # ── daily-pipeline additions (2026-07-15) ──
+            # rambler_login: ONE row email:password so the VA pastes it straight
+            # into /rambler (kept alongside the split fields).
+            'rambler_login': (f"{r_email}:{r_pw}" if r_email else ''),
+            'proxy': (proxies[i] if i < len(proxies) else ''),
+            'dev_app_role': _pick_dev_app_role(),
+            # bot-VA reads package_type ('' = normal account, 'backup_manager' = BM);
+            # his `kind` field is kept untouched above.
+            'package_type': ('backup_manager' if is_backup else ''),
+            'output_folder_name': (folder or ''),
+            'source_req_id': (source_req_ids[i]
+                              if source_req_ids and i < len(source_req_ids) else ''),
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
         rental_id, phone, err = rental._rent_seven_day('facebook')
@@ -480,6 +512,23 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
                 logger.warning(f"[account_pack] privacy gen for {app_name}: {perr}")
         except Exception as ex:
             logger.warning(f"[account_pack] privacy gen crash: {ex}")
+        # Per-package page background image — PRIMARY accounts only (backups get
+        # no FB page → no picture). Best-effort like privacy; never blocks a row.
+        if not is_backup:
+            try:
+                import artistic_bg_gen
+                _bgid, _p, _err = artistic_bg_gen.generate_artistic_bg_random_type(
+                    profile_subfolder_name=rec['account'])
+                rec['page_bg_image_id'] = _bgid or ''
+                rec['page_bg_image_url'] = (
+                    f"https://drive.google.com/file/d/{_bgid}/view" if _bgid else '')
+            except Exception as _bge:
+                logger.warning(f"[account_pack] bg image {rec['account']}: {_bge}")
+                rec['page_bg_image_id'] = ''
+                rec['page_bg_image_url'] = ''
+        else:
+            rec['page_bg_image_id'] = ''
+            rec['page_bg_image_url'] = ''
         records.append(rec)
         post_one(_format_card(i + 1, count, rec))
 

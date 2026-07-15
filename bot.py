@@ -394,6 +394,21 @@ async def post_init(application):
         except Exception as e2:
             logger.error(f"startup DM fallback also failed: {e2}")
 
+    # Autonomous /daily package poller (2026-07-15): turns reel-bot's
+    # 📦 DAILY PACKAGE QUEUE.json into account packages by REUSING
+    # account_pack.generate_packages. Runs automatically on this single
+    # instance — no env toggle ("just works" daily).
+    try:
+        import asyncio as _aio
+        import package_queue as _pq
+        if not globals().get('_pkg_queue_started'):
+            globals()['_pkg_queue_started'] = True
+            _aio.get_event_loop().create_task(
+                _pq.poll_loop(application.bot, chat_id or None))
+            logger.info("[pkg-queue] autonomous daily-package poller spawned.")
+    except Exception as _pqe:
+        logger.warning(f"[pkg-queue] spawn failed: {_pqe}")
+
 
 def main():
     token = os.getenv('TELEGRAM_BOT_TOKEN')
