@@ -25,25 +25,32 @@ def check(name, cond):
     _FAIL += (not cond)
 
 
-# ── in-memory registry (replaces Drive-backed R.reserve/R.commit) ──
-STORE = {'accounts': []}
+# ── in-memory PER-VA registry (replaces Drive-backed R.reserve/R.commit) ──
+# STORE is keyed by va_label so each VA numbers from 001 independently.
+STORE = {}
 
 
-def fake_reserve(count, kind='primary'):
+def _va_store(va_label):
+    return STORE.setdefault(va_label or 'VA001', {'accounts': []})
+
+
+def fake_reserve(count, kind='primary', va_label=None):
+    st = _va_store(va_label)
     is_b = (kind == 'backup_manager')
-    same = [a for a in STORE['accounts']
+    same = [a for a in st['accounts']
             if (a.get('kind') == 'backup_manager') == is_b]
-    base = len(STORE['accounts'])
-    return {'ok': True, 'start': len(same) + 1, 'kind': kind,
-            'ramblers': [(f'user{base+i}@rambler.ru', f'pw{base+i}')
+    base = len(st['accounts'])
+    tag = (va_label or 'VA001')
+    return {'ok': True, 'start': len(same) + 1, 'kind': kind, 'va_label': va_label,
+            'ramblers': [(f'user{tag}{base+i}@rambler.ru', f'pw{base+i}')
                          for i in range(count)],
-            'proxies': [f'socks5://u:p@host:{base+i}' for i in range(count)],
+            'proxies': [f'socks5://u:p@host:{tag}{base+i}' for i in range(count)],
             'remaining_pool': [], 'pool_fid': None, 'had_pool': False,
             'existing_names': set(), 'err': None}
 
 
-def fake_commit(records, remaining, fid):
-    STORE['accounts'].extend(records)
+def fake_commit(records, remaining, fid, va_label=None):
+    _va_store(va_label)['accounts'].extend(records)
     return 'https://sheet', None
 
 
@@ -93,8 +100,9 @@ package_queue._save_seen = _save_seen
 # ── run pass 1 ──
 print("=== PASS 1 — 5 /daily requests (5th → +backup-manager) ===")
 n_acct, n_bm = package_queue.poll_once()
-accts = [a for a in STORE['accounts'] if a.get('kind') == 'primary']
-bms = [a for a in STORE['accounts'] if a.get('kind') == 'backup_manager']
+_va1 = _va_store('VA001')['accounts']   # requests carry no va_label → default VA001
+accts = [a for a in _va1 if a.get('kind') == 'primary']
+bms = [a for a in _va1 if a.get('kind') == 'backup_manager']
 check(f"5 primary accounts produced (got {n_acct})", n_acct == 5 and len(accts) == 5)
 check(f"1 backup-manager produced (got {n_bm})", n_bm == 1 and len(bms) == 1)
 check("primary ids are FB META POSTER NNN",
@@ -136,10 +144,39 @@ check("BM has empty schedule (runs no workflow)", bms[0].get('schedule') == '')
 
 # ── run pass 2 — idempotency ──
 print("\n=== PASS 2 — idempotency (seen-set) ===")
-before = len(STORE['accounts'])
+before = len(_va_store('VA001')['accounts'])
 n2a, n2b = package_queue.poll_once()
 check("second pass produces nothing (0/0)", (n2a, n2b) == (0, 0))
-check("registry row count unchanged", len(STORE['accounts']) == before)
+check("registry row count unchanged",
+      len(_va_store('VA001')['accounts']) == before)
+
+# ── run pass 3 — MULTI-VA: two VAs each start at 001 ──
+print("\n=== PASS 3 — per-VA numbering (each VA starts at 001) ===")
+SEEN.clear()
+MULTI = [
+    {'req_id': 'daily-A-1', 'source': 'daily', 'model': 'Carolina',
+     'va_label': 'VA002', 'va_chat_id': 111, 'cloak_slug': 'a1',
+     'output_folder_name': 'Output A 1', 'wants_backup_manager': False},
+    {'req_id': 'daily-A-2', 'source': 'daily', 'model': 'Carolina',
+     'va_label': 'VA002', 'va_chat_id': 111, 'cloak_slug': 'a2',
+     'output_folder_name': 'Output A 2', 'wants_backup_manager': False},
+    {'req_id': 'daily-B-1', 'source': 'daily', 'model': 'Kira',
+     'va_label': 'VA003', 'va_chat_id': 222, 'cloak_slug': 'b1',
+     'output_folder_name': 'Output B 1', 'wants_backup_manager': False},
+]
+package_queue._read_queue = lambda: list(MULTI)
+package_queue.poll_once()
+va2 = [a for a in _va_store('VA002')['accounts'] if a.get('kind') == 'primary']
+va3 = [a for a in _va_store('VA003')['accounts'] if a.get('kind') == 'primary']
+check("VA002 first account is FB META POSTER 001",
+      va2 and va2[0]['account'] == 'FB META POSTER 001')
+check("VA002 second account is 002 (same VA increments)",
+      len(va2) == 2 and va2[1]['account'] == 'FB META POSTER 002')
+check("VA003 first account ALSO restarts at 001 (independent VA)",
+      va3 and va3[0]['account'] == 'FB META POSTER 001')
+check("va_label + va_chat_id stamped on rows",
+      va2[0].get('va_label') == 'VA002' and va2[0].get('va_chat_id') == 111
+      and va3[0].get('va_label') == 'VA003')
 
 print(f"\n{'✅ ALL PASS' if _FAIL == 0 else '❌ SOME FAILED'}  "
       f"({_PASS}/{_PASS + _FAIL} checks)")

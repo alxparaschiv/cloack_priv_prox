@@ -427,7 +427,8 @@ def _format_card(idx, count, rec):
 
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
-                      output_folders=None, source_req_ids=None):
+                      output_folders=None, source_req_ids=None,
+                      va_label=None, va_chat_id=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
@@ -510,6 +511,11 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             'output_folder_name': (folder or ''),
             'source_req_id': (source_req_ids[i]
                               if source_req_ids and i < len(source_req_ids) else ''),
+            # Multi-VA tenancy: which VA this account belongs to. bot-VA routes
+            # issuance to va_chat_id; the per-VA registry (via R.commit) makes the
+            # numbering restart at 001 per VA.
+            'va_label': (va_label or ''),
+            'va_chat_id': (va_chat_id if va_chat_id is not None else ''),
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
         rental_id, phone, err = rental._rent_seven_day('facebook')
@@ -551,7 +557,8 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
         post_one(_format_card(i + 1, count, rec))
 
     sheet_url, commit_err = R.commit(records, reserve['remaining_pool'],
-                                     reserve['pool_fid'])
+                                     reserve['pool_fid'],
+                                     va_label=(va_label or reserve.get('va_label')))
     if commit_err:
         emit(f"⚠️ tracker/sheet save issue: {commit_err}")
     return records, phone_ok, rental._balance_str(), sheet_url

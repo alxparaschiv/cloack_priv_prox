@@ -77,9 +77,11 @@ def _handle_of(req):
     return (req.get('cloak_slug') or req.get('cloak_link') or '').strip()
 
 
-def _gen(kind, model, req_id, handle=None, folder=None):
-    """Reserve + generate ONE package via account_pack (no Telegram objects)."""
-    reserve = R.reserve(1, kind)
+def _gen(kind, model, req_id, handle=None, folder=None,
+         va_label='VA001', va_chat_id=None):
+    """Reserve + generate ONE package via account_pack (no Telegram objects),
+    into the VA's OWN per-VA registry (so each VA numbers from 001)."""
+    reserve = R.reserve(1, kind, va_label=va_label)
     if not reserve.get('ok'):
         logger.warning(f"[pkg-queue] reserve({kind}) failed: {reserve.get('err')}")
         return False
@@ -88,7 +90,8 @@ def _gen(kind, model, req_id, handle=None, folder=None):
         emit=lambda *a, **k: None, post_one=lambda *a, **k: None,
         handles=([handle] if handle is not None else None),
         output_folders=([folder] if folder is not None else None),
-        source_req_ids=[req_id])
+        source_req_ids=[req_id],
+        va_label=va_label, va_chat_id=va_chat_id)
     return True
 
 
@@ -106,12 +109,16 @@ def poll_once():
         if str(req.get('source') or 'daily') != 'daily':
             continue                                  # scope guard: /daily only
         model = req.get('model') or 'Carolina'
+        va_label = req.get('va_label') or 'VA001'   # per-VA registry → numbers from 001
+        va_chat_id = req.get('va_chat_id')
         if _gen('primary', model, rid,
                 handle=_handle_of(req),
-                folder=(req.get('output_folder_name') or '')):
+                folder=(req.get('output_folder_name') or ''),
+                va_label=va_label, va_chat_id=va_chat_id):
             n_acct += 1
         if req.get('wants_backup_manager'):
-            if _gen('backup_manager', account_pack.BACKUP_MODEL, rid + '-bm'):
+            if _gen('backup_manager', account_pack.BACKUP_MODEL, rid + '-bm',
+                    va_label=va_label, va_chat_id=va_chat_id):
                 n_bm += 1
         seen.add(rid)
         seen_fid = _save_seen(seen, seen_fid)        # persist after each request

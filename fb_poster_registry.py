@@ -32,6 +32,16 @@ NAME_PREFIX = 'FB META POSTER'          # primary (Meta-dev-app) accounts
 BACKUP_PREFIX = 'FB BACKUP MANAGER'     # backup-manager accounts (no FB page)
 JSON_NAME = 'FB META POSTER · accounts.json'
 SHEET_NAME = 'FB META POSTER · accounts'
+
+
+def registry_json_name(va_label=None):
+    """Per-VA registry file name. `va_label` (e.g. 'VA001') → its OWN registry so
+    numbering restarts at 001 per VA. None → the legacy shared file (/account_pack)."""
+    return f'FB META POSTER · {va_label}.json' if va_label else JSON_NAME
+
+
+def registry_sheet_name(va_label=None):
+    return f'FB META POSTER · {va_label}' if va_label else SHEET_NAME
 # User-created file. Keep the primary name simple/typeable; also accept a few
 # variants so it's found however they name it.
 RAMBLER_POOL_NAME = 'rambler_pool.txt'
@@ -87,9 +97,11 @@ def _media(data_bytes, mime):
 
 # ─── JSON store (accounts + last batch) ─────────────────────────────────────
 
-def _load_store(drive):
-    """Return {'accounts': [...], 'last_batch': [...]}. Empty on first use."""
-    fid = _find_id(JSON_NAME, drive)
+def _load_store(drive, json_name=None):
+    """Return {'accounts': [...], 'last_batch': [...]}. Empty on first use.
+    `json_name` selects the per-VA registry file (default = legacy JSON_NAME)."""
+    json_name = json_name or JSON_NAME
+    fid = _find_id(json_name, drive)
     if not fid:
         return {'accounts': [], 'last_batch': []}, None
     raw = _download_text(fid, drive)
@@ -104,14 +116,15 @@ def _load_store(drive):
     return data, fid
 
 
-def _save_store(drive, store, fid):
+def _save_store(drive, store, fid, json_name=None):
+    json_name = json_name or JSON_NAME
     body_bytes = json.dumps(store, ensure_ascii=False, indent=2).encode('utf-8')
     media = _media(body_bytes, 'application/json')
     if fid:
         drive.files().update(fileId=fid, media_body=media,
                              supportsAllDrives=True).execute()
     else:
-        drive.files().create(body={'name': JSON_NAME, 'mimeType': 'application/json'},
+        drive.files().create(body={'name': json_name, 'mimeType': 'application/json'},
                              media_body=media, fields='id',
                              supportsAllDrives=True).execute()
 
@@ -194,18 +207,19 @@ def _sheet_rows(accounts):
     return rows
 
 
-def _write_sheet(drive, accounts):
+def _write_sheet(drive, accounts, sheet_name=None):
     """Rebuild the native Google Sheet from all accounts. Returns its URL."""
+    sheet_name = sheet_name or SHEET_NAME
     buf = io.StringIO()
     csv.writer(buf).writerows(_sheet_rows(accounts))
     media = _media(buf.getvalue().encode('utf-8'), 'text/csv')
-    fid = _find_id(SHEET_NAME, drive)
+    fid = _find_id(sheet_name, drive)
     if fid:
         drive.files().update(fileId=fid, media_body=media,
                              supportsAllDrives=True).execute()
     else:
         created = drive.files().create(
-            body={'name': SHEET_NAME, 'mimeType': _SHEET_MIME},
+            body={'name': sheet_name, 'mimeType': _SHEET_MIME},
             media_body=media, fields='id', supportsAllDrives=True).execute()
         fid = created['id']
     return f'https://docs.google.com/spreadsheets/d/{fid}/edit'
@@ -213,19 +227,20 @@ def _write_sheet(drive, accounts):
 
 # ─── Public API ─────────────────────────────────────────────────────────────
 
-def reserve(count, kind='primary'):
+def reserve(count, kind='primary', va_label=None):
     """Read the tracker + rambler pool up front. Returns a dict:
-      {ok, start, kind, ramblers:[(email,pw)|(None,None)], remaining_pool,
+      {ok, start, kind, va_label, ramblers:[(email,pw)|(None,None)], remaining_pool,
        pool_fid, had_pool, existing_names, err}
     `kind` is 'primary' (FB META POSTER) or 'backup_manager' (FB BACKUP MANAGER)
-    — each has its OWN sequential counter. ok=False (with err) if Drive is
-    unreachable — caller MUST abort (no rentals).
+    — each has its OWN sequential counter. `va_label` (e.g. 'VA001') selects that
+    VA's OWN registry file so numbering restarts at 001 per VA; None = legacy shared
+    file. ok=False (with err) if Drive is unreachable — caller MUST abort.
     """
     drive = _drive()
     if not drive:
         return {'ok': False, 'err': 'Google Drive not configured (GOOGLE_TOKEN_PICKLE).'}
     try:
-        store, _fid = _load_store(drive)
+        store, _fid = _load_store(drive, registry_json_name(va_label))
     except Exception as e:
         return {'ok': False, 'err': f'tracker read failed: {type(e).__name__}: {e}'}
     is_backup = (kind == 'backup_manager')
@@ -259,32 +274,34 @@ def reserve(count, kind='primary'):
     used_proxies = {a.get('proxy', '') for a in store['accounts'] if a.get('proxy')}
     avail = [p for p in plines if p not in used_proxies]
     proxies = [avail.pop() if avail else '' for _ in range(count)]
-    return {'ok': True, 'start': start, 'kind': kind, 'ramblers': ramblers,
-            'proxies': proxies,
+    return {'ok': True, 'start': start, 'kind': kind, 'va_label': va_label,
+            'ramblers': ramblers, 'proxies': proxies,
             'remaining_pool': remaining, 'pool_fid': pool_fid,
             'had_pool': pool_fid is not None,
             'existing_names': existing_names, 'err': None}
 
 
-def commit(records, remaining_pool, pool_fid):
-    """Append records to the JSON tracker, rewrite the rambler pool (minus the
-    consumed lines), rebuild the Sheet, and remember this batch for /batch_sms.
+def commit(records, remaining_pool, pool_fid, va_label=None):
+    """Append records to the per-VA JSON tracker (`va_label` selects the file, so
+    each VA numbers independently; None = legacy shared file), rewrite the rambler
+    pool (minus consumed lines), rebuild that VA's Sheet, and remember this batch.
     Returns (sheet_url or None, err or None)."""
     drive = _drive()
     if not drive:
         return None, 'Drive unavailable at commit'
     try:
-        store, fid = _load_store(drive)
+        json_name = registry_json_name(va_label)
+        store, fid = _load_store(drive, json_name)
         store['accounts'].extend(records)
         store['last_batch'] = [
             {'account': r['account'], 'phone10': r.get('phone10', ''),
              'rental_id': r.get('rental_id', '')}
             for r in records
         ]
-        _save_store(drive, store, fid)
+        _save_store(drive, store, fid, json_name)
         if pool_fid is not None:
             _save_rambler(drive, remaining_pool, pool_fid)
-        url = _write_sheet(drive, store['accounts'])
+        url = _write_sheet(drive, store['accounts'], registry_sheet_name(va_label))
         return url, None
     except Exception as e:
         logger.warning(f"[fb_registry] commit failed: {e}")
