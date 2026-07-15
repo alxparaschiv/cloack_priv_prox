@@ -28,7 +28,8 @@ import accounts_sheet as _asheet   # reuse its drive-scope creds/service
 
 logger = logging.getLogger(__name__)
 
-NAME_PREFIX = 'FB META POSTER'
+NAME_PREFIX = 'FB META POSTER'          # primary (Meta-dev-app) accounts
+BACKUP_PREFIX = 'FB BACKUP MANAGER'     # backup-manager accounts (no FB page)
 JSON_NAME = 'FB META POSTER · accounts.json'
 SHEET_NAME = 'FB META POSTER · accounts'
 # User-created file. Keep the primary name simple/typeable; also accept a few
@@ -183,11 +184,13 @@ def _write_sheet(drive, accounts):
 
 # ─── Public API ─────────────────────────────────────────────────────────────
 
-def reserve(count):
+def reserve(count, kind='primary'):
     """Read the tracker + rambler pool up front. Returns a dict:
-      {ok, start, ramblers:[(email,pw)|(None,None)], remaining_pool, pool_fid,
-       had_pool, err}
-    ok=False (with err) if Drive is unreachable — caller MUST abort (no rentals).
+      {ok, start, kind, ramblers:[(email,pw)|(None,None)], remaining_pool,
+       pool_fid, had_pool, existing_names, err}
+    `kind` is 'primary' (FB META POSTER) or 'backup_manager' (FB BACKUP MANAGER)
+    — each has its OWN sequential counter. ok=False (with err) if Drive is
+    unreachable — caller MUST abort (no rentals).
     """
     drive = _drive()
     if not drive:
@@ -196,8 +199,12 @@ def reserve(count):
         store, _fid = _load_store(drive)
     except Exception as e:
         return {'ok': False, 'err': f'tracker read failed: {type(e).__name__}: {e}'}
-    start = len(store['accounts']) + 1
-    # Existing "first last" names (lowercased) so the generator never repeats.
+    is_backup = (kind == 'backup_manager')
+    # Per-kind counter: number backups and primaries independently.
+    same_kind = [a for a in store['accounts']
+                 if (a.get('kind') == 'backup_manager') == is_backup]
+    start = len(same_kind) + 1
+    # Existing "first last" names (lowercased, ALL accounts) so no name repeats.
     existing_names = {
         (f"{a.get('first','')} {a.get('last','')}").strip().lower()
         for a in store['accounts']}
@@ -213,7 +220,7 @@ def reserve(count):
             ramblers.append(_parse_rambler(remaining.pop()))
         else:
             ramblers.append((None, None))
-    return {'ok': True, 'start': start, 'ramblers': ramblers,
+    return {'ok': True, 'start': start, 'kind': kind, 'ramblers': ramblers,
             'remaining_pool': remaining, 'pool_fid': pool_fid,
             'had_pool': pool_fid is not None,
             'existing_names': existing_names, 'err': None}
@@ -295,8 +302,14 @@ def account_txt(rec):
         f"FB phone (10-digit): {rec.get('phone10','') or '(rental failed)'}",
         f"App name: {rec.get('app_name','')}",
         f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
-        f"FB page name (option 1): {rec.get('page_name_1','')}",
-        f"FB page name (option 2): {rec.get('page_name_2','')}",
+    ]
+    # Backup-manager accounts have no Facebook page → no page names.
+    if rec.get('kind') != 'backup_manager':
+        lines += [
+            f"FB page name (option 1): {rec.get('page_name_1','')}",
+            f"FB page name (option 2): {rec.get('page_name_2','')}",
+        ]
+    lines += [
         f"Page category: {rec.get('page_category','')}",
         f"Bio: {rec.get('bio','')}",
         f"Block countries: {rec.get('block_countries','')}",

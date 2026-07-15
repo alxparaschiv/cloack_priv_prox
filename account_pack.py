@@ -314,9 +314,12 @@ def _pick_blocked_countries():
 
 
 def _gen_blocked_words():
-    """5-7 words: always 'ai' + 'slop', the rest legit curse words."""
+    """5-7 words: always includes 'ai' + 'slop', the rest legit curse words.
+    The whole list is SHUFFLED so 'ai'/'slop' aren't always first / in the same
+    order — these get copy-pasted, so a fixed order is a fingerprint."""
     k = 3 + secrets.randbelow(3)          # 3-5 → total 5-7
-    return ['ai', 'slop'] + _sample(_CURSE_WORDS, k)
+    words = ['ai', 'slop'] + _sample(_CURSE_WORDS, k)
+    return _sample(words, len(words))     # sample-all = shuffle
 
 
 # ─── Birthdate (age 25-40, month shown as a name) ───────────────────────────
@@ -348,9 +351,11 @@ def _format_card(idx, count, rec):
             f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"
     priv = (f"<a href=\"{e(rec['privacy_url'])}\">{e(rec['privacy_url'])}</a>"
             if rec.get('privacy_url') else "⚠️ not generated")
-    return '\n'.join([
+    is_backup = rec.get('kind') == 'backup_manager'
+    lines = [
         "━━━━━━━━━━━━━━━━━━",
-        f"👤 <b>{e(rec['account'])}</b>  ({idx}/{count})",
+        f"👤 <b>{e(rec['account'])}</b>  ({idx}/{count})"
+        + ("  🗂 <i>backup manager</i>" if is_backup else ""),
         "━━━━━━━━━━━━━━━━━━",
         f"<b>Name:</b> <code>{e(rec['first'])} {e(rec['last'])}</code>",
         f"<b>Gender:</b> {e(rec['gender'])}",
@@ -360,13 +365,18 @@ def _format_card(idx, count, rec):
         f"<b>FB phone:</b> {phone}",
         f"<b>App name:</b> <code>{e(rec.get('app_name',''))}</code>",
         f"<b>Privacy policy:</b> {priv}",
-        f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
-        f"<code>{e(rec.get('page_name_2',''))}</code>",
+    ]
+    if not is_backup:
+        lines.append(
+            f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
+            f"<code>{e(rec.get('page_name_2',''))}</code>")
+    lines += [
         f"<b>Page category:</b> {e(rec.get('page_category',''))}",
         f"<b>Bio:</b> <code>{e(rec.get('bio',''))}</code>",
         f"<b>Block countries:</b> <code>{e(rec.get('block_countries',''))}</code>",
         f"<b>Block words:</b> <code>{e(rec.get('block_words',''))}</code>",
-    ])
+    ]
+    return '\n'.join(lines)
 
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None):
@@ -376,18 +386,23 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
     gothic FB page name is a play on its handle; None → standalone (loose).
     Returns (records, phone_ok, balance, sheet_url, zip_bytes, zip_name)."""
     count = max(1, min(BATCH_MAX, count))
+    is_backup = (model == BACKUP_MODEL)
+    prefix = R.BACKUP_PREFIX if is_backup else R.NAME_PREFIX
     start = reserve['start']
     ramblers = reserve['ramblers']
-    emit(f"🧩 building {count} account(s) starting at "
-         f"<b>{R.NAME_PREFIX} {start:03d}</b> for model <b>{model}</b> — names + "
-         f"passwords first, then a real 7-day FB number each.")
+    who = 'backup-manager account(s)' if is_backup else f'account(s) for model <b>{model}</b>'
+    emit(f"🧩 building {count} {who} starting at "
+         f"<b>{prefix} {start:03d}</b> — names + passwords first, then a real "
+         f"7-day FB number each.")
 
     names = _gen_names(count, reserve.get('existing_names'))
     apps = _gen_app_names(count)
     bios = _gen_bios(count)
-    # Page names: per-account when handles are supplied (tight pairing), else a
-    # single standalone batch (loose).
-    if handles:
+    # Page names: backup managers have NO Facebook page. Otherwise per-account
+    # when handles are supplied (tight pairing), else a single batch (loose).
+    if is_backup:
+        page_pairs = [('', '')] * count
+    elif handles:
         page_pairs = [_gen_page_names(model, (handles[i] if i < len(handles) else None), 1)[0]
                       for i in range(count)]
     else:
@@ -404,8 +419,10 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
         pg1, pg2 = page_pairs[i]
         h = handles[i] if handles and i < len(handles) else None
         rec = {
-            'account': f"{R.NAME_PREFIX} {start + i:03d}",
-            'index': start + i, 'model': model,
+            'account': f"{prefix} {start + i:03d}",
+            'index': start + i,
+            'model': '' if is_backup else model,
+            'kind': 'backup_manager' if is_backup else 'primary',
             'handle': h or '', 'pairing': 'tight' if _handle_tokens(h) else 'loose',
             'first': first, 'last': last, 'heritage': her, 'gender': gender,
             'birthdate': iso, 'birthdate_display': disp, 'age': age,
@@ -450,6 +467,9 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None):
 
 # ─── Telegram: /account_pack ────────────────────────────────────────────────
 
+BACKUP_MODEL = '__backup__'   # sentinel: backup-manager accounts (no FB page)
+
+
 def _model_kb():
     rows = []
     try:
@@ -458,6 +478,8 @@ def _model_kb():
                         callback_data=f"acctpack:model:{m}")])
     except Exception as e:
         logger.warning(f"[account_pack] model list err: {e}")
+    rows.append([InlineKeyboardButton("🗂 Backup manager (no FB page)",
+                callback_data=f"acctpack:model:{BACKUP_MODEL}")])
     rows.append([InlineKeyboardButton("✖ cancel", callback_data="acctpack:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -496,9 +518,10 @@ async def _run_batch(chat, context, count, model):
     await chat.send_message(
         f"🧩 generating <b>{count}</b> account package(s)…", parse_mode='HTML')
 
+    kind = 'backup_manager' if model == BACKUP_MODEL else 'primary'
     # Reserve numbering + rambler creds FIRST — abort if Drive is unreachable so
-    # we never rent numbers we can't log or assign duplicate FB META POSTER #s.
-    reserve = await asyncio.to_thread(R.reserve, count)
+    # we never rent numbers we can't log or assign duplicate numbers.
+    reserve = await asyncio.to_thread(R.reserve, count, kind)
     if not reserve['ok']:
         await chat.send_message(
             f"❌ aborted before renting anything — {html.escape(reserve['err'])}\n"
@@ -577,10 +600,15 @@ async def account_pack_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if action == 'model':
-        model = (parts[2] if len(parts) > 2 else '').strip().title() or 'Carolina'
+        raw = (parts[2] if len(parts) > 2 else '').strip()
+        if raw == BACKUP_MODEL:
+            model, label = BACKUP_MODEL, '🗂 Backup manager (no FB page)'
+        else:
+            model = raw.title() or 'Carolina'
+            label = f"🖤 model: <b>{html.escape(model)}</b>"
         context.user_data['acctpack_model'] = model
         await q.edit_message_text(
-            f"🖤 model: <b>{html.escape(model)}</b>\n\nHow many accounts?",
+            f"{label}\n\nHow many accounts?",
             parse_mode='HTML', reply_markup=_count_kb())
         return
 
