@@ -95,6 +95,36 @@ def _gen(kind, model, req_id, handle=None, folder=None,
     return True
 
 
+def _available_proxies(va_label):
+    """Count validated proxies FREE for this VA (pool minus already-assigned) —
+    mirrors reserve()'s proxy math so we can tell if a real proxy will be assigned.
+    Fail-OPEN (returns a big number) on any error so a check bug never blocks delivery."""
+    try:
+        drive = R._drive()
+        if not drive:
+            return 99
+        plines, _ = R._load_proxy(drive)
+        store, _ = R._load_store(drive, R.registry_json_name(va_label))
+        used = {a.get('proxy', '') for a in store.get('accounts', []) if a.get('proxy')}
+        return len([p for p in plines if p and p not in used])
+    except Exception as e:
+        logger.warning(f"[pkg-queue] proxy availability check failed: {e}")
+        return 99
+
+
+def _req_stale(req, max_age_sec=900):
+    """True if the request is older than max_age (default 15min) — used so a proxy-
+    source outage can't defer a package forever; after the window we build anyway."""
+    try:
+        import time as _t, calendar as _cal
+        fin = req.get('finished_utc') or ''
+        if not fin:
+            return False
+        return (_t.time() - _cal.timegm(_t.strptime(fin, '%Y-%m-%dT%H:%M:%SZ'))) > max_age_sec
+    except Exception:
+        return False
+
+
 def poll_once():
     """One pass: process every unseen /daily request. Returns (n_accounts, n_bms)."""
     reqs = _read_queue()
@@ -111,6 +141,16 @@ def poll_once():
         model = req.get('model') or 'Carolina'
         va_label = req.get('va_label') or 'VA001'   # per-VA registry → numbers from 001
         va_chat_id = req.get('va_chat_id')
+        # HOLD-FOR-PROXY (2026-07-16): reel-bot's autofill validates a proxy per
+        # request (~a few min via GoLogin). Building instantly ships a "pending"
+        # proxy card (the round-2 symptom). Defer — leave this request UNSEEN so the
+        # next 120s poll retries — until a free proxy exists. Safety valve: after the
+        # request is >15min old, build anyway so a proxy-source outage can't wedge
+        # delivery forever.
+        if not _req_stale(req) and _available_proxies(va_label) < 1:
+            logger.info(f"[pkg-queue] {rid}: no free validated proxy yet — deferring "
+                        f"(retry next cycle once the autofill fills the pool)")
+            continue
         if _gen('primary', model, rid,
                 handle=_handle_of(req),
                 folder=(req.get('output_folder_name') or ''),
