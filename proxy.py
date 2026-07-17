@@ -61,7 +61,16 @@ FB_PROXY_TEST_PASSWORD = os.getenv('FB_PROXY_TEST_PASSWORD', '')
 # crashes Camoufox ~9/10 launches in practice, wasting ~40s per crashed
 # launch). The FB login + reCAPTCHA gates still run, so validation quality
 # stays high — you just stop burning time on a broken browser test.
-FB_PROXY_SKIP_GOOGLE_GATE = os.getenv('FB_PROXY_SKIP_GOOGLE_GATE', '') == '1'
+# DEFAULT skip (2026-07-18, user): package-proxy validation now uses FB login +
+# reCAPTCHA v3 ONLY. The Google 'hello' step crashes Camoufox ~9/10 launches and
+# adds no signal FB+reCAPTCHA don't already give. Set FB_PROXY_SKIP_GOOGLE_GATE=0
+# to re-enable it.
+FB_PROXY_SKIP_GOOGLE_GATE = os.getenv('FB_PROXY_SKIP_GOOGLE_GATE', '1') != '0'
+
+
+class _GoogleSkip(Exception):
+    """Internal sentinel: skip the Google gate cleanly (caught in the gauntlet →
+    fall straight through to the Facebook stage)."""
 
 # 2026-05-28: API-based pre-gates burn quota fast and rate-limit. Defaulted
 # to SKIPPED so the bot doesn't loop through 20+ proxies in 4 min. Set
@@ -755,8 +764,13 @@ class ProxyPipeline:
                 # closed by default — every step that doesn't produce the
                 # expected state is treated as a fail, not a soft pass.
                 out['stage'] = 'google'
-                await _say("   ⏳ <b>⑨ Google 'hello'</b> in GoLogin browser…")
                 try:
+                    if FB_PROXY_SKIP_GOOGLE_GATE:
+                        out['google'] = 'skipped'
+                        await _say("   ⏭ <b>⑨ Google SKIPPED</b> — validating on FB login "
+                                   "+ reCAPTCHA v3 only (2026-07-18).")
+                        raise _GoogleSkip()
+                    await _say("   ⏳ <b>⑨ Google 'hello'</b> in GoLogin browser…")
                     await page.goto('https://www.google.com/',
                                     wait_until='domcontentloaded', timeout=45000)
                     await page.wait_for_timeout(_rand.randint(1500, 3000))
@@ -841,6 +855,8 @@ class ProxyPipeline:
                         out['err'] = f"URL doesn't carry q=hello: {final_url[:100]}"
                         return out
                     out['google'] = 'good'
+                except _GoogleSkip:
+                    pass                      # intentional skip → straight to Facebook
                 except Exception as e:
                     out['google'] = 'error'
                     out['err'] = f"Google: {type(e).__name__}: {str(e)[:200]}"
@@ -930,7 +946,8 @@ class ProxyPipeline:
                     out['err'] = f"reCAPTCHA: {type(e).__name__}: {str(e)[:200]}"
                     return out
 
-                # All three passed
+                # PASS = Facebook login good + reCAPTCHA v3 ≥ 0.9 (Google skipped by
+                # default, 2026-07-18) — this is the proxy that goes into the package.
                 out['ok'] = True
                 out['stage'] = 'done'
         except Exception as e:
