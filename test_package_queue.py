@@ -122,6 +122,8 @@ check("every primary has a dev_app_role in the curated set",
       all(a.get('dev_app_role') in account_pack._DEV_APP_ROLES for a in accts))
 check("every primary has a page_bg_image_url",
       all(a.get('page_bg_image_url') for a in accts))
+check("every primary ALSO has an account_bg_image_url (2 profile pics)",
+      all(a.get('account_bg_image_url') for a in accts))
 check("every primary has package_type=='' ",
       all(a.get('package_type') == '' for a in accts))
 check("every primary carries output_folder_name + source_req_id",
@@ -130,6 +132,8 @@ check("BM has package_type=='backup_manager'",
       bms[0].get('package_type') == 'backup_manager')
 check("BM has NO page_bg_image_url (intentional)",
       not bms[0].get('page_bg_image_url'))
+check("BM has NO account_bg_image_url either (intentional)",
+      not bms[0].get('account_bg_image_url'))
 check("BM still carries a proxy + one-row rambler_login + dev_app_role",
       bms[0].get('proxy') and bms[0].get('rambler_login')
       and bms[0].get('dev_app_role'))

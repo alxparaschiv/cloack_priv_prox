@@ -253,11 +253,20 @@ def _slug(s):
 
 
 def _workflow_name_from_folder(folder_name):
-    """Derive the workflow name from a reel-bot output folder name, matching the
-    bot-VA contract: 'Output Carolina Goth Compilations 5' →
-    'carolina_goth_compilations_5'. Empty folder → ''."""
+    """Derive the workflow name from a reel-bot output folder name (2026-07-17, user).
+    Rule: strip the 'Output ' prefix, DROP the 'Stack…' token (the stack id isn't part
+    of the workflow identity), slug the rest, then DROP the trailing output-instance
+    number (keeping its separator underscore).
+      'Output Carolina Goth StackPOOLA_A Mixed Goth SFW 14 1'
+        → 'carolina_goth_mixed_goth_sfw_14_'
+      'Output Kira Goth StackPOOLG_AS-BR-BV-P Mixed 1 1' → 'kira_goth_mixed_1_'
+    Empty folder → ''."""
     n = re.sub(r'^\s*output\s+', '', str(folder_name or ''), flags=re.I)
-    return _slug(n)
+    # drop the StackXXX token (single space-delimited token, e.g. 'StackPOOLA_A')
+    n = ' '.join(t for t in n.split() if not re.match(r'(?i)^stack', t))
+    s = _slug(n)
+    # drop the trailing instance number, leaving the trailing '_' separator
+    return re.sub(r'\d+$', '', s)
 
 
 def _gen_bios(count):
@@ -411,11 +420,19 @@ def _format_card(idx, count, rec):
             f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
             f"<code>{e(rec.get('page_name_2',''))}</code>")
         lines.append(f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name',''))}</code>")
+        if rec.get('cloak_link'):
+            lines.append(
+                f"🔗 <b>Link in bio</b> (paste into the account's bio): "
+                f"<code>{e(rec['cloak_link'])}</code>")
         lines.append(f"<b>Schedule:</b> <code>{e(rec.get('schedule',''))}</code>  "
                      f"<i>(auto-applied)</i>")
+        if rec.get('account_bg_image_url'):
+            lines.append(
+                f"<b>Account profile pic</b> (personal FB account): "
+                f"<a href=\"{e(rec['account_bg_image_url'])}\">image</a>")
         if rec.get('page_bg_image_url'):
             lines.append(
-                f"<b>Page background:</b> "
+                f"<b>Page profile pic</b> (FB Page): "
                 f"<a href=\"{e(rec['page_bg_image_url'])}\">image</a>")
     lines += [
         f"<b>Page category:</b> {e(rec.get('page_category',''))}",
@@ -428,7 +445,7 @@ def _format_card(idx, count, rec):
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
-                      va_label=None, va_chat_id=None):
+                      cloak_links=None, va_label=None, va_chat_id=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
@@ -472,6 +489,7 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
         pg1, pg2 = page_pairs[i]
         h = handles[i] if handles and i < len(handles) else None
         folder = output_folders[i] if output_folders and i < len(output_folders) else None
+        cl = cloak_links[i] if cloak_links and i < len(cloak_links) else ''
         if is_backup:
             wf = ''                                   # backups run no workflow
         elif folder:
@@ -509,6 +527,10 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # VA choice. Backups run no workflow → ''.
             'schedule': ('' if is_backup else _pick_schedule()),
             'output_folder_name': (folder or ''),
+            # cloak_link: the geo bio link reel-bot minted for this stack (the VA
+            # pastes it into the account's "link in bio"). 2026-07-17: was generated
+            # by reel-bot + carried on the queue request but never stored/shown.
+            'cloak_link': (cl or ''),
             'source_req_id': (source_req_ids[i]
                               if source_req_ids and i < len(source_req_ids) else ''),
             # Multi-VA tenancy: which VA this account belongs to. bot-VA routes
@@ -541,6 +563,16 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
         if not is_backup:
             try:
                 import artistic_bg_gen
+                # TWO distinct abstract backgrounds per account (2026-07-17, user):
+                #   • account_bg → profile pic for the FB PERSONAL account
+                #   • page_bg    → profile pic for the FB PAGE created on it
+                # Never the model's face on a profile pic (profile-pic rule). The
+                # generator jitters each call so the two are not pixel-identical.
+                _abgid, _ap, _aerr = artistic_bg_gen.generate_artistic_bg_random_type(
+                    profile_subfolder_name=rec['account'])
+                rec['account_bg_image_id'] = _abgid or ''
+                rec['account_bg_image_url'] = (
+                    f"https://drive.google.com/file/d/{_abgid}/view" if _abgid else '')
                 _bgid, _p, _err = artistic_bg_gen.generate_artistic_bg_random_type(
                     profile_subfolder_name=rec['account'])
                 rec['page_bg_image_id'] = _bgid or ''
@@ -548,9 +580,13 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
                     f"https://drive.google.com/file/d/{_bgid}/view" if _bgid else '')
             except Exception as _bge:
                 logger.warning(f"[account_pack] bg image {rec['account']}: {_bge}")
+                rec['account_bg_image_id'] = ''
+                rec['account_bg_image_url'] = ''
                 rec['page_bg_image_id'] = ''
                 rec['page_bg_image_url'] = ''
         else:
+            rec['account_bg_image_id'] = ''
+            rec['account_bg_image_url'] = ''
             rec['page_bg_image_id'] = ''
             rec['page_bg_image_url'] = ''
         records.append(rec)
