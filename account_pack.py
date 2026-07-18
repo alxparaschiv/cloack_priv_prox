@@ -445,7 +445,8 @@ def _format_card(idx, count, rec):
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
-                      cloak_links=None, va_label=None, va_chat_id=None):
+                      cloak_links=None, va_label=None, va_chat_id=None,
+                      delivery_mode=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
@@ -538,6 +539,9 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # numbering restart at 001 per VA.
             'va_label': (va_label or ''),
             'va_chat_id': (va_chat_id if va_chat_id is not None else ''),
+            # Task-delivery mode (2026-07-18): 'auto' → bot-VA auto-issues; 'manual'
+            # → parked for the operator to send from the tracker board. Default auto.
+            'delivery_mode': (delivery_mode or 'auto'),
         }
         emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
         rental_id, phone, err = rental._rent_seven_day('facebook')

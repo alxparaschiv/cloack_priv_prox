@@ -78,7 +78,8 @@ def _handle_of(req):
 
 
 def _gen(kind, model, req_id, handle=None, folder=None,
-         cloak_link=None, va_label='VA001', va_chat_id=None):
+         cloak_link=None, va_label='VA001', va_chat_id=None,
+         delivery_mode='auto'):
     """Reserve + generate ONE package via account_pack (no Telegram objects),
     into the VA's OWN per-VA registry (so each VA numbers from 001)."""
     reserve = R.reserve(1, kind, va_label=va_label)
@@ -92,7 +93,8 @@ def _gen(kind, model, req_id, handle=None, folder=None,
         output_folders=([folder] if folder is not None else None),
         source_req_ids=[req_id],
         cloak_links=([cloak_link] if cloak_link is not None else None),
-        va_label=va_label, va_chat_id=va_chat_id)
+        va_label=va_label, va_chat_id=va_chat_id,
+        delivery_mode=delivery_mode)
     return True
 
 
@@ -142,6 +144,9 @@ def poll_once():
         model = req.get('model') or 'Carolina'
         va_label = req.get('va_label') or 'VA001'   # per-VA registry → numbers from 001
         va_chat_id = req.get('va_chat_id')
+        # Task-delivery mode (2026-07-18): rides through to the task so bot-VA
+        # auto-issues ('auto') or parks it for the operator ('manual'). Default auto.
+        delivery_mode = req.get('delivery_mode') or 'auto'
         # HOLD-FOR-PROXY (2026-07-16): reel-bot's autofill validates a proxy per
         # request (~a few min via GoLogin). Building instantly ships a "pending"
         # proxy card (the round-2 symptom). Defer — leave this request UNSEEN so the
@@ -156,11 +161,13 @@ def poll_once():
                 handle=_handle_of(req),
                 folder=(req.get('output_folder_name') or ''),
                 cloak_link=(req.get('cloak_link') or ''),
-                va_label=va_label, va_chat_id=va_chat_id):
+                va_label=va_label, va_chat_id=va_chat_id,
+                delivery_mode=delivery_mode):
             n_acct += 1
         if req.get('wants_backup_manager'):
             if _gen('backup_manager', account_pack.BACKUP_MODEL, rid + '-bm',
-                    va_label=va_label, va_chat_id=va_chat_id):
+                    va_label=va_label, va_chat_id=va_chat_id,
+                    delivery_mode=delivery_mode):
                 n_bm += 1
         seen.add(rid)
         seen_fid = _save_seen(seen, seen_fid)        # persist after each request
