@@ -443,6 +443,33 @@ def _format_card(idx, count, rec):
     return '\n'.join(lines)
 
 
+def _gen_one_profile_bg(account_name):
+    """Return ONE profile-background Drive id, chosen 50/50 (2026-07-18, user)
+    between the two generators, so account packages get a MIX of both looks:
+      • AI artistic  (/artistic_bg — generate_artistic_bg_random_type), and
+      • procedural Artistic category of /bg_generator (impressionist / splatter /
+        watercolor / color-field).
+    Both save into the same per-account subfolder under OUTPUT_ROOT_NAME. Returns
+    '' on failure (falls back to the AI generator if the procedural path fails)."""
+    import random as _random
+    import artistic_bg_gen as _ag
+    if _random.random() < 0.5:
+        try:
+            import bg as _bg
+            png, fname = _bg._generate_one_png('artistic')   # Artistic category
+            svc = _ag._drive_service()
+            root = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
+            parent = _ag._ensure_folder(svc, account_name, root)
+            return _ag._upload_bytes_to_drive(svc, parent, fname, png,
+                                              mime='image/png') or ''
+        except Exception as e:
+            logger.warning(f"[account_pack] procedural Artistic bg failed "
+                           f"({e}) — falling back to AI artistic")
+    _id, _p, _err = _ag.generate_artistic_bg_random_type(
+        profile_subfolder_name=account_name)
+    return _id or ''
+
+
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
                       cloak_links=None, va_label=None, va_chat_id=None,
@@ -566,20 +593,18 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
         # no FB page → no picture). Best-effort like privacy; never blocks a row.
         if not is_backup:
             try:
-                import artistic_bg_gen
                 # TWO distinct abstract backgrounds per account (2026-07-17, user):
                 #   • account_bg → profile pic for the FB PERSONAL account
                 #   • page_bg    → profile pic for the FB PAGE created on it
-                # Never the model's face on a profile pic (profile-pic rule). The
-                # generator jitters each call so the two are not pixel-identical.
-                _abgid, _ap, _aerr = artistic_bg_gen.generate_artistic_bg_random_type(
-                    profile_subfolder_name=rec['account'])
-                rec['account_bg_image_id'] = _abgid or ''
+                # Never the model's face (profile-pic rule). Each pic is picked
+                # 50/50 between the AI artistic generator and /bg_generator's
+                # Artistic category (2026-07-18, user) → a mix of both looks.
+                _abgid = _gen_one_profile_bg(rec['account'])
+                rec['account_bg_image_id'] = _abgid
                 rec['account_bg_image_url'] = (
                     f"https://drive.google.com/file/d/{_abgid}/view" if _abgid else '')
-                _bgid, _p, _err = artistic_bg_gen.generate_artistic_bg_random_type(
-                    profile_subfolder_name=rec['account'])
-                rec['page_bg_image_id'] = _bgid or ''
+                _bgid = _gen_one_profile_bg(rec['account'])
+                rec['page_bg_image_id'] = _bgid
                 rec['page_bg_image_url'] = (
                     f"https://drive.google.com/file/d/{_bgid}/view" if _bgid else '')
             except Exception as _bge:
