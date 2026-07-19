@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Carolina 🖤</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Ccircle%20cx%3D%2232%22%20cy%3D%2232%22%20r%3D%2232%22%20fill%3D%22%2300aff0%22%2F%3E%3Ctext%20x%3D%2232%22%20y%3D%2244%22%20font-family%3D%22Helvetica%2CArial%2Csans-serif%22%20font-size%3D%2236%22%20font-weight%3D%22700%22%20fill%3D%22white%22%20text-anchor%3D%22middle%22%3EC%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Ccircle%20cx%3D%2232%22%20cy%3D%2232%22%20r%3D%2232%22%20fill%3D%22%2300aff0%22%2F%3E%3Ctext%20x%3D%2232%22%20y%3D%2244%22%20font-family%3D%22Helvetica%2CArial%2Csans-serif%22%20font-size%3D%2236%22%20font-weight%3D%22700%22%20fill%3D%22white%22%20text-anchor%3D%22middle%22%3EC%3C%2Ftext%3E%3C%2Fsvg%3E">
+<meta name="theme-color" content="#00aff0">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:#000;color:#fff;min-height:100vh}
+  .wrap{max-width:520px;margin:0 auto;padding:24px 16px 40px;}
+  .ident{text-align:center;padding:20px 12px 4px;position:relative}
+  .display{font-size:28px;font-weight:700;color:#fff;margin-bottom:4px}
+  .bio{color:#ccc;font-size:15px;margin:8px 0 20px;padding:0 8px}
+  .stack{display:flex;flex-direction:column;gap:14px;padding:0 6px;margin-top:14px}
+  a.btn{display:flex;align-items:center;justify-content:center;gap:10px;
+        text-decoration:none;color:#fff;border-radius:16px;
+        padding:18px 16px;font-weight:600;font-size:16px;
+        transition:transform .15s ease,opacity .15s ease}
+  a.btn:hover{transform:scale(1.02);opacity:.95}
+  a.x{background:#000;border:1px solid #2a2a2a}
+  a.ig{background:linear-gradient(135deg,#f09433 0%,#e6683c 25%,
+       #dc2743 50%,#cc2366 75%,#bc1888 100%)}
+  .brand-icon{width:24px;height:24px;display:inline-flex;align-items:center;
+              justify-content:center;flex:0 0 auto}
+  .brand-icon svg{width:100%;height:100%}
+  /* OF card — TOP of the page, heartbeat animation, real OF logo. */
+  @keyframes heartbeat {
+    0%, 30%, 70%, 100% { transform: scale(1); }
+    15%, 45%           { transform: scale(1.035); }
+  }
+  a.of-card{display:block;position:relative;border-radius:22px;
+            overflow:hidden;text-decoration:none;
+            /* Warm magenta/pink-violet halo — feminine + intense
+               without being a flashlight. Slightly larger spread
+               than the prior blue glow so it stands out without
+               screaming. */
+            box-shadow:0 16px 70px 4px rgba(225, 70, 175, .55);
+            animation: heartbeat 1.8s ease-in-out infinite;
+            transform-origin: center center}
+  a.of-card:hover{animation-play-state:paused;transform:scale(1.04)}
+  a.of-card .of-img{width:100%;aspect-ratio:4/5;object-fit:cover;
+                    display:block}
+  a.of-card .of-logo{position:absolute;top:14px;left:14px;
+                     width:44px;height:44px;
+                     background:#00aff0;border-radius:50%;
+                     display:flex;align-items:center;justify-content:center;
+                     box-shadow:0 2px 14px rgba(0,175,240,.65)}
+  a.of-card .of-logo svg{width:30px;height:30px}
+  a.of-card .of-overlay{position:absolute;left:0;right:0;bottom:0;
+                        padding:24px 16px 26px;
+                        background:linear-gradient(to bottom,
+                          rgba(0,0,0,0),rgba(0,0,0,.85));
+                        color:#fff;text-align:center;
+                        font-size:26px;font-weight:800;
+                        letter-spacing:.5px;
+                        text-shadow:0 2px 10px rgba(0,0,0,.7)}
+  .row{display:flex;align-items:center;gap:14px}
+  .row .label{flex:1;text-align:left}
+  .foot{text-align:center;color:#666;font-size:11px;margin-top:30px}
+  a.brand-foot{display:inline-block;margin-top:6px;
+               color:#888;text-decoration:none;
+               font-size:12px;font-weight:600;letter-spacing:.4px;
+               transition:color .15s ease}
+  a.brand-foot:hover{color:#ccc}
+  /* Tooltip pointing at the three-dots menu — shown ONLY when JS
+     detects an in-app webview (Instagram/FB/TikTok/etc). Real browsers
+     skip it because their menus aren't ⋯-shaped. */
+  #ext-tip{display:none;position:fixed;top:14px;right:14px;z-index:9998;
+           max-width:220px;padding:10px 14px;
+           background:#fff;color:#111;border-radius:14px;
+           font-size:13px;font-weight:600;line-height:1.35;
+           box-shadow:0 6px 28px rgba(0,0,0,.55);text-align:center}
+  #ext-tip:after{content:"";position:absolute;top:-9px;right:18px;
+                 width:0;height:0;border:9px solid transparent;
+                 border-top:none;border-bottom-color:#fff}
+  /* 18+ interstitial — shown ONLY when JS detects an in-app webview
+     AND the user taps the OF card. Real-browser users skip it entirely
+     and go straight through the /r → /v → /go chain. Webview users
+     see this overlay first so they can choose how to escape (pink
+     button = x-safari://r, ⋯ menu = reopen landing page in OS browser). */
+  #ext-overlay{display:none;position:fixed;inset:0;z-index:10000;
+               background:rgba(0,0,0,.92);backdrop-filter:blur(8px);
+               -webkit-backdrop-filter:blur(8px);
+               flex-direction:column;align-items:center;justify-content:center;
+               padding:32px 28px;color:#fff;text-align:center}
+  #ext-overlay.show{display:flex}
+  #ext-overlay .x{position:absolute;top:22px;left:22px;
+                  width:38px;height:38px;border-radius:50%;
+                  background:rgba(255,255,255,.1);
+                  display:flex;align-items:center;justify-content:center;
+                  font-size:22px;cursor:pointer;color:#fff}
+  #ext-overlay .ext-eye{width:72px;height:72px;margin-bottom:32px;opacity:.95}
+  #ext-overlay h2{font-size:24px;font-weight:800;margin-bottom:20px;
+                  letter-spacing:.3px}
+  #ext-overlay p{font-size:15px;color:#ccc;margin-bottom:26px;line-height:1.5;
+                 max-width:340px}
+  #ext-overlay .ext-instr{font-size:14px;color:#aaa;margin:0 0 36px;
+                          padding:0 16px;line-height:1.5;max-width:340px}
+  #ext-overlay .ext-instr b{color:#fff;font-weight:700}
+  #ext-overlay #ext-go{appearance:none;border:none;cursor:pointer;
+                       display:inline-block;text-decoration:none;
+                       padding:18px 34px;border-radius:16px;
+                       background:linear-gradient(135deg,#e8458f,#9c27b0);
+                       color:#fff;font-size:17px;font-weight:700;
+                       letter-spacing:.3px;
+                       box-shadow:0 10px 36px rgba(225,70,175,.55);
+                       transition:transform .15s ease}
+  #ext-overlay #ext-go:active{transform:scale(.97)}
+</style>
+
+<style>
+/* ===== OF-CARD REDESIGN ===== */
+@media (max-width:560px){ a.of-card .of-img{aspect-ratio:5/8 !important} }
+a.of-card .of-overlay{padding:0 14px 16px !important;
+  background:linear-gradient(to bottom,rgba(0,0,0,0),rgba(0,0,0,.45)) !important;
+  font-size:initial !important;letter-spacing:normal !important;text-shadow:none !important;font-weight:normal !important}
+a.of-card .of-cta-btn{display:block;width:80%;margin:0 auto;background:#1d9bf0;color:#fff;border-radius:14px;
+  padding:16px 18px;font-size:18px;font-weight:800;letter-spacing:.3px;text-align:center;
+  box-shadow:0 8px 30px 2px rgba(29,155,240,.55);text-shadow:0 1px 2px rgba(0,0,0,.3)}
+</style>
+</head>
+<body>
+<div id="ext-tip">Tap <b>⋯</b> → <b>Open in external browser</b></div>
+<div id="ext-overlay" role="dialog" aria-modal="true">
+  <span class="x" onclick="document.getElementById('ext-overlay').classList.remove('show')">×</span>
+  <svg class="ext-eye" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 17.94 17.94 A 10.07 10.07 0 0 1 12 20 c-7 0-11-8-11-8 a 18.45 18.45 0 0 1 5.06-5.94 M 9.9 4.24 A 9.12 9.12 0 0 1 12 4 c 7 0 11 8 11 8 a 18.5 18.5 0 0 1-2.16 3.19 m-6.72-1.07 a 3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+  <h2>18+ Content Warning</h2>
+  <p>This link may contain graphic or adult content.</p>
+  <div class="ext-instr">Tap the <b>⋯</b> in the top right, then choose <b>Open in external browser</b></div>
+  <a id="ext-go" href="#" target="_blank" rel="noopener">Open in external browser</a>
+  <div id="ext-hold-hint" style="display:none;margin-top:14px;font-size:13px;color:rgba(255,255,255,.78);max-width:300px;line-height:1.5">☝️ <b>Hold</b> the pink button for a moment, then tap <b>Open</b></div>
+</div>
+<div class="wrap">
+  
+    <a class="of-card" href="/r?utm_source=rd&utm_medium=organic&utm_campaign=caroluunegothy&utm_content=bio_link" data-rotate-utm="of" data-base-href="/r" rel="noopener">
+      <img class="of-img" src="https://caroluunegothy.myhangouts.com/img/caroluunegothy/of" alt="">
+      <span class="of-logo">
+        <!-- White padlock on the light-blue circle backdrop set by
+             .of-logo (background:#00aff0). Generic lock mark — implies
+             "exclusive/locked content" without using any brand trademark. -->
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <!-- Shackle (arc above the body) -->
+          <path d="M 8 11 V 8 a 4 4 0 0 1 8 0 v 3" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          <!-- Lock body (rounded rect) -->
+          <rect x="6" y="11" width="12" height="9" rx="1.8" fill="#fff"/>
+          <!-- Keyhole (cut-out colored same as backdrop) -->
+          <circle cx="12" cy="15" r="1.2" fill="#00aff0"/>
+          <rect x="11.4" y="15.4" width="1.2" height="3" rx="0.6" fill="#00aff0"/>
+        </svg>
+      </span>
+      <div class="of-overlay"><div class="of-cta-btn">SEND ME A MESSAGE ❤️</div></div>
+    </a>
+  <div class="ident">
+    <div class="display">Carolina 🖤</div>
+    <div class="bio">delete your photos while I hex you</div>
+    <div class="stack">
+      
+      
+    </div>
+    <div class="foot">© 2026 · Carolina 🖤 · All rights reserved
+      <br><a class="brand-foot" href="/">✨ Caroluunegothy</a></div>
+  </div>
+</div>
+<script>
+// ─── UTM rotation (2026-05-18) ───────────────────────────────────────
+// Bake-time UTMs (rendered into hrefs above) are only the no-JS fallback.
+// With JS, every page load AND every click rewrites a[data-rotate-utm]
+// hrefs with a freshly-picked random set, so:
+//   • Cloudflare edge cache returning stale HTML → fixed (JS rewrites
+//     on load before user sees anything).
+//   • Browser bfcache replaying the same DOM on Back/Forward → fixed
+//     (capture-phase click listener rewrites just before navigation).
+//   • Multiple clicks on the same page → each click gets a distinct
+//     UTM set propagated through /r → /v → /go.
+// Pools mirror the server-side buildUtmQueryString in this file.
+(function(){
+  var SOURCES = ['ig','instagram','tt','tiktok','x','twitter','rd','reddit'];
+  var MEDIUMS = ['social','referral','organic'];
+  var CONTENTS = ['link_in_bio','bio_link','profile_link','profile',
+                  'story_link','story_swipe','dm_link','link_sticker',
+                  'pinned_post','highlight'];
+  var SLUG = "caroluunegothy";
+  function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+  function freshQs(){
+    return 'utm_source=' + encodeURIComponent(pick(SOURCES))
+      + '&utm_medium=' + encodeURIComponent(pick(MEDIUMS))
+      + '&utm_campaign=' + encodeURIComponent(SLUG)
+      + '&utm_content=' + encodeURIComponent(pick(CONTENTS));
+  }
+  function rewriteHref(a){
+    var base = a.getAttribute('data-base-href');
+    if (!base) return;
+    var sep = base.indexOf('?') >= 0 ? '&' : '?';
+    a.setAttribute('href', base + sep + freshQs());
+  }
+  // 1) Initial rewrite (handles Cloudflare cache / bfcache that may serve
+  //    stale baked-in UTMs)
+  document.querySelectorAll('a[data-rotate-utm]').forEach(rewriteHref);
+  // 2) Per-click rewrite (capture phase = runs before any other handler
+  //    and before browser navigation, so the new href is what actually
+  //    gets navigated to). Delegates from document so it survives any
+  //    later DOM mutations.
+  document.addEventListener('click', function(e){
+    if (e.target && e.target.closest) {
+      var a = e.target.closest('a[data-rotate-utm]');
+      if (a) rewriteHref(a);
+    }
+  }, true);
+})();
+</script>
+<script>
+(function(){
+  // Two distinct flows depending on the user's browser context:
+  //   • Real browser (Safari/Chrome): OF card → /r → /v → /go chain
+  //     plays out naturally. No overlay, no escape attempt.
+  //   • In-app webview (IG/FB/TikTok/etc): OF card tap is intercepted
+  //     and the 18+ overlay shows instead. From the overlay, user can
+  //     (a) tap pink button → x-safari://r or intent://r → OS prompts
+  //     "Leave [App]? Open Safari" → chain plays out externally; or
+  //     (b) tap ⋯ → "Open in external browser" → landing page reopens
+  //     in OS browser → user taps OF card again → falls into the
+  //     real-browser flow.
+  var ua = navigator.userAgent || '';
+  // Explicit in-app tokens — covers most major apps.
+  var inApp = /Instagram|FBAN|FBAV|FB_IAB|FB4A|FBIOS|MessengerForiOS|TikTok|musical_ly|Bytedance|Twitter|TwitterAndroid|Snapchat|MicroMessenger|WeChat|Pinterest|YJApp|KAKAOTALK|NAVER/i.test(ua)
+              || /Line\//i.test(ua)
+              || /\bFacebook\b/i.test(ua);
+  // Heuristic fallback: a mobile UA that is missing every real-browser
+  // signature is almost certainly a webview (FB, Messenger, etc. don't
+  // always include their FBAN/FBAV/FB_IAB tokens — e.g. FB on iOS
+  // sometimes ships only a Mobile/15E148 marker). Better to over-show
+  // the overlay than miss a webview tap.
+  if (!inApp) {
+    var isIOSua = /iPhone|iPad|iPod/i.test(ua);
+    var isAndroidUa = /Android/i.test(ua);
+    if (isIOSua) {
+      var hasRealBrowserTok = /Safari\//i.test(ua) || /CriOS\//i.test(ua) ||
+                              /FxiOS\//i.test(ua) || /EdgiOS\//i.test(ua);
+      if (!hasRealBrowserTok) inApp = true;
+    } else if (isAndroidUa) {
+      // ";wv)" is the standard Android WebView marker, "; wv)" with space too.
+      if (/;\s*wv\)/i.test(ua)) inApp = true;
+    }
+  }
+  if (!inApp) return;  // real browser — let OF card navigate naturally
+
+  var tip = document.getElementById('ext-tip');
+  if (tip) tip.style.display = 'block';
+
+  var ofCard = document.querySelector('a.of-card');
+  var overlay = document.getElementById('ext-overlay');
+  var goBtn = document.getElementById('ext-go');
+  if (ofCard && overlay) {
+    ofCard.addEventListener('click', function(e){
+      e.preventDefault();
+      overlay.classList.add('show');
+    }, false);
+  }
+  if (goBtn && ofCard) {
+    // Pink button escape — replicates Bouncy.ai's mechanism, reverse-
+    // engineered from their public bouncy-meta-escape.js (2026-05-14).
+    //
+    //   • iOS + Instagram webview: fire private scheme
+    //       instagram://extbrowser/?url=<encoded /r>
+    //     IG app routes it to Safari. Single tap, no hold needed.
+    //   • iOS + Threads webview: fire private scheme
+    //       barcelona://extbrowser/?url=<encoded /r>
+    //     Same mechanism; "Barcelona" is Threads' internal name.
+    //   • iOS + Facebook (or any other iOS webview): two-step —
+    //     (1) try googlechromes://<host>/r (single tap if Chrome
+    //         is installed → Chrome opens it),
+    //     (2) after 200ms if still on the page, transform the button
+    //         into an <a href="https://<host>/r"> with click
+    //         preventDefault'd and show a "Hold then tap Open" hint.
+    //         User long-presses → iOS native long-press menu fires
+    //         at ~500ms → tap "Open" → "Leave Facebook?" prompt →
+    //         Safari opens.
+    //     FB on iOS has no scheme that works without hold —
+    //     confirmed by Bouncy's source ("no known scheme works").
+    //   • Android (any webview): intent:// on anchor href. Works on
+    //     stock Android, Xiaomi/MIUI, OPPO/ColorOS, Huawei, Samsung —
+    //     every Chromium-based WebView honors intent URIs.
+    var rawHref = ofCard.getAttribute('href') || '/r';
+    var href = new URL(rawHref, location.href).href;
+    var isIOS = /iPhone|iPad|iPod/i.test(ua);
+    var isAndroid = /Android/i.test(ua);
+    if (isIOS) {
+      // Detect the Meta sub-platform. Threads check BEFORE Instagram
+      // because Threads' UA includes both Barcelona and Instagram tokens.
+      var iosPlatform = /Barcelona/i.test(ua) ? 'threads'
+                      : /FBAN|FBAV|FB_IAB|FB4A|FBIOS/i.test(ua) ? 'facebook'
+                      : /Instagram/i.test(ua) ? 'instagram'
+                      : 'other';
+      if (iosPlatform === 'instagram' || iosPlatform === 'threads') {
+        var metaScheme = iosPlatform === 'instagram'
+          ? 'instagram://extbrowser/?url='
+          : 'barcelona://extbrowser/?url=';
+        goBtn.setAttribute('href', '#');
+        goBtn.addEventListener('click', function(e){
+          e.preventDefault();
+          // location.replace — does NOT add an entry to history,
+          // matches Bouncy's call.
+          try { window.location.replace(metaScheme + encodeURIComponent(href)); }
+          catch (_e) { window.location.href = metaScheme + encodeURIComponent(href); }
+        }, false);
+      } else {
+        // Facebook or unknown iOS webview — Bouncy's exact 3-scheme
+        // fallback chain. Whichever one this device's WKWebView
+        // honors first wins. From adult-bounce-inline.js lines 479-486:
+        //   T=0     : googlechrome://<host>/...   (Chrome, if installed)
+        //   T=500ms : x-safari-https://<host>/... (Safari scheme)
+        //   T=1000ms: window.open(url, '_blank')  (last-ditch popup)
+        //   T=1500ms: transform button to long-press anchor as final
+        //             fallback (user holds → iOS native menu → Safari).
+        goBtn.setAttribute('href', '#');
+        var transformed = false;
+        goBtn.addEventListener('click', function(e){
+          if (transformed) {
+            // Already in long-press mode — block tap, force hold.
+            e.preventDefault();
+            return;
+          }
+          e.preventDefault();
+          // T=0: googlechrome:// (single colon variant — what Bouncy uses).
+          try {
+            window.location.href = 'googlechrome://' + href.replace(/^https?:\/\//, '');
+          } catch (_e) {}
+          // T=500ms: x-safari- + full URL (prepended, NOT x-safari-https://).
+          setTimeout(function(){
+            if (document.hidden) return;
+            try { window.location.href = 'x-safari-' + href; } catch (_e) {}
+          }, 500);
+          // T=1000ms: window.open as fallback popup.
+          setTimeout(function(){
+            if (document.hidden) return;
+            try { window.open(href, '_blank'); } catch (_e) {}
+          }, 1000);
+          // T=1500ms: still here? transform to long-press anchor.
+          setTimeout(function(){
+            if (document.hidden) return;
+            transformed = true;
+            goBtn.setAttribute('href', href);
+            goBtn.setAttribute('target', '_blank');
+            var hint = document.getElementById('ext-hold-hint');
+            if (hint) hint.style.display = 'block';
+          }, 1500);
+        }, false);
+      }
+    } else if (isAndroid) {
+      var stripped = href.replace(/^https?:\/\//, '');
+      goBtn.href = 'intent://' + stripped + '#Intent;scheme=https;'
+                 + 'S.browser_fallback_url=' + encodeURIComponent(href)
+                 + ';end';
+    } else {
+      // Desktop webview or unknown — open in new tab.
+      goBtn.href = href;
+      goBtn.target = '_blank';
+    }
+  }
+})();
+</script>
+</body>
+</html>

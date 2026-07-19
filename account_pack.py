@@ -390,14 +390,17 @@ def random_birthdate():
 
 def _format_card(idx, count, rec):
     e = html.escape
-    phone = f"<code>{e(rec['phone10'])}</code>" if rec.get('phone10') else \
-            f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"
+    minimal = rec.get('minimal')
+    phone = ("📱 <i>use your own number</i>" if minimal else
+             (f"<code>{e(rec['phone10'])}</code>" if rec.get('phone10')
+              else f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"))
     priv = (f"<a href=\"{e(rec['privacy_url'])}\">{e(rec['privacy_url'])}</a>"
             if rec.get('privacy_url') else "⚠️ not generated")
     rlogin = (f"<code>{e(rec['rambler_login'])}</code>"
               if rec.get('rambler_login') else "⚠️ pool empty — add to Drive")
-    prox = (f"<code>{e(rec['proxy'])}</code>" if rec.get('proxy')
-            else "⏳ pending — from the proxy check")
+    prox = ("🌐 <i>use your own proxy</i>" if minimal else
+            (f"<code>{e(rec['proxy'])}</code>" if rec.get('proxy')
+             else "⏳ pending — from the proxy check"))
     is_backup = rec.get('kind') == 'backup_manager'
     lines = [
         "━━━━━━━━━━━━━━━━━━",
@@ -473,8 +476,12 @@ def _gen_one_profile_bg(account_name):
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
                       cloak_links=None, va_label=None, va_chat_id=None,
-                      delivery_mode=None):
+                      delivery_mode=None, minimal=False):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
+    `minimal=True` (operator's own-number flow): SKIP renting a Facebook number,
+    SKIP the proxy, and SKIP the privacy-policy link — the operator already has
+    their own numbers + proxies and doesn't want links. Everything else (name,
+    gender, dob, password, rambler, app name, FB page name, bio…) is kept.
     `model` is the reference-model display name (e.g. 'Carolina').
     `handles` (optional) is a per-account list of cloak-link handles so each
     gothic FB page name is a play on its handle; None → standalone (loose).
@@ -536,6 +543,7 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             'password': pwds[i],
             'rambler_email': r_email or '', 'rambler_password': r_pw or '',
             'app_name': app_name, 'privacy_url': '',
+            'minimal': bool(minimal),
             'page_name_1': pg1, 'page_name_2': pg2,
             'page_category': _pick_page_category(),
             'bio': bios[i],
@@ -546,7 +554,7 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # rambler_login: ONE row email:password so the VA pastes it straight
             # into /rambler (kept alongside the split fields).
             'rambler_login': (f"{r_email}:{r_pw}" if r_email else ''),
-            'proxy': (proxies[i] if i < len(proxies) else ''),
+            'proxy': ('' if minimal else (proxies[i] if i < len(proxies) else '')),
             'dev_app_role': _pick_dev_app_role(),
             # bot-VA reads package_type ('' = normal account, 'backup_manager' = BM);
             # his `kind` field is kept untouched above.
@@ -570,18 +578,25 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # → parked for the operator to send from the tracker board. Default auto.
             'delivery_mode': (delivery_mode or 'auto'),
         }
-        emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
-        rental_id, phone, err = rental._rent_seven_day('facebook')
-        if err or not phone:
-            rec['phone_err'] = err or 'no number returned'
+        if minimal:
+            # Operator's own-number flow: no rental, no proxy. (Privacy link IS kept.)
             rec['phone10'] = ''
             rec['rental_id'] = ''
+            rec['phone_err'] = ''
         else:
-            digits = ''.join(c for c in phone if c.isdigit())
-            rec['phone10'] = digits[-10:] if len(digits) >= 10 else digits
-            rec['rental_id'] = rental_id
-            phone_ok += 1
-        # Auto-generate a privacy policy for this app (best-effort).
+            emit(f"📱 {i+1}/{count} renting Facebook number for {rec['account']}…")
+            rental_id, phone, err = rental._rent_seven_day('facebook')
+            if err or not phone:
+                rec['phone_err'] = err or 'no number returned'
+                rec['phone10'] = ''
+                rec['rental_id'] = ''
+            else:
+                digits = ''.join(c for c in phone if c.isdigit())
+                rec['phone10'] = digits[-10:] if len(digits) >= 10 else digits
+                rec['rental_id'] = rental_id
+                phone_ok += 1
+        # Auto-generate a privacy policy for this app (best-effort). Kept even in
+        # minimal mode — the Meta developer app requires a privacy-policy URL.
         try:
             url, perr, _meta = privacy._create_privacy_policy_dispatch(app_name=app_name)
             rec['privacy_url'] = url or ''
@@ -661,6 +676,7 @@ async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYP
     # Clear any stale text-collecting session so it can't swallow our inputs.
     context.user_data.pop('batch_verify', None)
     context.user_data.pop('expecting_acctpack_count', None)
+    context.user_data['acctpack_minimal'] = False       # full flow (rents number + proxy + link)
     balance, ramb = await asyncio.to_thread(
         lambda: (rental._balance_str(), R.rambler_count()))
     ramb_line = (f"📧 Rambler pool: <b>{ramb}</b> left"
@@ -677,10 +693,35 @@ async def account_pack_command(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='HTML', reply_markup=_model_kb())
 
 
-async def _run_batch(chat, context, count, model):
+async def account_pack_min_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Minimal package generator — for when YOU already have the FB numbers +
+    proxies: builds everything EXCEPT the FB number and the proxy (the
+    privacy-policy link IS kept — Meta needs it). Same model → count flow."""
+    context.user_data.pop('batch_verify', None)
+    context.user_data.pop('expecting_acctpack_count', None)
+    context.user_data['acctpack_minimal'] = True
+    ramb = await asyncio.to_thread(R.rambler_count)
+    ramb_line = (f"📧 Rambler pool: <b>{ramb}</b> left"
+                 if ramb is not None else
+                 "📧 Rambler pool: <i>no rambler_pool.txt on Drive yet</i>")
+    await update.message.reply_text(
+        "🧩 <b>Account package generator — MINIMAL</b>\n\n"
+        "For accounts where <b>you</b> supply the number + proxy. Each package has "
+        "a name + gender, birthdate, strong password, Rambler email, app name, a "
+        "<b>privacy-policy link</b> and a gothic <b>FB page name</b> for the chosen "
+        "model.\n\n"
+        "🚫 <b>Skipped:</b> Facebook number · proxy <i>(you bring your own)</i>. "
+        "No numbers are rented → no cost.\n\n"
+        f"{ramb_line}\n\nPick the reference model 👇",
+        parse_mode='HTML', reply_markup=_model_kb())
+
+
+async def _run_batch(chat, context, count, model, minimal=False):
     count = max(1, min(BATCH_MAX, count))
     await chat.send_message(
-        f"🧩 generating <b>{count}</b> account package(s)…", parse_mode='HTML')
+        f"🧩 generating <b>{count}</b> account package(s)"
+        + (" — <b>minimal</b> (your own number + proxy)…" if minimal else "…"),
+        parse_mode='HTML')
 
     kind = 'backup_manager' if model == BACKUP_MODEL else 'primary'
     # Reserve numbering + rambler creds FIRST — abort if Drive is unreachable so
@@ -715,7 +756,7 @@ async def _run_batch(chat, context, count, model):
             pass
 
     records, phone_ok, balance, sheet_url = await asyncio.to_thread(
-        generate_packages, count, reserve, model, emit, post_one)
+        generate_packages, count, reserve, model, emit, post_one, minimal=minimal)
 
     # Deliver ONE combined .txt with every account (single file, easy to keep).
     import io as _io
@@ -742,15 +783,23 @@ async def _run_batch(chat, context, count, model):
                      f"left (used {used})")
     else:
         ramb_line = "📧 Rambler pool: <i>no rambler_pool.txt on Drive</i>"
-    await context.bot.send_message(
-        chat_id=chat.id,
-        text=(f"🎉 <b>Done</b> — {len(records)} account(s), {phone_ok} with a "
-              f"live FB number.\n{sheet_line}\n"
-              f"💰 balance: <code>{html.escape(balance)}</code>\n{ramb_line}\n\n"
-              f"Tap below to grab the SMS codes for this whole batch."),
-        parse_mode='HTML', disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-            "🔑 Get SMS codes for this batch", callback_data="acctpack:sms")]]))
+    if minimal:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=(f"🎉 <b>Done</b> — {len(records)} <b>minimal</b> package(s) "
+                  f"(your own number + proxy).\n{sheet_line}\n"
+                  f"💰 balance: <code>{html.escape(balance)}</code>\n{ramb_line}"),
+            parse_mode='HTML', disable_web_page_preview=True)
+    else:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=(f"🎉 <b>Done</b> — {len(records)} account(s), {phone_ok} with a "
+                  f"live FB number.\n{sheet_line}\n"
+                  f"💰 balance: <code>{html.escape(balance)}</code>\n{ramb_line}\n\n"
+                  f"Tap below to grab the SMS codes for this whole batch."),
+            parse_mode='HTML', disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔑 Get SMS codes for this batch", callback_data="acctpack:sms")]]))
 
 
 async def account_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -789,8 +838,10 @@ async def account_pack_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await q.edit_message_text("⚠️ bad count — run /account_pack again.")
             return
         model = context.user_data.get('acctpack_model') or 'Carolina'
-        await q.edit_message_text(f"🧩 starting {count} account(s) for {model}…")
-        await _run_batch(q.message.chat, context, count, model)
+        minimal = bool(context.user_data.get('acctpack_minimal'))
+        await q.edit_message_text(
+            f"🧩 starting {count} {'minimal ' if minimal else ''}account(s) for {model}…")
+        await _run_batch(q.message.chat, context, count, model, minimal)
         return
 
     if action == 'sms':
@@ -810,7 +861,8 @@ async def account_pack_count_text_received(update: Update, context: ContextTypes
         await update.message.reply_text(f"⚠️ pick a number 1–{BATCH_MAX}.")
         return
     model = context.user_data.get('acctpack_model') or 'Carolina'
-    await _run_batch(update.message.chat, context, count, model)
+    minimal = bool(context.user_data.get('acctpack_minimal'))
+    await _run_batch(update.message.chat, context, count, model, minimal)
 
 
 # ─── Telegram: /batch_sms ───────────────────────────────────────────────────

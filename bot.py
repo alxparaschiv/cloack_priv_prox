@@ -218,6 +218,7 @@ COMMANDS_TEXT = (
 
     "🔐 <b>Verification &amp; SMS</b>\n"
     "/account_pack — Full account package (name+gender+dob+password+rambler+FB number) → Sheet + .zip\n"
+    "/account_pack_min — Minimal package (no FB number, no proxy — bring your own; keeps privacy link) → Sheet + .zip\n"
     "/batch_sms — Paste many phone numbers, then get all their SMS codes at once\n"
     "/batch_rambler — Paste many email:password lines, get all their Rambler codes at once\n"
     "/password — Strong AI passwords for new accounts ([count], e.g. /password 10)\n"
@@ -284,6 +285,7 @@ async def post_init(application):
 
         # 🔐 Verification & SMS
         BotCommand("account_pack",       "🧩 Full account package → Sheet + .zip (single/batch)"),
+        BotCommand("account_pack_min",   "🧩 Minimal package (bring own number+proxy; keeps link)"),
         BotCommand("batch_sms",          "🔑 Paste phone numbers → all SMS codes at once"),
         BotCommand("batch_rambler",      "📧 Paste email:password → all Rambler codes at once"),
         BotCommand("password",           "🔑 Strong AI passwords for new accounts (batch)"),
@@ -460,6 +462,7 @@ def main():
     application.add_handler(CommandHandler("rental_instagram", rental.rental_instagram_command))
     application.add_handler(CommandHandler("rental_facebook", rental.rental_facebook_command))
     application.add_handler(CommandHandler("account_pack", account_pack.account_pack_command))
+    application.add_handler(CommandHandler("account_pack_min", account_pack.account_pack_min_command))
     application.add_handler(CommandHandler("batch_sms", batch_verify.batch_sms_command))
     application.add_handler(CommandHandler("batch_rambler", batch_verify.batch_rambler_command))
     application.add_handler(CommandHandler("artistic_bg", artistic_bg_gen.artistic_bg_command))

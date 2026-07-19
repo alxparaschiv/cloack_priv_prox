@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<!--
+  GEO LANDING PAGE — PREVIEW MOCKUP v2 (2026-06-09)
+  Open in a browser to approve the LOOK before it's wired into a worker.
+  Production replacements (done in the cloak-geo worker):
+    • {{IMAGE_URL}} → RANDOM 9:16 image from Images <Model> Cloak (KV img:slug:N)
+    • {{NAME}}      → the chosen reference model's name (Carolina / Keira) — the
+                      ONLY thing picked in the batch wizard; everything builds on it
+    • {{CITY}},{{COUNTRY}} → request.cf.city / request.cf.country (free, automatic)
+    • CTA → /r (existing bot-cloaking chain → OF)
+  Mobile: the 9:16 image fills the phone. Desktop: the 9:16 image is a centered
+  column with a blurred/darkened copy of the same image filling the sides
+  (same trick the old worker used).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Carolina</title>
+<style>
+  :root { --accent:#1d9bf0; --img:url('https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?w=720&h=1280&fit=crop&q=80'); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:#0b0b0d; }
+  /* DESKTOP fill — blurred, darkened copy of the same image behind the column */
+  .bg-blur { position:fixed; inset:0; background-image:var(--img); background-size:cover; background-position:center;
+             filter:blur(34px) brightness(.55) saturate(1.25); transform:scale(1.15); z-index:0; }
+  /* 9:16 stage — fills the phone on mobile, a centered tall column on desktop */
+  .stage { position:relative; z-index:1; height:100dvh; aspect-ratio:9/16; max-width:100vw; margin:0 auto;
+           background-image:var(--img); background-size:cover; background-position:center 22%; overflow:hidden;
+           box-shadow:0 0 60px rgba(0,0,0,.55); }
+  .stage::after { content:""; position:absolute; inset:0;
+           background:linear-gradient(to bottom, rgba(0,0,0,.05) 35%, rgba(0,0,0,.35) 70%, rgba(0,0,0,.55) 100%); }
+  /* the contained info BOX, lower-middle */
+  .panel { position:absolute; left:50%; bottom:26px; transform:translateX(-50%);
+           width:calc(100% - 28px); max-width:430px; z-index:2;
+           background:rgba(18,18,22,.42); border:1px solid rgba(255,255,255,.10); border-radius:22px;
+           backdrop-filter:blur(9px) saturate(125%); -webkit-backdrop-filter:blur(9px) saturate(125%);
+           padding:20px 18px 18px; text-align:center; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.45);
+           box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  .name { font-size:30px; font-weight:800; margin:0 0 7px; letter-spacing:.2px; }
+  .loc  { font-size:17px; font-weight:600; margin:0 0 11px; opacity:.97; }
+  .status { font-size:15px; font-weight:600; margin:0 0 9px; }
+  .status .dot { font-size:11px; vertical-align:middle; }
+  .blurb { font-size:16px; line-height:1.35; margin:0 auto 16px; max-width:330px; opacity:.97; }
+  .blurb b { font-weight:700; }
+  /* CTA with the heartbeat pulse + magenta glow from the old worker */
+  @keyframes heartbeat { 0%,30%,70%,100%{transform:scale(1)} 15%,45%{transform:scale(1.04)} }
+  .cta { display:block; width:100%; background:var(--accent); color:#fff; border:none; border-radius:14px;
+         padding:16px 18px; font-size:18px; font-weight:800; letter-spacing:.3px; text-decoration:none; cursor:pointer;
+         box-shadow:0 10px 38px 2px rgba(29,155,240,.45);
+         animation:heartbeat 1.8s ease-in-out infinite; transform-origin:center center; }
+  .cta:hover { animation-play-state:paused; }
+  .cta:active { transform:scale(.98); filter:brightness(1.06); }
+  .timer { margin:13px 0 2px; font-size:15px; font-weight:600; opacity:.96; }
+  .timer .count { color:#ff4d4f; font-variant-numeric:tabular-nums; font-weight:800; }
+</style>
+</head>
+<body>
+  <div class="bg-blur"></div>
+  <div class="stage">
+    <div class="panel">
+      <h1 class="name">Carolina ❣️</h1>
+      <div class="loc">📍 <span id="city">Timișoara</span>, <span id="country">Romania</span></div>
+      <div class="status"><span class="dot">🟢</span> Available now · Responds in 2 minutes</div>
+      <p class="blurb">I live near <b id="city2">Timișoara</b>, let's get to know each other 🥰</p>
+      <a class="cta" id="cta" href="#">SEND ME A MESSAGE ❤️</a>
+      <div class="timer">FREE TRIAL TODAY ends in <span class="count" id="count">15:00</span></div>
+    </div>
+  </div>
+<script>
+  (function(){
+    var DURATION = 15*60*1000, KEY='cgx_deadline';
+    var dl = parseInt(localStorage.getItem(KEY)||'0',10), now=Date.now();
+    if (!dl || dl < now) { dl = now + DURATION; localStorage.setItem(KEY, String(dl)); }
+    var el = document.getElementById('count');
+    function tick(){
+      var left = dl - Date.now();
+      if (left <= 0) { dl = Date.now()+DURATION; localStorage.setItem(KEY,String(dl)); left=DURATION; }
+      var m=Math.floor(left/60000), s=Math.floor((left%60000)/1000);
+      el.textContent = m + ':' + (s<10?'0':'') + s;
+    }
+    tick(); setInterval(tick,1000);
+  })();
+</script>
+</body>
+</html>
