@@ -322,6 +322,38 @@ def last_batch():
         return []
 
 
+def dispense_ramblers(count):
+    """Pop `count` Rambler logins from the pool and WRITE BACK the remainder, so a
+    dispensed login is truly consumed (never reused by /account_pack). Same
+    bottom-first order as reserve(). Returns
+      {ok, logins:[(email, pw)], remaining:int|None, err:str|None}."""
+    drive = _drive()
+    if not drive:
+        return {'ok': False, 'err': 'Google Drive not configured (GOOGLE_TOKEN_PICKLE).',
+                'logins': [], 'remaining': None}
+    try:
+        lines, fid = _load_rambler(drive)
+    except Exception as e:
+        return {'ok': False, 'err': f'pool read failed: {type(e).__name__}: {e}',
+                'logins': [], 'remaining': None}
+    if fid is None:
+        return {'ok': False, 'err': 'no rambler_pool.txt on Drive yet',
+                'logins': [], 'remaining': None}
+    remaining = list(lines)
+    logins = []
+    for _ in range(max(1, count)):
+        if not remaining:
+            break
+        logins.append(_parse_rambler(remaining.pop()))
+    if logins:
+        try:
+            _save_rambler(drive, remaining, fid)
+        except Exception as e:
+            return {'ok': False, 'err': f'pool write-back failed: {type(e).__name__}: {e}',
+                    'logins': [], 'remaining': None}
+    return {'ok': True, 'err': None, 'logins': logins, 'remaining': len(remaining)}
+
+
 def rambler_count():
     """How many Rambler credentials remain in the pool. None if no pool file."""
     drive = _drive()
