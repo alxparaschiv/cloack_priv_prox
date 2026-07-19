@@ -716,7 +716,47 @@ _ALTERNATE_TITLES = [
     'Data Practices', 'How We Handle Your Data', 'User Privacy', 'Information We Collect',
     'Privacy Information', 'Data Privacy Notice', 'Privacy Terms', 'Privacy & Cookies',
     'About Your Data', 'Data Use Policy', 'Privacy Overview',
+    # Casual / lowercase / terse variants so the page title isn't drawn from a
+    # recognizable formal set (2026-07-20).
+    'privacy', 'privacy stuff', 'a note on privacy', 'your data', 'read this first',
+    'about your info', 'data & privacy', 'how this works', 'the privacy bit',
+    'what we do with your data', 'privacy (the short version)', 'heads up on data',
 ]
+
+# ── Per-policy STRUCTURE shape (2026-07-20) ────────────────────────────────
+# The biggest anti-fingerprint lever. The old prompt forced EVERY policy into an
+# "8 topics, headed sections, 400-1100 words" skeleton, so all outputs (even the
+# casual/amateur personas) read as the same professional document. Now each call
+# rolls a shape that changes the STRUCTURE + register + length, and amateur personas
+# are biased toward the unpolished/structureless shapes.
+_PRIV_SHAPES = [
+    {'id': 'sectioned', 'words': (520, 1000),
+     'instr': "Structured: use <h3> section headings (occasionally an <h4>), a mix of "
+              "short paragraphs and maybe a bullet list. A conventional, organized policy."},
+    {'id': 'loose', 'words': (300, 620),
+     'instr': "Loosely organized: AT MOST one or two headings, or NONE. Mostly flowing "
+              "paragraphs. Reads like someone wrote it in one sitting — not a legal template."},
+    {'id': 'bare', 'words': (110, 330),
+     'instr': "NO headings at all — <p> paragraphs only. Just 2-5 short, plain, informal "
+              "paragraphs, like a quick note the developer typed themselves. Cover each "
+              "essential in a sentence or two; do not elaborate."},
+    {'id': 'listy', 'words': (140, 420),
+     'instr': "Heading-light: maybe one short intro line, then a single <ul> bullet list "
+              "covering the points tersely. Little to no prose. Utilitarian, unpolished."},
+]
+# Casual/amateur voices → bias toward the messy shapes; formal voices → toward organized.
+_AMATEUR_PERSONAS = {'gen_z', 'no_formal_education', 'lonely_mother', 'millennial',
+                     'plain_enthusiast', 'old_school_dev'}
+
+
+def _pick_shape(R, persona_id):
+    if persona_id in _AMATEUR_PERSONAS:
+        weights = {'sectioned': 1, 'loose': 3, 'bare': 4, 'listy': 2}
+    else:
+        weights = {'sectioned': 3, 'loose': 3, 'bare': 1, 'listy': 2}
+    w = [weights.get(s['id'], 1) for s in _PRIV_SHAPES]
+    return R.choices(_PRIV_SHAPES, weights=w, k=1)[0]
+
 
 # Realistic typo substitutions (subtle ones a real person might make)
 _TYPO_SUBS = [
@@ -751,37 +791,48 @@ def _inject_realistic_typos(text, rate_per_1000_words=2):
     return text
 
 
-def _llm_generate_privacy_html(app_name, persona, use_case=None, retries=4):
-    """Call OpenAI gpt-4o-mini to generate a Meta-compliant privacy policy in the
-    given persona's voice. Returns (html_body, None) or (None, error_str).
+def _llm_generate_privacy_html(app_name, persona, use_case=None, retries=4, shape=None):
+    """Call OpenAI gpt-4o-mini to generate a privacy policy in the given persona's
+    VOICE and the given structural SHAPE. Returns (html_body, None) or (None, error).
 
-    Retries up to `retries` times on HTTP errors / timeouts / empty output with
-    exponential backoff (3s, 6s, 12s, 24s). NO TEMPLATE FALLBACK — if all
-    attempts fail, caller HALTS. The template generator is not used for content
-    anymore (per user 2026-06-03: 100% LLM, no pre-written prose)."""
+    The shape (sectioned / loose / bare / listy) varies the STRUCTURE, register and
+    length so no two policies share a skeleton — amateur personas + bare/listy shapes
+    produce genuinely unpolished, structureless notes (per user 2026-07-20). Only the
+    four compliance essentials are required; nothing else is forced.
+
+    Retries up to `retries` times with exponential backoff. NO TEMPLATE FALLBACK."""
     api_key = os.environ.get('OPENAI_API_KEY')
     if not api_key:
         return None, 'OPENAI_API_KEY not set'
+    if shape is None:
+        shape = _pick_shape(_random.Random(), persona.get('id'))
     voice_desc = persona.get('voice', 'neutral professional')
     use_case_str = use_case or 'a general productivity app'
+    lo, hi = shape['words']
     system_prompt = (
-        "You write privacy policies for Facebook/Meta app developers. Output HTML ONLY. "
-        "MUST cover these eight topics (in any order/structure): (1) what data is collected, "
-        "(2) how it is used, (3) third-party sharing INCLUDING Meta APIs, (4) data retention, "
-        "(5) user rights/controls, (6) security measures, (7) children under 13, (8) contact info. "
-        "Allowed tags: <h3>, <h4>, <p>, <ul>, <li>, <strong>, <em>, <br>. NO links, NO <html>/<body>/<head>/<style>/<script>. "
-        "Length 400-1100 words. Vary structure naturally (bullets vs prose) based on the persona. "
+        "You write ONE privacy policy for a single Facebook/Meta app developer. Output an HTML "
+        "FRAGMENT only — no <html>/<head>/<body>/<style>/<script>, no links. "
+        "It MUST at least mention, somewhere and in the persona's own words: what data the app "
+        "collects, how that data is used, that data may be shared with Facebook/Meta APIs and "
+        "service providers, and how to contact the developer. Do NOT force any other sections or "
+        "topics — keep it to what this persona would actually write. "
+        f"STRUCTURE for THIS policy: {shape['instr']} "
+        f"Target length: roughly {lo}-{hi} words — write naturally, do NOT pad to hit it. "
+        "Use only these tags: <p>, <ul>, <li>, <strong>, <em>, <br> — and <h3>/<h4> ONLY if the "
+        "structure above explicitly calls for headings (bare/loose shapes use no headings). "
         "DO NOT mention you are an AI. DO NOT use placeholder text like [your email] or [insert]. "
-        "Write in the persona's voice consistently throughout — voice is the highest priority."
+        "Write ENTIRELY in the persona's voice — voice and the required structure are the top "
+        "priorities, NOT sounding like a complete or professional legal document."
     )
     contact_email = f"privacy@{re.sub(r'[^a-z0-9]', '', app_name.lower())[:20] or 'app'}.example"
     user_prompt = (
         f"App name: {app_name}\n"
         f"Use case: {use_case_str}\n"
-        f"Persona voice (write the WHOLE policy in this voice, this is the most important constraint):\n"
+        f"Persona voice (write the WHOLE thing in this voice — most important constraint):\n"
         f"  {voice_desc}\n\n"
-        f"Contact section should mention this email: {contact_email}\n\n"
-        f"Generate the privacy policy now. HTML only. 400-1100 words. IN PERSONA VOICE:"
+        f"If you include contact info, use this email: {contact_email}\n\n"
+        f"Write it now. HTML fragment only. ~{lo}-{hi} words. IN THE PERSONA'S VOICE and the "
+        f"required STRUCTURE above:"
     )
     payload = {
         'model': 'gpt-4o-mini',
@@ -1030,6 +1081,7 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
     if persona is None:
         persona = R.choice(_WRITING_PERSONAS)  # uniform across 12 → 8.33% each
     title = R.choice(_ALTERNATE_TITLES)
+    shape = _pick_shape(R, persona['id'])   # structure/register/length — the anti-fingerprint lever
 
     meta = {
         'provider': provider,
@@ -1037,17 +1089,18 @@ def _create_privacy_policy_dispatch(provider=None, app_name=None, use_case=None,
         'persona_voice': persona.get('voice', '')[:80],
         'use_llm': use_llm,
         'title': title,
+        'shape': shape['id'],
         'inject_typos': inject_typos,
     }
 
     logger.info(f'privacy dispatch: provider={provider} llm={use_llm} '
-                f'persona={persona["id"]} title={title!r} typos={inject_typos}')
+                f'persona={persona["id"]} shape={shape["id"]} title={title!r} typos={inject_typos}')
 
     # ── Generate content (LLM always; template only if explicitly disabled) ──
     nodes = None
     md_body = None
     if use_llm:
-        html, err = _llm_generate_privacy_html(safe, persona, use_case)
+        html, err = _llm_generate_privacy_html(safe, persona, use_case, shape=shape)
         if not html:
             # NO silent template fallback — surface the error so caller can decide.
             return None, f'LLM generation failed: {err}', meta
@@ -1133,9 +1186,12 @@ async def privacy_text_received(update: Update, context: ContextTypes.DEFAULT_TY
         f"📜 Generating randomized privacy policy for <b>{_h.escape(text)}</b>…",
         parse_mode='HTML')
     try:
+        # (provider, app_name, use_case, use_llm, persona_id, inject_typos) — use_llm
+        # MUST be True: it was passed as None here, which is falsy → the /privacy
+        # command silently used the professional TEMPLATE instead of the LLM personas.
         url, err, meta = await asyncio.to_thread(
             _create_privacy_policy_dispatch,
-            None, text, None, None, None, True)
+            None, text, None, True, None, True)
     except Exception as e:
         url, err, meta = None, f"crashed: {e}", None
     if err or not url:
