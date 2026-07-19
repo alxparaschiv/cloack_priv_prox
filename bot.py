@@ -342,6 +342,8 @@ async def post_init(application):
         ("🔑 /password",    []),  # zero env deps — local CSPRNG generator
         ("📱 /sms",         ["TEXTVERIFIED_API_KEY"]),
         ("🧩 /account_pack", ["TEXTVERIFIED_API_KEY", "OPENAI_API_KEY"]),
+        ("🧩 /account_pack_min", ["OPENAI_API_KEY"]),  # own number+proxy → no TextVerified needed
+
         ("🔑 /batch_sms",   ["TEXTVERIFIED_API_KEY"]),
         ("📧 /batch_rambler", []),  # user provides creds per-call (IMAP)
         ("🛠 /meta_dev_setup", ["GOLOGIN_API_KEY", "TEXTVERIFIED_API_KEY",
