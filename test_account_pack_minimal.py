@@ -44,7 +44,10 @@ account_pack.rental._balance_str = lambda: '$0.00'
 def _fake_priv(app_name=None):
     PRIV_CALLS.append(app_name); return (f'https://privacy/{app_name}', None, {})
 account_pack.privacy._create_privacy_policy_dispatch = _fake_priv
-account_pack._gen_one_profile_bg = lambda name: ''      # no Drive
+BG_CALLS = []
+def _fake_bg(name, procedural_only=False):
+    BG_CALLS.append(procedural_only); return f'bgid_{name}'
+account_pack._gen_one_profile_bg = _fake_bg             # no Drive
 _noop = lambda *a, **k: None
 
 # ── minimal batch ──
@@ -64,6 +67,8 @@ check("minimal KEEPS name/gender/dob/password",
 check("minimal KEEPS rambler login", ':' in (r.get('rambler_login') or ''))
 check("minimal KEEPS app name + FB page name + bio",
       r.get('app_name') and r.get('page_name_1') and r.get('bio'))
+check("minimal: profile images use procedural-only (fast, no AI artistic)",
+      BG_CALLS and all(v is True for v in BG_CALLS))
 
 txt = R.account_txt(r)
 check("txt: FB phone says 'use your own number'", 'use your own number' in txt)
@@ -75,7 +80,7 @@ check("card: shows 'use your own number'", 'use your own number' in card)
 check("card: shows 'use your own proxy'", 'use your own proxy' in card)
 
 # ── the FULL (non-minimal) path is unchanged ──
-RENT_CALLS.clear(); PRIV_CALLS.clear()
+RENT_CALLS.clear(); PRIV_CALLS.clear(); BG_CALLS.clear()
 recs_full, phone_ok_f, _b, _s = account_pack.generate_packages(
     2, fake_reserve(2), 'Carolina', _noop, _noop, minimal=False)
 f0 = recs_full[0]
@@ -83,6 +88,8 @@ check("full: still rents a number", len(RENT_CALLS) == 2 and phone_ok_f == 2)
 check("full: still has a proxy", bool(f0.get('proxy')))
 check("full: still has a privacy link", bool(f0.get('privacy_url')))
 check("full: minimal flag is False", f0.get('minimal') is False)
+check("full: profile images NOT forced procedural (keeps 50/50 AI mix)",
+      BG_CALLS and all(v is False for v in BG_CALLS))
 
 print(f"\n{'✅ ALL PASS' if not _FAIL else '❌ ' + str(_FAIL) + ' FAIL'}  ({_PASS} passed)")
 sys.exit(1 if _FAIL else 0)
