@@ -108,15 +108,15 @@ class TextVerifiedClient:
         return self._token
 
     # ── Helpers ──────────────────────────────────────────────────────
-    def _request(self, method: str, path: str, **kwargs) -> Any:
+    def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
         self._ensure_token()
         url = BASE_URL + path
-        r = self.session.request(method, url, timeout=30, **kwargs)
+        r = self.session.request(method, url, timeout=timeout, **kwargs)
         if r.status_code == 401:
             # Token expired mid-session — refresh once and retry
             self._token = None
             self._ensure_token()
-            r = self.session.request(method, url, timeout=30, **kwargs)
+            r = self.session.request(method, url, timeout=timeout, **kwargs)
         if r.status_code >= 400:
             raise TextVerifiedError(f"{method} {path} → HTTP {r.status_code}: {r.text[:300]}")
         try:
@@ -163,24 +163,44 @@ class TextVerifiedClient:
         return None
 
     def create_verification(self, service: str = "facebook",
-                            capability: str = "sms") -> Dict[str, Any]:
-        """Acquire a phone number for the given service. Returns {id, number, ...}."""
+                            capability: str = "sms",
+                            number_wait: int = 45,
+                            number_poll: int = 3) -> Dict[str, Any]:
+        """Acquire a phone number for the given service. Returns {id, number, ...}.
+
+        The v2 create endpoint returns ONLY an href (201, ~1s) — no id, no number:
+            {"method":"GET","href":".../verifications/lr_..."}
+        The number is provisioned ASYNCHRONOUSLY, so we take the id from the href and
+        POLL the verification detail until the number appears (up to number_wait s).
+        The old code fetched the detail ONCE, got number=None, and the caller stalled —
+        that was the '/fb_page_verify hangs on Getting a number' bug (2026-07-20)."""
         service_id = self.find_service_id(service) or service  # API may accept name directly
-        body = self._request("POST", VERIFICATIONS, json={
+        # The create POST is usually ~1s but INTERMITTENTLY stalls >30s. A client-side
+        # timeout there still leaves the verification CREATED server-side (a silent
+        # $0.75 charge that never reaches the user) — so give it a generous timeout to
+        # actually receive the href instead of abandoning a paid verification.
+        body = self._request("POST", VERIFICATIONS, timeout=90, json={
             "serviceName": service_id,
             "capability": capability,
         })
-        # Response shape varies; normalize to {id, number}
+        vid = None
+        number = None
         if isinstance(body, dict):
-            vid = body.get("id") or body.get("verificationId") or body.get("href", "").rsplit("/", 1)[-1]
+            href = body.get("href") or (body.get("link") or {}).get("href", "")
+            vid = (body.get("id") or body.get("verificationId")
+                   or (href.rsplit("/", 1)[-1] if href else None))
             number = body.get("number") or body.get("phoneNumber") or body.get("to")
-            if vid:
-                # Some endpoints don't return number on create; fetch details.
-                if not number:
-                    detail = self.get_verification(vid)
-                    number = detail.get("number") or detail.get("phoneNumber")
-                return {"id": vid, "number": number, "raw": body}
-        raise TextVerifiedError(f"unexpected create_verification response: {body}")
+        if not vid:
+            raise TextVerifiedError(f"unexpected create_verification response: {body}")
+        # Poll the detail until the number is provisioned (it appears within a few s).
+        end = time.time() + max(0, number_wait)
+        while not number:
+            detail = self.get_verification(vid)
+            number = detail.get("number") or detail.get("phoneNumber")
+            if number or time.time() >= end:
+                break
+            time.sleep(number_poll)
+        return {"id": vid, "number": number, "raw": body}
 
     def get_verification(self, verification_id: str) -> Dict[str, Any]:
         body = self._request("GET", f"{VERIFICATIONS}/{verification_id}")
