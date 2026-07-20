@@ -378,39 +378,66 @@ def sheet_url():
 # ─── Per-account text file + batch zip ──────────────────────────────────────
 
 def account_txt(rec):
-    """Plain-text card for one account (no heritage — internal only)."""
+    """Plain-text card for one account — SAME 5-STEP block structure as the Telegram
+    card + the VA card (1 proxy → 2 FB account → 3 FB Page → 4 Meta dev app →
+    5 workflow), so the downloaded .txt reads like the autonomous packages. Backup
+    managers skip the Page + Workflow steps."""
+    is_bm = rec.get('kind') == 'backup_manager'
+    proxy = ('(use your own proxy)' if rec.get('minimal')
+             else (rec.get('proxy', '') or '(pending — from proxy check)'))
+    phone = ('(use your own number)' if rec.get('minimal')
+             else (rec.get('phone10', '') or '(rental failed)'))
     lines = [
-        rec['account'],
+        rec['account'] + ('  [backup manager]' if is_bm else ''),
         '=' * len(rec['account']),
-        f"Name: {rec.get('first','')} {rec.get('last','')}",
-        f"Gender: {rec.get('gender','')}",
-        f"Birthdate: {rec.get('birthdate_display','')} (age {rec.get('age','')})",
-        f"Password: {rec.get('password','')}",
-        f"Rambler email: {rec.get('rambler_email','') or '(none left in pool)'}",
-        f"Rambler password: {rec.get('rambler_password','')}",
-        f"Rambler login (paste into /rambler): {rec.get('rambler_login','') or '(none left in pool)'}",
-        f"Proxy (add to AdsPower profile): {'(use your own proxy)' if rec.get('minimal') else (rec.get('proxy','') or '(pending — from proxy check)')}",
-        f"FB phone (10-digit): {'(use your own number)' if rec.get('minimal') else (rec.get('phone10','') or '(rental failed)')}",
-        f"App name: {rec.get('app_name','')}",
-        f"Meta-dev role (About you): {rec.get('dev_app_role','') or '(any)'}",
-        f"Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
+        f"Model: {rec.get('model','') or '-'}",
+        "",
+        "STEP 1 - Proxy (name the GoLogin/AdsPower profile after this account, then add this proxy)",
+        f"  {proxy}",
+        "",
+        "STEP 2 - Create the Facebook account",
+        f"  Handle: {rec.get('handle','') or '(none)'}",
+        f"  Password: {rec.get('password','')}",
+        f"  First name: {rec.get('first','')}",
+        f"  Last name: {rec.get('last','')}",
+        f"  Sex: {(rec.get('gender','') or '-').capitalize()}"
+        f"  Birthdate: {rec.get('birthdate_display','')} (age {rec.get('age','')})"
+        f"  Heritage: {rec.get('heritage','') or '-'}",
+        f"  FB phone (10-digit): {phone}",
     ]
-    # Backup-manager accounts have no Facebook page → no page names.
-    if rec.get('kind') != 'backup_manager':
+    if not is_bm:
         lines += [
-            f"FB page name (option 1): {rec.get('page_name_1','')}",
-            f"FB page name (option 2): {rec.get('page_name_2','')}",
-            f"Workflow name: {rec.get('workflow_name','')}",
-            f"Schedule (auto-applied): {rec.get('schedule','')}",
-            f"Page background image: {rec.get('page_bg_image_url','') or '(none)'}",
+            "",
+            "STEP 3 - Create the Facebook Page",
+            f"  Page name (option 1): {rec.get('page_name_1','')}",
+            f"  Page name (option 2): {rec.get('page_name_2','')}",
+            f"  Page category: {rec.get('page_category','') or '(any)'}",
+            f"  Link in bio: {rec.get('cloak_link','') or '(none)'}",
+            f"  Bio: {rec.get('bio','')}",
+            f"  Block countries: {rec.get('block_countries','')}",
+            f"  Block words: {rec.get('block_words','')}",
+            f"  Page background image: {rec.get('page_bg_image_url','') or '(none)'}",
         ]
     lines += [
-        f"Page category: {rec.get('page_category','')}",
-        f"Bio: {rec.get('bio','')}",
-        f"Block countries: {rec.get('block_countries','')}",
-        f"Block words: {rec.get('block_words','')}",
-        f"Created (UTC): {rec.get('created_utc','')}",
+        "",
+        f"STEP {'3' if is_bm else '4'} - Meta developer app",
+        f"  App name: {rec.get('app_name','')}",
+        f"  Meta-dev role (About you): {rec.get('dev_app_role','') or '(any)'}",
+        f"  Privacy policy: {rec.get('privacy_url','') or '(not generated)'}",
+        f"  Rambler login (paste into /rambler): {rec.get('rambler_login','') or '(none left in pool)'}",
     ]
+    if not is_bm:
+        _sc = str(rec.get('schedule') or '')
+        sched = ('4x a day' if _sc.startswith('4x') else
+                 '3x a day' if _sc.startswith('3x') else '(auto)')
+        lines += [
+            "",
+            "STEP 5 - Workflow",
+            f"  Content folder to wire (attach in /setup): {rec.get('output_folder_name','') or '(will resolve at /setup)'}",
+            f"  Workflow name: {rec.get('workflow_name','') or '(auto)'}",
+            f"  Posting schedule: {sched} (auto-applied)",
+        ]
+    lines += ["", f"Created (UTC): {rec.get('created_utc','')}"]
     return '\n'.join(lines)
 
 

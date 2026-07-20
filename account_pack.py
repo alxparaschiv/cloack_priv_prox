@@ -389,61 +389,95 @@ def random_birthdate():
 # ─── Package card ───────────────────────────────────────────────────────────
 
 def _format_card(idx, count, rec):
+    """Operator-facing package card — SAME 5-STEP block structure as the VA card
+    (bot-VA tasks.format_va_card) so a package generated for yourself reads exactly
+    like the autonomous ones: 1 proxy → 2 create FB account → 3 create FB Page →
+    4 Meta dev app → 5 workflow. Backup managers skip the Page + Workflow steps.
+    Operator adaptations: account id (not primary_id), no deadline, profile-pic Drive
+    links kept, and minimal-mode ('use your own number/proxy') preserved."""
     e = html.escape
     minimal = rec.get('minimal')
+    is_bm = rec.get('kind') == 'backup_manager'
     phone = ("📱 <i>use your own number</i>" if minimal else
              (f"<code>{e(rec['phone10'])}</code>" if rec.get('phone10')
               else f"⚠️ {e(rec.get('phone_err', 'rental failed'))}"))
+    prox = ("🌐 <i>use your own proxy</i>" if minimal else
+            (f"<code>{e(rec['proxy'])}</code>" if rec.get('proxy')
+             else "⏳ pending — from the proxy check"))
     priv = (f"<a href=\"{e(rec['privacy_url'])}\">{e(rec['privacy_url'])}</a>"
             if rec.get('privacy_url') else "⚠️ not generated")
     rlogin = (f"<code>{e(rec['rambler_login'])}</code>"
               if rec.get('rambler_login') else "⚠️ pool empty — add to Drive")
-    prox = ("🌐 <i>use your own proxy</i>" if minimal else
-            (f"<code>{e(rec['proxy'])}</code>" if rec.get('proxy')
-             else "⏳ pending — from the proxy check"))
-    is_backup = rec.get('kind') == 'backup_manager'
-    lines = [
-        "━━━━━━━━━━━━━━━━━━",
-        f"👤 <b>{e(rec['account'])}</b>  ({idx}/{count})"
-        + ("  🗂 <i>backup manager</i>" if is_backup else ""),
-        "━━━━━━━━━━━━━━━━━━",
-        f"<b>Name:</b> <code>{e(rec['first'])} {e(rec['last'])}</code>",
-        f"<b>Gender:</b> {e(rec['gender'])}",
-        f"<b>Birthdate:</b> <code>{e(rec['birthdate_display'])}</code>  (age {rec['age']})",
-        f"<b>Password:</b> <code>{e(rec['password'])}</code>",
-        f"<b>Rambler login</b> (→ /rambler): {rlogin}",
-        f"<b>Proxy</b> (→ AdsPower): {prox}",
-        f"<b>FB phone:</b> {phone}",
-        f"<b>App name:</b> <code>{e(rec.get('app_name',''))}</code>",
-        f"<b>Meta-dev role (“About you”):</b> {e(rec.get('dev_app_role','') or '(any)')}",
-        f"<b>Privacy policy:</b> {priv}",
+
+    # ── header ──
+    L = [
+        f"📦 <b>{e(rec['account'])}</b>  ({idx}/{count})"
+        + ("  🗂 <i>backup manager</i>" if is_bm else ""),
+        f"<b>Model:</b> {e(rec.get('model', '') or '—')}",
+        "",
+        # ── STEP 1 — Proxy ──
+        "🌐 <b>STEP 1 — Proxy</b>  <i>(name the GoLogin/AdsPower profile after this "
+        "account, then add this proxy)</i>",
+        prox,
+        "",
+        # ── STEP 2 — Create the Facebook account ──
+        "👤 <b>STEP 2 — Create the Facebook account</b>",
+        f"🔑 <b>Handle:</b> <code>{e(rec.get('handle', '') or '(none)')}</code>",
+        f"🔑 <b>Password:</b> <code>{e(rec.get('password', ''))}</code>",
+        f"<b>First name:</b> <code>{e(rec.get('first', ''))}</code>",
+        f"<b>Last name:</b> <code>{e(rec.get('last', ''))}</code>",
+        f"<b>Sex:</b> {e((rec.get('gender', '') or '—').capitalize())}"
+        f"  ·  <b>Birthdate:</b> {e(rec.get('birthdate_display', '') or '(any)')}"
+        + (f" (age {rec['age']})" if rec.get('age') else "")
+        + f"  ·  <b>Heritage:</b> {e(rec.get('heritage', '') or '—')}",
+        f"<b>FB phone (10-digit):</b> {phone}",
     ]
-    if not is_backup:
-        lines.append(
-            f"<b>FB page name:</b> <code>{e(rec.get('page_name_1',''))}</code>  /  "
-            f"<code>{e(rec.get('page_name_2',''))}</code>")
-        lines.append(f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name',''))}</code>")
+    if not is_bm:
+        # ── STEP 3 — Create the Facebook Page ──
+        L += [
+            "",
+            "📘 <b>STEP 3 — Create the Facebook Page</b>",
+            f"<b>Page name — option 1:</b> <code>{e(rec.get('page_name_1', ''))}</code>",
+            f"<b>Page name — option 2:</b> <code>{e(rec.get('page_name_2', ''))}</code>",
+            f"<b>Page category:</b> {e(rec.get('page_category', '') or '(any)')}",
+        ]
         if rec.get('cloak_link'):
-            lines.append(
-                f"🔗 <b>Link in bio</b> (paste into the account's bio): "
-                f"<code>{e(rec['cloak_link'])}</code>")
-        lines.append(f"<b>Schedule:</b> <code>{e(rec.get('schedule',''))}</code>  "
-                     f"<i>(auto-applied)</i>")
+            L.append(f"🔗 <b>Link in bio</b> (paste into the account's bio): "
+                     f"<code>{e(rec['cloak_link'])}</code>")
+        L += [
+            f"<b>Bio:</b> {e(rec.get('bio', '') or '—')}",
+            f"<b>Block countries:</b> {e(rec.get('block_countries', '') or '—')}",
+            f"<b>Block words:</b> {e(rec.get('block_words', '') or '—')}",
+        ]
         if rec.get('account_bg_image_url'):
-            lines.append(
-                f"<b>Account profile pic</b> (personal FB account): "
-                f"<a href=\"{e(rec['account_bg_image_url'])}\">image</a>")
+            L.append(f"<b>Account profile pic</b> (personal FB account): "
+                     f"<a href=\"{e(rec['account_bg_image_url'])}\">image</a>")
         if rec.get('page_bg_image_url'):
-            lines.append(
-                f"<b>Page profile pic</b> (FB Page): "
-                f"<a href=\"{e(rec['page_bg_image_url'])}\">image</a>")
-    lines += [
-        f"<b>Page category:</b> {e(rec.get('page_category',''))}",
-        f"<b>Bio:</b> <code>{e(rec.get('bio',''))}</code>",
-        f"<b>Block countries:</b> <code>{e(rec.get('block_countries',''))}</code>",
-        f"<b>Block words:</b> <code>{e(rec.get('block_words',''))}</code>",
+            L.append(f"<b>Page profile pic</b> (FB Page): "
+                     f"<a href=\"{e(rec['page_bg_image_url'])}\">image</a>")
+    # ── STEP 4 (or 3 for a BM) — Meta developer app ──
+    L += [
+        "",
+        "🛠 <b>STEP {} — Meta developer app</b>".format('3' if is_bm else '4'),
+        f"<b>App name:</b> <code>{e(rec.get('app_name', ''))}</code>",
+        f"<b>Meta-dev role (“About you”):</b> {e(rec.get('dev_app_role', '') or '(any)')}",
+        f"<b>Privacy policy:</b> {priv}",
+        f"<b>Rambler login</b> (→ /rambler): {rlogin}",
     ]
-    return '\n'.join(lines)
+    if not is_bm:
+        # ── STEP 5 — Workflow ──
+        _sc = str(rec.get('schedule') or '')
+        sched = ('4× a day' if _sc.startswith('4x') else
+                 '3× a day' if _sc.startswith('3x') else '(auto)')
+        L += [
+            "",
+            "📅 <b>STEP 5 — Workflow</b>",
+            f"<b>Content folder to wire</b> (attach in /setup): "
+            f"<code>{e(rec.get('output_folder_name', '') or '(will resolve at /setup)')}</code>",
+            f"<b>Workflow name:</b> <code>{e(rec.get('workflow_name', '') or '(auto)')}</code>",
+            f"<b>Posting schedule:</b> {sched}  <i>(auto-applied)</i>",
+        ]
+    return '\n'.join(L)
 
 
 def _gen_one_profile_bg(account_name, procedural_only=False):
