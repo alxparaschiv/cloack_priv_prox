@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 # Env-var constants (mirror of Carolina's reel_bot.py top-level block)
 # ──────────────────────────────────────────────────────────────────────
 GOLOGIN_API_KEY = os.getenv('GOLOGIN_API_KEY', '')
+# Proxy-check target (2026-07-20): the browser proxy check creates transient GoLogin
+# profiles. Run them in a dedicated WORKSPACE + FOLDER so they never touch the VA's
+# working profiles. Default: the 'Virtual Assistants' workspace (legacy account is
+# full at 300/300), 'Myself' folder (NOT the 'VA002' folder). Resolved by name via
+# GET /workspaces so no GUID is hardcoded. Empty workspace → legacy default behaviour.
+GOLOGIN_PROXY_WORKSPACE = os.getenv('GOLOGIN_PROXY_WORKSPACE', 'Virtual Assistants')
+GOLOGIN_PROXY_FOLDER = os.getenv('GOLOGIN_PROXY_FOLDER', 'Myself')
+_GOLOGIN_WS_ID_CACHE = {}          # workspace name (lower) -> id
 GEELARK_API_KEY = os.getenv('GEELARK_API_KEY', '')   # API Key (for key verification)
 GEELARK_APP_ID  = os.getenv('GEELARK_APP_ID', '')    # Team APP ID (for key verification)
 IPROYAL_API_KEY = os.getenv('IPROYAL_API_KEY', '')
@@ -634,7 +642,39 @@ class ProxyPipeline:
         except Exception as e:
             return None, None, f"{type(e).__name__}: {e}"
 
-    def create_gologin_profile(self, name, proxy_str=None):
+    def _resolve_workspace_id(self, name):
+        """Resolve a GoLogin workspace NAME → its id via GET /workspaces (cached).
+        Returns None if unset/not found/unreachable (caller falls back to the token's
+        default workspace). Keyed by name so no GUID is ever hardcoded."""
+        if not name or not GOLOGIN_API_KEY:
+            return None
+        key = name.strip().lower()
+        if key in _GOLOGIN_WS_ID_CACHE:
+            return _GOLOGIN_WS_ID_CACHE[key]
+        try:
+            resp = requests.get('https://api.gologin.com/workspaces',
+                                headers={'Authorization': f'Bearer {GOLOGIN_API_KEY}'},
+                                timeout=30)
+            if resp.status_code != 200:
+                logger.warning(f"[GoLogin] /workspaces {resp.status_code}: {resp.text[:120]}")
+                return None
+            data = resp.json()
+            wslist = data if isinstance(data, list) else (
+                data.get('workspaces') or data.get('data') or [])
+            for w in wslist:
+                if (w.get('name') or '').strip().lower() == key:
+                    wid = w.get('id')
+                    _GOLOGIN_WS_ID_CACHE[key] = wid
+                    logger.info(f"[GoLogin] workspace {name!r} → {wid}")
+                    return wid
+            logger.warning(f"[GoLogin] workspace {name!r} not found among "
+                           f"{[w.get('name') for w in wslist]}")
+        except Exception as e:
+            logger.warning(f"[GoLogin] workspace resolve failed: {e}")
+        return None
+
+    def create_gologin_profile(self, name, proxy_str=None,
+                               workspace_id=None, folder_name=None):
         """Create a GoLogin browser profile with optional proxy.
 
         Endpoint discovered via OpenAPI spec (api.gologin.com/docs-json,
@@ -644,12 +684,18 @@ class ProxyPipeline:
         platform are all required, so we omit it entirely and let
         GoLogin auto-generate. Proxy.mode is the only required proxy
         field. browserType does NOT exist in this schema.
+
+        workspace_id → POST ?workspaceId=<id> (create inside that workspace).
+        folder_name  → 'folderName' in the body (drop the profile into that
+        folder). Both verified in the OpenAPI spec (2026-07-20).
         """
         if not GOLOGIN_API_KEY:
             logger.warning("[GoLogin] create called but GOLOGIN_API_KEY not set")
             return None, "GOLOGIN_API_KEY not set"
 
         url = 'https://api.gologin.com/browser/custom'
+        if workspace_id:
+            url += f'?workspaceId={workspace_id}'
         headers = {
             'Authorization': f'Bearer {GOLOGIN_API_KEY}',
             'Content-Type': 'application/json'
@@ -660,6 +706,8 @@ class ProxyPipeline:
             'os': 'win',
             'autoLang': True,
         }
+        if folder_name:
+            profile_data['folderName'] = folder_name
 
         proxy_summary = '<none>'
         if proxy_str:
@@ -1376,11 +1424,13 @@ class ProxyPipeline:
             logger.error(f"[ProxyCheck] Facebook test error: {type(e).__name__}: {e}")
             return f'error: {type(e).__name__}: {e}', None, None
 
-    def _next_validated_profile_index(self, name_prefix='Validated Profile'):
+    def _next_validated_profile_index(self, name_prefix='Validated Profile',
+                                      workspace_id=None):
         """Scan existing GoLogin profiles for names like '<prefix> N' and
         return the next free integer (max+1, or 1 if none/error). Lets a
         batch run keep numbering instead of colliding with a previous run's
-        'Validated Profile 1..N'.
+        'Validated Profile 1..N'. When workspace_id is set, numbering is scoped
+        to THAT workspace's profiles (GET /workspaces/{wid}/profiles).
 
         Returns (next_index:int, total_profiles_seen:int, err:str|None).
         """
@@ -1389,9 +1439,14 @@ class ProxyPipeline:
         import re as _re
         headers = {'Authorization': f'Bearer {GOLOGIN_API_KEY}'}
         try:
-            resp = requests.get('https://api.gologin.com/browser/v2',
-                                headers=headers, params={'limit': 250},
-                                timeout=30)
+            if workspace_id:
+                resp = requests.get(
+                    f'https://api.gologin.com/workspaces/{workspace_id}/profiles',
+                    headers=headers, params={'limit': 250}, timeout=30)
+            else:
+                resp = requests.get('https://api.gologin.com/browser/v2',
+                                    headers=headers, params={'limit': 250},
+                                    timeout=30)
             if resp.status_code != 200:
                 return 1, 0, f"API {resp.status_code}: {resp.text[:120]}"
             data = resp.json()
@@ -1411,7 +1466,9 @@ class ProxyPipeline:
     async def run_batch_proxy_check_pipeline(self, send_update, send_photo,
                                               target_profiles=5,
                                               name_prefix='Validated Profile',
-                                              max_total_attempts=None):
+                                              max_total_attempts=None,
+                                              workspace_name=None,
+                                              folder_name=None):
         """Batch sibling of run_proxy_check_auto_pipeline (2026-05-25).
 
         Pulls fresh IPRoyal mobile proxies in a loop and, for EVERY proxy
@@ -1454,9 +1511,22 @@ class ProxyPipeline:
             # silence: ~80 proxy pulls per desired profile.
             max_total_attempts = target_profiles * 80
 
-        # Where to start numbering — continue past existing profiles.
+        # Resolve the target WORKSPACE + FOLDER (2026-07-20). Default: the
+        # 'Virtual Assistants' workspace, 'Myself' folder — so proxy-check profiles
+        # never land in the VA's working folder and never hit the full legacy account.
+        _ws_name = workspace_name if workspace_name is not None else GOLOGIN_PROXY_WORKSPACE
+        _folder = folder_name if folder_name is not None else GOLOGIN_PROXY_FOLDER
+        _ws_id = await _asyncio.to_thread(self._resolve_workspace_id, _ws_name)
+        if _ws_name and not _ws_id:
+            await _upd(f"⚠️ Couldn't resolve GoLogin workspace <b>{_e(_ws_name)}</b> — "
+                       f"falling back to the account's default workspace.")
+        elif _ws_id:
+            await _upd(f"🗂 Proxy check → workspace <b>{_e(_ws_name)}</b>"
+                       + (f" · folder <b>{_e(_folder)}</b>" if _folder else ""))
+
+        # Where to start numbering — continue past existing profiles (workspace-scoped).
         start_idx, n_existing, idx_err = await _asyncio.to_thread(
-            self._next_validated_profile_index, name_prefix)
+            self._next_validated_profile_index, name_prefix, _ws_id)
         idx = start_idx
 
         seen_ips, seen_strs = self._proxy_history_seen_sets()
@@ -1671,7 +1741,7 @@ class ProxyPipeline:
             await _upd(f"📘 #{attempt} <b>creating GoLogin profile</b> "
                        f"<b>{_e(profile_name)}</b> + attaching proxy…")
             profile_id, cmsg = await _asyncio.to_thread(
-                self.create_gologin_profile, profile_name, proxy_raw)
+                self.create_gologin_profile, profile_name, proxy_raw, _ws_id, _folder)
             if not profile_id:
                 await _upd(f"⚠️ #{attempt} GoLogin create FAILED: "
                            f"<code>{_e(str(cmsg)[:160])}</code> — skip")
