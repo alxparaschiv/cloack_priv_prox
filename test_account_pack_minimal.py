@@ -88,8 +88,8 @@ check("full: still rents a number", len(RENT_CALLS) == 2 and phone_ok_f == 2)
 check("full: still has a proxy", bool(f0.get('proxy')))
 check("full: still has a privacy link", bool(f0.get('privacy_url')))
 check("full: minimal flag is False", f0.get('minimal') is False)
-check("full: profile images NOT forced procedural (keeps 50/50 AI mix)",
-      BG_CALLS and all(v is False for v in BG_CALLS))
+check("full: profile images use fast bg_generator ONLY (no slow AI artistic)",
+      BG_CALLS and all(v is True for v in BG_CALLS))
 
 print(f"\n{'✅ ALL PASS' if not _FAIL else '❌ ' + str(_FAIL) + ' FAIL'}  ({_PASS} passed)")
 sys.exit(1 if _FAIL else 0)

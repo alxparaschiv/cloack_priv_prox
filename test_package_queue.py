@@ -75,6 +75,10 @@ _fake_bg = types.ModuleType('artistic_bg_gen')
 _fake_bg.generate_artistic_bg_random_type = lambda profile_subfolder_name=None: (
     f'bgid_{profile_subfolder_name}', '/tmp/x.png', None)
 sys.modules['artistic_bg_gen'] = _fake_bg
+# Account-package profile pics now ALWAYS use the fast bg_generator path (no AI
+# artistic). Stub the helper directly so the test is agnostic to which internal path
+# runs — it just needs a Drive id back per profile pic.
+account_pack._gen_one_profile_bg = lambda name, procedural_only=False: f'bgid_{name}'
 
 # ── stub package_queue's queue + seen I/O ──
 REQUESTS = [{

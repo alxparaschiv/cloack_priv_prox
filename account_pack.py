@@ -617,15 +617,16 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
                 # TWO distinct abstract backgrounds per account (2026-07-17, user):
                 #   • account_bg → profile pic for the FB PERSONAL account
                 #   • page_bg    → profile pic for the FB PAGE created on it
-                # Never the model's face (profile-pic rule). Each pic is picked
-                # 50/50 between the AI artistic generator and /bg_generator's
-                # Artistic category (2026-07-18, user) → a mix of both looks.
-                # Minimal flow: fast local /bg_generator only (no slow AI artistic).
-                _abgid = _gen_one_profile_bg(rec['account'], procedural_only=minimal)
+                # Never the model's face (profile-pic rule). ALWAYS the fast local
+                # /bg_generator Artistic category — NEVER the AI artistic path, which
+                # is a WaveSpeed round-trip that took ~minutes per package (2026-07-20,
+                # user: "no artistic ones bcz this takes forever"). Applies to every
+                # account package (full + minimal + daily).
+                _abgid = _gen_one_profile_bg(rec['account'], procedural_only=True)
                 rec['account_bg_image_id'] = _abgid
                 rec['account_bg_image_url'] = (
                     f"https://drive.google.com/file/d/{_abgid}/view" if _abgid else '')
-                _bgid = _gen_one_profile_bg(rec['account'], procedural_only=minimal)
+                _bgid = _gen_one_profile_bg(rec['account'], procedural_only=True)
                 rec['page_bg_image_id'] = _bgid
                 rec['page_bg_image_url'] = (
                     f"https://drive.google.com/file/d/{_bgid}/view" if _bgid else '')
