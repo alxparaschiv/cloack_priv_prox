@@ -17,6 +17,7 @@ import logging
 
 import account_pack
 import fb_poster_registry as R
+import proxy as proxy_mod
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,20 @@ def _gen(kind, model, req_id, handle=None, folder=None,
          cloak_link=None, va_label='VA001', va_chat_id=None,
          delivery_mode='auto'):
     """Reserve + generate ONE package via account_pack (no Telegram objects),
-    into the VA's OWN per-VA registry (so each VA numbers from 001)."""
+    into the VA's OWN per-VA registry (so each VA numbers from 001).
+
+    PROXY (2026-07-21, user): each VA account package validates its OWN fresh proxy
+    in-browser (FB + reCAPTCHA gauntlet, in the 'Virtual Assistants'/'Myself' GoLogin
+    workspace) via proxy.validate_one_proxy_for_package — it is NEVER drawn from the
+    operator's shared `📦 DAILY PROXY POOL.txt`, so the operator and the VA can never
+    end up on the same proxy. If validation fails, the package is DEFERRED (returns
+    False → the request stays unseen and retries next cycle) so no account ever ships
+    without a freshly-validated proxy of its own."""
+    validated_proxy = proxy_mod.validate_one_proxy_for_package()
+    if not validated_proxy:
+        logger.info(f"[pkg-queue] {req_id} ({kind}): no proxy passed validation this "
+                    f"pass — deferring (retry next cycle)")
+        return False
     reserve = R.reserve(1, kind, va_label=va_label)
     if not reserve.get('ok'):
         logger.warning(f"[pkg-queue] reserve({kind}) failed: {reserve.get('err')}")
@@ -94,7 +108,8 @@ def _gen(kind, model, req_id, handle=None, folder=None,
         source_req_ids=[req_id],
         cloak_links=([cloak_link] if cloak_link is not None else None),
         va_label=va_label, va_chat_id=va_chat_id,
-        delivery_mode=delivery_mode)
+        delivery_mode=delivery_mode,
+        proxies_override=[validated_proxy])   # its OWN validated proxy, not the pool
     return True
 
 
@@ -147,23 +162,22 @@ def poll_once():
         # Task-delivery mode (2026-07-18): rides through to the task so bot-VA
         # auto-issues ('auto') or parks it for the operator ('manual'). Default auto.
         delivery_mode = req.get('delivery_mode') or 'auto'
-        # HOLD-FOR-PROXY (2026-07-16): reel-bot's autofill validates a proxy per
-        # request (~a few min via GoLogin). Building instantly ships a "pending"
-        # proxy card (the round-2 symptom). Defer — leave this request UNSEEN so the
-        # next 120s poll retries — until a free proxy exists. Safety valve: after the
-        # request is >15min old, build anyway so a proxy-source outage can't wedge
-        # delivery forever.
-        if not _req_stale(req) and _available_proxies(va_label) < 1:
-            logger.info(f"[pkg-queue] {rid}: no free validated proxy yet — deferring "
-                        f"(retry next cycle once the autofill fills the pool)")
-            continue
-        if _gen('primary', model, rid,
-                handle=_handle_of(req),
-                folder=(req.get('output_folder_name') or ''),
-                cloak_link=(req.get('cloak_link') or ''),
-                va_label=va_label, va_chat_id=va_chat_id,
-                delivery_mode=delivery_mode):
-            n_acct += 1
+        # PER-PACKAGE PROXY VALIDATION (2026-07-21, user): each package validates its
+        # OWN fresh proxy in-browser inside _gen (VA/Myself workspace) — NOT drawn from
+        # the operator's shared pool. If the primary's proxy doesn't pass this cycle,
+        # _gen returns False and we leave the request UNSEEN so it retries next cycle
+        # (no account ever ships without its own validated proxy, and it can't collide
+        # with the operator's proxies because it never touches their pool).
+        if not _gen('primary', model, rid,
+                    handle=_handle_of(req),
+                    folder=(req.get('output_folder_name') or ''),
+                    cloak_link=(req.get('cloak_link') or ''),
+                    va_label=va_label, va_chat_id=va_chat_id,
+                    delivery_mode=delivery_mode):
+            logger.info(f"[pkg-queue] {rid}: primary package deferred (proxy not "
+                        f"validated this pass) — retry next cycle")
+            continue                                  # NOT marked seen → retries
+        n_acct += 1
         if req.get('wants_backup_manager'):
             if _gen('backup_manager', account_pack.BACKUP_MODEL, rid + '-bm',
                     va_label=va_label, va_chat_id=va_chat_id,

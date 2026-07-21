@@ -514,7 +514,7 @@ def _gen_one_profile_bg(account_name, procedural_only=False):
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
                       cloak_links=None, va_label=None, va_chat_id=None,
-                      delivery_mode=None, minimal=False):
+                      delivery_mode=None, minimal=False, proxies_override=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `minimal=True` (operator's own-number flow): SKIP renting a Facebook number,
     SKIP the proxy, and SKIP the privacy-policy link — the operator already has
@@ -532,7 +532,10 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
     prefix = R.BACKUP_PREFIX if is_backup else R.NAME_PREFIX
     start = reserve['start']
     ramblers = reserve['ramblers']
-    proxies = reserve.get('proxies') or []
+    # proxies_override (2026-07-21): the DAILY VA pipeline validates a FRESH proxy
+    # per package and passes it here, so VA accounts NEVER draw from the operator's
+    # shared pool. When set, it fully replaces reserve()'s pool proxies.
+    proxies = list(proxies_override) if proxies_override is not None else (reserve.get('proxies') or [])
     who = 'backup-manager account(s)' if is_backup else f'account(s) for model <b>{model}</b>'
     _tail = ("names + passwords first — no number rented (you use your own)."
              if minimal else

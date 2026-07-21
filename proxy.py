@@ -1884,6 +1884,55 @@ def _pipeline():
     return _PROXY_PIPELINE_SINGLETON
 
 
+def validate_one_proxy_for_package(on_update=None):
+    """Validate ONE fresh proxy IN-BROWSER for a single account package and return
+    the validated proxy string (or None if none passed within the attempt budget).
+
+    This is the VA account-package proxy source — DELIBERATELY SEPARATE from the
+    operator's manual `📦 DAILY PROXY POOL.txt`. It pulls fresh IPRoyal proxies,
+    runs the same FB + reCAPTCHA browser gauntlet (in the 'Virtual Assistants' /
+    'Myself' GoLogin workspace), and returns the proxy directly — it never reads or
+    writes the operator's pool, so the operator and the VA can never share a proxy.
+    The transient GoLogin test profile is DELETED afterward (the proxy is what
+    ships with the package; the profile is disposable) so VA/Myself doesn't fill up.
+
+    Synchronous + safe to call from a worker thread (runs its own event loop).
+    2026-07-21 (user: VA packages must validate their OWN proxy, not the shared pool)."""
+    import asyncio as _aio
+
+    async def _noop(*a, **k):
+        return None
+
+    async def _run():
+        pipe = _pipeline()
+        created, _attempts, _success, _msg = await pipe.run_batch_proxy_check_pipeline(
+            (on_update or _noop), _noop, target_profiles=1,
+            name_prefix='PkgProxy',
+            workspace_name=GOLOGIN_PROXY_WORKSPACE, folder_name=GOLOGIN_PROXY_FOLDER)
+        return created
+
+    try:
+        loop = _aio.new_event_loop()
+        try:
+            created = loop.run_until_complete(_run())
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.warning(f"[pkg-proxy] per-package validation crashed: {e}")
+        return None
+    if not created:
+        return None
+    c = created[0]
+    proxy = c.get('proxy_socks')
+    # delete the transient validation profile — the validated PROXY is what matters
+    try:
+        if c.get('id'):
+            _pipeline().delete_gologin_profile(c['id'])
+    except Exception as e:
+        logger.info(f"[pkg-proxy] cleanup delete failed (non-fatal): {e}")
+    return proxy
+
+
 def _proxy_submenu_kb():
     """Mirror of Carolina's /accounts → 🌐 Proxy Tools submenu so the UI
     is familiar. acc-setup-bot implements only the Batch variant in this

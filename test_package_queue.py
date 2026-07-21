@@ -57,6 +57,15 @@ def fake_commit(records, remaining, fid, va_label=None):
 R.reserve = fake_reserve
 R.commit = fake_commit
 
+# per-package proxy validation (2026-07-21): _gen now validates its OWN fresh proxy
+# in-browser (VA/Myself) instead of drawing from the shared pool. Mock it to return a
+# UNIQUE proxy per call (no network) so the daily-path test stays offline + fast.
+_pxc = {'n': 0}
+def _fake_validate(on_update=None):
+    _pxc['n'] += 1
+    return f'socks5://u:p@host_country-us_session-PKG{_pxc["n"]}_lifetime-168h@geo.iproyal.com:12321'
+package_queue.proxy_mod.validate_one_proxy_for_package = _fake_validate
+
 # ── stub the LLM / rental / privacy / bg inside account_pack ──
 account_pack._gen_names = lambda count, existing=None: [
     (f'First{i}', f'Last{i}', 'heritage', 'female') for i in range(count)]
