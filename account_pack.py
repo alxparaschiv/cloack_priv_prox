@@ -253,20 +253,24 @@ def _slug(s):
 
 
 def _workflow_name_from_folder(folder_name):
-    """Derive the workflow name from a reel-bot output folder name (2026-07-17, user).
-    Rule: strip the 'Output ' prefix, DROP the 'Stack…' token (the stack id isn't part
-    of the workflow identity), slug the rest, then DROP the trailing output-instance
-    number (keeping its separator underscore).
-      'Output Carolina Goth StackPOOLA_A Mixed Goth SFW 14 1'
-        → 'carolina_goth_mixed_goth_sfw_14_'
-      'Output Kira Goth StackPOOLG_AS-BR-BV-P Mixed 1 1' → 'kira_goth_mixed_1_'
+    """Derive the workflow name from a reel-bot output folder name.
+    Rule (2026-07-22, user): strip the 'Output ' prefix, DROP the 'Stack…' token
+    (the stack id isn't part of the workflow identity), slug the rest, and KEEP the
+    trailing index. The old rule stripped the trailing number and left a dangling
+    '_', which (a) DROPPED the compilation index — the workflow's real identity —
+    e.g. 'Compilations 6' lost its '6', and (b) left an ugly trailing underscore.
+    Keeping the index also makes every account's workflow name unique (no two output
+    folders collide onto the same name).
+      'Output Carolina Goth Cosplay Compilations 6'
+        → 'carolina_goth_cosplay_compilations_6'
+      'Output Carolina Goth Cosplay StackPOOL… Infinity Set 20 1'
+        → 'carolina_goth_cosplay_infinity_set_20_1'
     Empty folder → ''."""
     n = re.sub(r'^\s*output\s+', '', str(folder_name or ''), flags=re.I)
     # drop the StackXXX token (single space-delimited token, e.g. 'StackPOOLA_A')
     n = ' '.join(t for t in n.split() if not re.match(r'(?i)^stack', t))
-    s = _slug(n)
-    # drop the trailing instance number, leaving the trailing '_' separator
-    return re.sub(r'\d+$', '', s)
+    # _slug already strips leading/trailing '_' → no dangling separator; keep the index.
+    return _slug(n)
 
 
 def _gen_bios(count):
@@ -481,34 +485,30 @@ def _format_card(idx, count, rec):
 
 
 def _gen_one_profile_bg(account_name, procedural_only=False):
-    """Return ONE profile-background Drive id, chosen 50/50 (2026-07-18, user)
-    between the two generators, so account packages get a MIX of both looks:
-      • AI artistic  (/artistic_bg — generate_artistic_bg_random_type), and
-      • procedural Artistic category of /bg_generator (impressionist / splatter /
-        watercolor / color-field).
-    `procedural_only=True` (minimal flow, 2026-07-19): use ONLY the fast local
-    /bg_generator — never the AI path — so the batch runs quickly (no WaveSpeed
-    round-trip). On procedural failure it returns '' rather than falling back to AI.
-    Both save into the same per-account subfolder under OUTPUT_ROOT_NAME."""
-    import random as _random
+    """Return ONE profile-background Drive id — a SOLID dark-palette color
+    (2026-07-22, user). We DROPPED the artistic/AI backgrounds: those elaborate
+    impressionist/splatter looks were distinctive enough that only our accounts
+    used them, making the fleet trackable/detectable by Meta. Plain solid colors
+    from the goth-dark palette (deep reds/blues/greens/golds + charcoal/grey/
+    black, see bg.PROFILE_COLOR_PALETTE) look ordinary and stay on-brand. Each
+    render still gets a small per-pixel jitter so two accounts on the same color
+    are never image-hash identical.
+    `procedural_only=True` is kept for signature compatibility; the path is the
+    same either way now (fast local solid, never a WaveSpeed round-trip). On
+    failure it returns '' rather than falling back to AI.
+    Saves into the per-account subfolder under OUTPUT_ROOT_NAME."""
     import artistic_bg_gen as _ag
-    if procedural_only or _random.random() < 0.5:
-        try:
-            import bg as _bg
-            png, fname = _bg._generate_one_png('artistic')   # Artistic category
-            svc = _ag._drive_service()
-            root = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
-            parent = _ag._ensure_folder(svc, account_name, root)
-            return _ag._upload_bytes_to_drive(svc, parent, fname, png,
-                                              mime='image/png') or ''
-        except Exception as e:
-            logger.warning(f"[account_pack] procedural Artistic bg failed ({e})"
-                           + ("" if procedural_only else " — falling back to AI artistic"))
-            if procedural_only:
-                return ''        # minimal: never spend time on the slow AI path
-    _id, _p, _err = _ag.generate_artistic_bg_random_type(
-        profile_subfolder_name=account_name)
-    return _id or ''
+    try:
+        import bg as _bg
+        png, fname = _bg._generate_one_png('solid')   # solid dark-palette color
+        svc = _ag._drive_service()
+        root = _ag._ensure_folder(svc, _ag.OUTPUT_ROOT_NAME)
+        parent = _ag._ensure_folder(svc, account_name, root)
+        return _ag._upload_bytes_to_drive(svc, parent, fname, png,
+                                          mime='image/png') or ''
+    except Exception as e:
+        logger.warning(f"[account_pack] solid bg failed ({e})")
+        return ''        # never fall back to the AI/artistic path
 
 
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
@@ -651,14 +651,14 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
         # no FB page → no picture). Best-effort like privacy; never blocks a row.
         if not is_backup:
             try:
-                # TWO distinct abstract backgrounds per account (2026-07-17, user):
+                # TWO distinct SOLID dark-palette backgrounds per account:
                 #   • account_bg → profile pic for the FB PERSONAL account
                 #   • page_bg    → profile pic for the FB PAGE created on it
-                # Never the model's face (profile-pic rule). ALWAYS the fast local
-                # /bg_generator Artistic category — NEVER the AI artistic path, which
-                # is a WaveSpeed round-trip that took ~minutes per package (2026-07-20,
-                # user: "no artistic ones bcz this takes forever"). Applies to every
-                # account package (full + minimal + daily).
+                # Never the model's face (profile-pic rule). Plain solid goth-dark
+                # colors only (2026-07-22, user) — the artistic/AI looks were too
+                # distinctive (only our fleet used them → Meta-trackable) and slow.
+                # Fast local /bg_generator solid render. Applies to every account
+                # package (full + minimal + daily).
                 _abgid = _gen_one_profile_bg(rec['account'], procedural_only=True)
                 rec['account_bg_image_id'] = _abgid
                 rec['account_bg_image_url'] = (
