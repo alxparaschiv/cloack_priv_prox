@@ -1031,6 +1031,39 @@ class ProxyPipeline:
         except Exception as e:
             return None, f"Error: {e}"
 
+    def sweep_profiles_by_prefix(self, prefix):
+        """Delete EVERY GoLogin profile whose name starts with `prefix` (case-
+        insensitive). The proxy-validation pipeline's 'PkgProxy N' test profiles are
+        ALWAYS disposable — but a crashed/rate-limited run can leave one orphaned. We
+        sweep them at the start of each validation so 'Virtual Assistants' never
+        accumulates them. Returns the number deleted. Best-effort (never raises)."""
+        if not GOLOGIN_API_KEY:
+            return 0
+        headers = {'Authorization': f'Bearer {GOLOGIN_API_KEY}'}
+        try:
+            resp = requests.get('https://api.gologin.com/browser/v2',
+                                headers=headers, params={'limit': 250}, timeout=30)
+            if resp.status_code != 200:
+                return 0
+            data = resp.json()
+            profiles = data.get('profiles') or data.get('browser') or (data if isinstance(data, list) else [])
+        except Exception as e:
+            logger.info(f"[pkg-proxy] sweep list failed (non-fatal): {e}")
+            return 0
+        pl = prefix.strip().lower()
+        n = 0
+        for p in profiles:
+            if str(p.get('name', '')).strip().lower().startswith(pl):
+                pid = p.get('id') or p.get('_id')
+                try:
+                    if pid and self.delete_gologin_profile(pid):
+                        n += 1
+                except Exception:
+                    pass
+        if n:
+            logger.info(f"[pkg-proxy] swept {n} stale '{prefix}' profile(s)")
+        return n
+
     async def _launch_stealth_browser(self, proxy_cfg):
         """Launch Camoufox (patched Firefox) with anti-detection at the C++ level.
 
@@ -1902,6 +1935,14 @@ def validate_one_proxy_for_package(on_update=None):
 
     async def _noop(*a, **k):
         return None
+
+    # Self-heal: delete any stale 'PkgProxy N' profiles a prior crashed/rate-limited
+    # run orphaned (they're always disposable) so VA/Myself never accumulates them.
+    # Validations run sequentially per cloak instance, so nothing in flight is swept.
+    try:
+        _pipeline().sweep_profiles_by_prefix('PkgProxy')
+    except Exception as e:
+        logger.info(f"[pkg-proxy] pre-run sweep failed (non-fatal): {e}")
 
     async def _run():
         pipe = _pipeline()
