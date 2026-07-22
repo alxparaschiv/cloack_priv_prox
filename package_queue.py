@@ -80,22 +80,33 @@ def _handle_of(req):
 
 def _gen(kind, model, req_id, handle=None, folder=None,
          cloak_link=None, va_label='VA001', va_chat_id=None,
-         delivery_mode='auto'):
+         delivery_mode='auto', pipeline='iproyal'):
     """Reserve + generate ONE package via account_pack (no Telegram objects),
     into the VA's OWN per-VA registry (so each VA numbers from 001).
 
-    PROXY (2026-07-21, user): each VA account package validates its OWN fresh proxy
-    in-browser (FB + reCAPTCHA gauntlet, in the 'Virtual Assistants'/'Myself' GoLogin
-    workspace) via proxy.validate_one_proxy_for_package — it is NEVER drawn from the
-    operator's shared `📦 DAILY PROXY POOL.txt`, so the operator and the VA can never
-    end up on the same proxy. If validation fails, the package is DEFERRED (returns
-    False → the request stays unseen and retries next cycle) so no account ever ships
-    without a freshly-validated proxy of its own."""
-    validated_proxy = proxy_mod.validate_one_proxy_for_package()
-    if not validated_proxy:
-        logger.info(f"[pkg-queue] {req_id} ({kind}): no proxy passed validation this "
-                    f"pass — deferring (retry next cycle)")
-        return False
+    PROXY — two pipelines (2026-07-22):
+      • 'iproyal' (default): validate a fresh IPRoyal proxy IN-BROWSER (FB + reCAPTCHA
+        gauntlet, 'Virtual Assistants'/'Myself' GoLogin workspace) via
+        proxy.validate_one_proxy_for_package. NEVER drawn from the operator's shared
+        `📦 DAILY PROXY POOL.txt`. Fail → DEFER (retry next cycle) so no account ever
+        ships without its own freshly-validated proxy. (Per-GB cost.)
+      • 'privateproxy': use the flat-cost fxdx PRIVATE proxy (PRIVATE_PROXY_STR env) —
+        NO per-package validation (saves IPRoyal GB cost). bot-VA then auto-creates a
+        GoLogin profile named after the poster + rotates the IP at DELIVERY time, one
+        account at a time (fxdx can't run parallel)."""
+    if str(pipeline) == 'privateproxy':
+        import os
+        validated_proxy = (os.getenv('PRIVATE_PROXY_STR', '') or '').strip()
+        if not validated_proxy:
+            logger.warning(f"[pkg-queue] {req_id} ({kind}): privateproxy pipeline but "
+                           f"PRIVATE_PROXY_STR is unset — deferring")
+            return False
+    else:
+        validated_proxy = proxy_mod.validate_one_proxy_for_package()
+        if not validated_proxy:
+            logger.info(f"[pkg-queue] {req_id} ({kind}): no proxy passed validation this "
+                        f"pass — deferring (retry next cycle)")
+            return False
     reserve = R.reserve(1, kind, va_label=va_label)
     if not reserve.get('ok'):
         logger.warning(f"[pkg-queue] reserve({kind}) failed: {reserve.get('err')}")
@@ -108,8 +119,8 @@ def _gen(kind, model, req_id, handle=None, folder=None,
         source_req_ids=[req_id],
         cloak_links=([cloak_link] if cloak_link is not None else None),
         va_label=va_label, va_chat_id=va_chat_id,
-        delivery_mode=delivery_mode,
-        proxies_override=[validated_proxy])   # its OWN validated proxy, not the pool
+        delivery_mode=delivery_mode, pipeline=pipeline,
+        proxies_override=[validated_proxy])   # its OWN validated proxy (or fxdx private)
     return True
 
 
@@ -162,6 +173,9 @@ def poll_once():
         # Task-delivery mode (2026-07-18): rides through to the task so bot-VA
         # auto-issues ('auto') or parks it for the operator ('manual'). Default auto.
         delivery_mode = req.get('delivery_mode') or 'auto'
+        # Proxy pipeline (2026-07-22): 'iproyal' (validate fresh IPRoyal) or
+        # 'privateproxy' (flat-cost fxdx + GoLogin one-at-a-time at delivery).
+        pipeline = req.get('pipeline') or 'iproyal'
         # PER-PACKAGE PROXY VALIDATION (2026-07-21, user): each package validates its
         # OWN fresh proxy in-browser inside _gen (VA/Myself workspace) — NOT drawn from
         # the operator's shared pool. If the primary's proxy doesn't pass this cycle,
@@ -173,7 +187,7 @@ def poll_once():
                     folder=(req.get('output_folder_name') or ''),
                     cloak_link=(req.get('cloak_link') or ''),
                     va_label=va_label, va_chat_id=va_chat_id,
-                    delivery_mode=delivery_mode):
+                    delivery_mode=delivery_mode, pipeline=pipeline):
             logger.info(f"[pkg-queue] {rid}: primary package deferred (proxy not "
                         f"validated this pass) — retry next cycle")
             continue                                  # NOT marked seen → retries
@@ -181,7 +195,7 @@ def poll_once():
         if req.get('wants_backup_manager'):
             if _gen('backup_manager', account_pack.BACKUP_MODEL, rid + '-bm',
                     va_label=va_label, va_chat_id=va_chat_id,
-                    delivery_mode=delivery_mode):
+                    delivery_mode=delivery_mode, pipeline=pipeline):
                 n_bm += 1
         seen.add(rid)
         seen_fid = _save_seen(seen, seen_fid)        # persist after each request

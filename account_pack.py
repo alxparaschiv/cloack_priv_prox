@@ -514,7 +514,8 @@ def _gen_one_profile_bg(account_name, procedural_only=False):
 def generate_packages(count, reserve, model, emit, post_one, handles=None,
                       output_folders=None, source_req_ids=None,
                       cloak_links=None, va_label=None, va_chat_id=None,
-                      delivery_mode=None, minimal=False, proxies_override=None):
+                      delivery_mode=None, minimal=False, proxies_override=None,
+                      pipeline=None):
     """Build `count` packages. `reserve` is the result of R.reserve(count).
     `minimal=True` (operator's own-number flow): SKIP renting a Facebook number,
     SKIP the proxy, and SKIP the privacy-policy link — the operator already has
@@ -620,6 +621,10 @@ def generate_packages(count, reserve, model, emit, post_one, handles=None,
             # Task-delivery mode (2026-07-18): 'auto' → bot-VA auto-issues; 'manual'
             # → parked for the operator to send from the tracker board. Default auto.
             'delivery_mode': (delivery_mode or 'auto'),
+            # Proxy pipeline (2026-07-22): 'iproyal' (default) or 'privateproxy' →
+            # rides to the task so bot-VA delivers one-at-a-time + auto-creates a
+            # GoLogin profile (named after this poster) with the fxdx proxy + rotated IP.
+            'pipeline': (pipeline or 'iproyal'),
         }
         if minimal:
             # Operator's own-number flow: no rental, no proxy. (Privacy link IS kept.)
